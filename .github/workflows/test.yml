@@ -1,0 +1,59 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      TYPESENSE_VERSION: "27.1"
+      TYPESENSE_API_KEY: ci-test-key
+      TYPESENSE_PORT: 8108
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run tests
+        run: bash ci-test.sh
+
+      - name: Upload Typesense log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typesense-log
+          path: /tmp/typesense-ci/typesense.log
+
+  docker:
+    name: Docker container test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run Docker container tests
+        run: pytest tests/test_docker.py -v --tb=short
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          docker ps -a
+          for id in $(docker ps -aq); do
+            echo "=== logs for $id ==="
+            docker logs --tail 60 "$id" 2>&1 || true
+          done

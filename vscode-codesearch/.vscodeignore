@@ -1,0 +1,10 @@
+.vscode/**
+src/**
+out/test/**
+node_modules/**
+**/*.map
+**/*.ts
+.gitignore
+tsconfig.json
+CLAUDE.md
+setup-vscode-ext.cmd

@@ -1,0 +1,23 @@
+# Exclude development/local files from Docker build
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.git/
+.gitignore
+*.log
+*.pid
+
+# VS Code extension (separate project)
+vscode-codesearch/
+
+# Tests (optional, can include for CI)
+# tests/
+
+# Local config (regenerated in container)
+config.json
+
+# Documentation
+*.md
+!README.md

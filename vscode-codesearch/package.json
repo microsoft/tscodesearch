@@ -1,0 +1,84 @@
+{
+  "name": "codesearch",
+  "publisher": "local",
+  "displayName": "Code Search",
+  "description": "Real-time Typesense code search panel for C# monorepos",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codesearch",
+          "title": "Code Search",
+          "icon": "icons/codesearch.svg"
+        }
+      ]
+    },
+    "views": {
+      "codesearch": [
+        {
+          "type": "webview",
+          "id": "codesearch.panel",
+          "name": "Code Search"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codesearch.openPanel",
+        "title": "Code Search: Open Panel",
+        "icon": "$(search)"
+      }
+    ],
+    "configuration": {
+      "title": "Code Search",
+      "properties": {
+        "codesearch.configPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to codesearch config.json. Leave blank to auto-detect in workspace."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "codesearch.openPanel",
+        "key": "ctrl+shift+f1",
+        "mac": "cmd+shift+f1"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "codesearch.openPanel"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "prebuild": "node -e \"var d=new Date();require('fs').writeFileSync('src/buildInfo.ts','export const BUILD_DATE = \\\"'+d.toISOString().slice(0,16).replace('T',' ')+' UTC\\\";\\n')\"",
+    "precompile": "npm run prebuild",
+    "prewatch": "npm run prebuild",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "node --require tsx/cjs --test src/test/client.test.ts src/test/callers.test.ts src/test/integration.test.ts",
+    "package": "vsce package --no-dependencies --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.7.1",
+    "tsx": "^4.0.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {}
+}

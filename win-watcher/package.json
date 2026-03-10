@@ -1,0 +1,13 @@
+{
+  "name": "codesearch-win-watcher",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Windows filesystem watcher for codesearch — sends real-time file events to the indexserver management API",
+  "main": "watcher.mjs",
+  "scripts": {
+    "start": "node watcher.mjs"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.0"
+  }
+}

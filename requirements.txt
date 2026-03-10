@@ -1,0 +1,10 @@
+# MCP server (mcp_server.py / mcp.sh → ~/.local/mcp-venv)
+mcp
+tree-sitter
+tree-sitter-c-sharp
+tree-sitter-python
+
+# Indexserver (indexserver/ → ~/.local/indexserver-venv)
+typesense
+watchdog
+pathspec

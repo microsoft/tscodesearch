@@ -1,0 +1,47 @@
+# Docker Compose for codesearch MCP
+#
+# Usage:
+#   # Set SOURCE_DIR to your source code directory
+#   SOURCE_DIR=/path/to/your/source docker-compose up
+#
+#   # Or create a .env file with:
+#   # SOURCE_DIR=/path/to/your/source
+#   docker-compose up
+
+services:
+  codesearch:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: codesearch-mcp
+    container_name: codesearch-mcp
+
+    ports:
+      # MCP SSE endpoint
+      - "${MCP_PORT:-3000}:3000"
+      - "8108:8108"
+
+    volumes:
+      # Source code to index (read-only)
+      - ${SOURCE_DIR:-.}:/source:ro
+      # Persist Typesense data between restarts
+      - codesearch_data:/typesensedata
+
+    environment:
+      - CODESEARCH_PORT=8108
+      - CODESEARCH_ROOT_NAME=default
+      - MCP_PORT=3000
+      # Uncomment to set a fixed API key
+      # - CODESEARCH_API_KEY=your-api-key
+
+    # Health check for MCP server
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/sse"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  codesearch_data:
+    name: codesearch_data
