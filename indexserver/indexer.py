@@ -100,7 +100,7 @@ def build_schema(collection_name: str) -> dict:
         # generic type arguments are individually searchable.
         # e.g. "Task<Widget> GetAsync(int id)"  →  Task  Widget  GetAsync  int  id
         # Requires ts index --resethard to recreate the collection with the new schema.
-        "token_separators": ["(", ")", "<", ">", "[", "]", ","],
+        "token_separators": ["(", ")", "<", ">", "[", "]", ",", ".",",","+","-","/","*","?"],
     }
 
 
