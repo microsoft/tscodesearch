@@ -35,7 +35,7 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 
 ## Module map
 
-### Client-side (`codesearch/`)
+### Client-side (repo root)
 
 | File | Responsibility |
 |------|---------------|
@@ -44,7 +44,7 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 | `query.py` | Tree-sitter AST query functions (`q_classes`, `q_methods`, `q_calls`, `q_implements`, `q_field_type`, `q_param_type`, `q_casts`, `q_ident`, `q_uses`, `q_attrs`, `q_usings`, `q_find`, `q_params`). `process_file(path, mode, mode_arg, ...)` dispatches to them and prints matches. `files_from_search()` resolves Typesense hits to local file paths. |
 | `mcp_server.py` | FastMCP server. Exposes `search_code`, `query_cs`, `query_py`, `ready`, `verify_index`, `service_status` tools. Captures stdout with `StringIO`. Supports multi-root via `root=` parameter. |
 
-### Server-side (`codesearch/indexserver/`)
+### Server-side (`indexserver/`)
 
 | File | Responsibility |
 |------|---------------|
@@ -74,7 +74,7 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 | Venv | Location | Used by | Packages |
 |------|----------|---------|----------|
 | MCP (WSL) | `~/.local/mcp-venv/` | `mcp.sh` → `mcp_server.py` — **used by Claude Code VSCode ext** | `mcp`, `tree_sitter_c_sharp`, `tree_sitter` |
-| MCP (Windows) | `codesearch/.venv/` | `mcp.cmd` → `mcp_server.py` — alternative, not used by extension | same as above |
+| MCP (Windows) | `.venv/` | `mcp.cmd` → `mcp_server.py` — alternative, not used by extension | same as above |
 | Indexserver | `~/.local/indexserver-venv/` | `ts.cmd/ts.sh` → all indexserver modules | `typesense`, `tree_sitter_c_sharp`, `tree_sitter`, `watchdog`, `pathspec`, `pytest` |
 
 > **The indexserver and MCP client have separate tree-sitter parsers.** Both parse C# correctly — they just run in different processes. Do not confuse `codesearch.query` (MCP-side) with `codesearch.indexserver.indexer` (indexer-side) when tracing a bug.
@@ -149,10 +149,10 @@ T2 fields (`type_refs`, `attributes`, `usings`) are broader and may have minor f
 
 ```bash
 # Quick run via helper script (creates /tmp/ts-test-venv if needed):
-bash /path/to/claudeskills/codesearch/test-query.sh
+bash test-query.sh
 
 # Or directly:
-/tmp/ts-test-venv/bin/pytest codesearch/tests/test_query_cs.py -v
+/tmp/ts-test-venv/bin/pytest tests/test_query_cs.py -v
 ```
 
 The venv at `/tmp/ts-test-venv` only needs `tree-sitter`, `tree-sitter-c-sharp`, and `pytest` — it is independent of the MCP and indexserver venvs.
@@ -162,14 +162,14 @@ The venv at `/tmp/ts-test-venv` only needs `tree-sitter`, `tree-sitter-c-sharp`,
 Tests are split into thematic files. Some require Typesense running (`ts start`); others run standalone. Run via **WSL indexserver venv**:
 
 ```bash
-~/.local/indexserver-venv/bin/pytest codesearch/tests/ -v
-~/.local/indexserver-venv/bin/pytest codesearch/tests/ -v -k TestVerifier
+~/.local/indexserver-venv/bin/pytest tests/ -v
+~/.local/indexserver-venv/bin/pytest tests/ -v -k TestVerifier
 ```
 
 Or from Windows:
 ```
-codesearch\run-server-tests.cmd
-codesearch\run-server-tests.cmd TestVerifier
+run-server-tests.cmd
+run-server-tests.cmd TestVerifier
 ```
 
 | File | Class | Server needed | Tests |
@@ -181,6 +181,7 @@ codesearch\run-server-tests.cmd TestVerifier
 | `test_indexer.py` | `TestExtractCsMetadata` | **no** | Unit tests for C# tree-sitter extractor |
 | `test_indexer.py` | `TestSearchFieldModes` | yes | Each MCP search mode's `query_by` field returns the right file |
 | `test_indexer.py` | `TestIndexFileList` | **no** | Unit tests for the shared `index_file_list()` batch pipeline |
+| `test_indexer_query_consistency.py` | all classes | **no** | Consistency tests verifying indexer and query extract the same values from the same source |
 | `test_watcher.py` | `TestCsChangeHandlerUnit` | **no** | Unit tests for watcher event handler logic |
 | `test_watcher.py` | `TestCsChangeHandlerIntegration` | yes | Watcher integration: create/modify/delete files, verify index reflects changes |
 | `test_process_cs.py` | `TestQueryCs` | **no** | `process_file()` C# structural query modes + consistency with indexer |
@@ -216,7 +217,7 @@ for /f "usebackq tokens=*" %%W in (`wsl wslpath -u "%_WIN:~0,-1%"`) do set "_WSL
 ```
 The explicit `%%W/` re-adds the trailing slash after wslpath (which strips it).
 
-**Shell script `$REPO` is relative to the script's own location.** If `ts.sh` lives in `codesearch/`, then `REPO=$(dirname $0)` = `.../claudeskills/codesearch` — do not prepend `codesearch/` again when building paths to `indexserver/service.py`.
+**Shell script `$REPO` is relative to the script's own location.** `ts.sh` sets `REPO=$(cd "$(dirname "$0")" && pwd)` — do not prepend the repo directory name again when building paths to `indexserver/service.py`.
 
 **Running `ts.sh` from the Claude Code Bash tool (Git Bash).** The Bash tool runs in Git Bash, which automatically converts `/mnt/<drive>/...` paths to Windows paths before passing them to `wsl.exe`. This breaks WSL invocation. Always use:
 ```bash

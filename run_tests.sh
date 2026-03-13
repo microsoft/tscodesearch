@@ -11,6 +11,7 @@ cd "$SCRIPT_DIR"
 exec "$VENV_PY" \
     tests/test_watcher.py \
     tests/test_indexer.py \
+    tests/test_indexer_query_consistency.py \
     tests/test_verifier.py \
     tests/test_process_cs.py \
     tests/test_python.py \

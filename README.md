@@ -220,6 +220,7 @@ Or directly from WSL:
 | File | What it tests |
 |------|---------------|
 | `test_indexer.py` | Indexer, semantic fields, multi-root, `extract_cs_metadata`, `index_file_list` pipeline |
+| `test_indexer_query_consistency.py` | Cross-checks that indexer and query extract the same values from identical source — catches drift between the two |
 | `test_watcher.py` | File watcher event handler (unit + integration) |
 | `test_process_cs.py` | `process_file()` C# structural query API |
 | `test_python.py` | Python metadata extraction (`extract_py_metadata`), `process_py_file()`, Python semantic fields |
