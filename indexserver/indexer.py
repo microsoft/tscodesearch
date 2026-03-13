@@ -34,6 +34,12 @@ from indexserver.config import (
     INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES, MAX_CONTENT_CHARS,
     collection_for_root,
 )
+from cs_ast import (
+    _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
+    _find_all, _text, _unqualify, _unqualify_type,
+    _base_type_names, _collect_ctor_names,
+)
+_node_text = _text  # local alias — indexer historically used _node_text
 
 def _to_native_path(path: str) -> str:
     """Convert a Windows-style path (C:/foo or C:\\foo) to the platform-native form.
@@ -111,31 +117,6 @@ SCHEMA = build_schema(COLLECTION)
 # Tree-sitter symbol extraction
 # ---------------------------------------------------------------------------
 
-def _find_all(node, predicate, results=None):
-    if results is None:
-        results = []
-    if predicate(node):
-        results.append(node)
-    for child in node.children:
-        _find_all(child, predicate, results)
-    return results
-
-
-def _node_text(node, src: bytes) -> str:
-    return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
-
-
-_TYPE_DECL_NODES = {
-    "class_declaration", "interface_declaration", "struct_declaration",
-    "enum_declaration", "record_declaration", "delegate_declaration",
-}
-
-_MEMBER_DECL_NODES = {
-    "method_declaration", "constructor_declaration", "property_declaration",
-    "field_declaration", "event_declaration", "local_function_statement",
-}
-
-
 def _dedupe(seq):
     seen = set()
     out = []
@@ -144,24 +125,6 @@ def _dedupe(seq):
             seen.add(x)
             out.append(x)
     return out
-
-
-_QUALIFIED_RE = re.compile(r'(?:[A-Za-z_]\w*\.)+([A-Za-z_]\w*)')
-
-
-def _unqualify(name: str) -> str:
-    """Strip namespace prefix: 'A.B.IFoo' → 'IFoo'."""
-    return name.rsplit(".", 1)[-1]
-
-
-def _unqualify_type(text: str) -> str:
-    """Strip namespace prefixes from all qualified names in a type string.
-
-    'Acme.IFoo'                             → 'IFoo'
-    'Task<Acme.Widget>'                     → 'Task<Widget>'
-    'System.Collections.Generic.List<int>' → 'List<int>'
-    """
-    return _QUALIFIED_RE.sub(r'\1', text)
 
 
 def _expand_type_refs(text: str) -> list:
@@ -236,24 +199,19 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
         if name_node:
             class_names.append(_node_text(name_node, src_bytes))
 
-        # T1: base_types (base_list is a child node, not a named field)
-        base_list = next((c for c in node.children if c.type == "base_list"), None)
-        if base_list:
-            for child in base_list.named_children:
-                if child.type == "generic_name":
-                    n = child.child_by_field_name("name")
-                    base_types.append(_node_text(n or child, src_bytes))
-                elif child.type == "identifier":
-                    base_types.append(_node_text(child, src_bytes))
-                elif child.type == "qualified_name":
-                    base_types.append(_unqualify(_node_text(child, src_bytes)))
+        # T1: base_types
+        for bt in _base_type_names(node, src_bytes):
+            unqual = _unqualify(bt)
+            # Strip generic suffix: 'IBar<C>' → 'IBar'
+            idx = unqual.find("<")
+            base_types.append(unqual[:idx].strip() if idx >= 0 else unqual)
 
     # Member declarations
     for node in _find_all(root, lambda n: n.type in _MEMBER_DECL_NODES):
         name_node = node.child_by_field_name("name")
         if name_node:
             method_names.append(_node_text(name_node, src_bytes))
-        elif node.type == "field_declaration":
+        elif node.type in ("field_declaration", "event_field_declaration"):
             for var in _find_all(node, lambda n: n.type == "variable_declarator"):
                 vname = var.child_by_field_name("name")
                 if vname:
@@ -262,7 +220,7 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
         # T1: method signatures (methods + constructors)
         if node.type in ("method_declaration", "local_function_statement",
                          "constructor_declaration"):
-            ret_node = node.child_by_field_name("returns")
+            ret_node = node.child_by_field_name("type")
             name_node2 = node.child_by_field_name("name")
             params_node = node.child_by_field_name("parameters")
             if name_node2 and params_node:
@@ -277,7 +235,7 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
                 method_sigs.append(sig)
 
         # T2: type_refs
-        if node.type == "field_declaration":
+        if node.type in ("field_declaration", "event_field_declaration"):
             # type lives inside the variable_declaration child
             var_decl = next((c for c in node.children if c.type == "variable_declaration"), None)
             if var_decl:
@@ -289,9 +247,10 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
             if type_node:
                 type_refs.extend(_expand_type_refs(_node_text(type_node, src_bytes).strip()))
         if node.type == "method_declaration":
-            ret_node = node.child_by_field_name("returns")
+            ret_node = node.child_by_field_name("type")
             if ret_node:
                 type_refs.extend(_expand_type_refs(_node_text(ret_node, src_bytes).strip()))
+        if node.type in ("method_declaration", "constructor_declaration"):
             params_node = node.child_by_field_name("parameters")
             if params_node:
                 for param in _find_all(params_node, lambda n: n.type == "parameter"):
@@ -299,7 +258,7 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
                     if ptype:
                         type_refs.extend(_expand_type_refs(_node_text(ptype, src_bytes).strip()))
 
-    # T1: call sites
+    # T1: call sites (method calls)
     for node in _find_all(root, lambda n: n.type == "invocation_expression"):
         fn_node = node.child_by_field_name("function")
         if fn_node:
@@ -309,6 +268,9 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
                     call_sites.append(_node_text(name_node, src_bytes))
             elif fn_node.type == "identifier":
                 call_sites.append(_node_text(fn_node, src_bytes))
+
+    # T1: call sites (constructor calls — new Foo(...))
+    call_sites.extend(_collect_ctor_names(root, src_bytes))
 
     return {
         "namespace":    namespace,

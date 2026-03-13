@@ -61,6 +61,11 @@ sys.path.insert(0, _root)
 
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
+from cs_ast import (
+    _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
+    _find_all, _text, _unqualify, _unqualify_type,
+    _base_type_names, _collect_ctor_names,
+)
 
 try:
     import tree_sitter_python as tspython
@@ -89,20 +94,6 @@ else:
 
 # ── AST helpers ───────────────────────────────────────────────────────────────
 
-def _find_all(node, predicate, results=None):
-    if results is None:
-        results = []
-    if predicate(node):
-        results.append(node)
-    for child in node.children:
-        _find_all(child, predicate, results)
-    return results
-
-
-def _text(node, src: bytes) -> str:
-    return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
-
-
 def _line(node) -> int:
     """1-based line number."""
     return node.start_point[0] + 1
@@ -114,19 +105,6 @@ def _strip_generic(name: str) -> str:
     return name[:idx].strip() if idx >= 0 else name.strip()
 
 
-def _unqualify(name: str) -> str:
-    """Strip namespace prefix: 'A.B.IFoo' → 'IFoo'."""
-    return name.rsplit(".", 1)[-1]
-
-
-_QUALIFIED_RE = re.compile(r'(?:[A-Za-z_]\w*\.)+([A-Za-z_]\w*)')
-
-
-def _unqualify_type(text: str) -> str:
-    """Strip namespace prefixes from all qualified names in a type string."""
-    return _QUALIFIED_RE.sub(r'\1', text)
-
-
 def _type_names(type_txt: str) -> set:
     """All unqualified type names that appear in a (possibly generic) type string.
 
@@ -136,16 +114,6 @@ def _type_names(type_txt: str) -> set:
     """
     return set(re.findall(r'[A-Za-z_]\w*', _unqualify_type(type_txt)))
 
-
-_TYPE_DECL_NODES = {
-    "class_declaration", "interface_declaration", "struct_declaration",
-    "enum_declaration", "record_declaration", "delegate_declaration",
-}
-
-_MEMBER_DECL_NODES = {
-    "method_declaration", "constructor_declaration", "property_declaration",
-    "field_declaration", "event_declaration", "local_function_statement",
-}
 
 _LITERAL_NODES = {
     "comment", "string_literal", "verbatim_string_literal",
@@ -173,38 +141,7 @@ def _field_type(node, src) -> str:
     return ""
 
 
-def _base_type_names(node, src) -> list:
-    """Extract all type names from the base_list of a type declaration.
-
-    In tree-sitter-c-sharp 0.23.x, base_list is a direct child (no named field),
-    and its contents are identifier/generic_name/qualified_name nodes — NOT wrapped
-    in simple_base_type as in earlier grammar versions.
-    """
-    names = []
-    # Find base_list by child type — child_by_field_name("bases") is None in 0.23.x
-    base_list = next((c for c in node.children if c.type == "base_list"), None)
-    if not base_list:
-        return names
-    for child in base_list.children:
-        if not child.is_named:
-            continue  # skip punctuation (: and ,)
-        if child.type == "identifier":
-            names.append(_text(child, src).strip())
-        elif child.type == "generic_name":
-            # IFoo<T> — first named child is the bare identifier
-            if child.named_children:
-                names.append(_text(child.named_children[0], src).strip())
-        elif child.type == "qualified_name":
-            # Microsoft.Ns.IBar — keep full qualified text for matching
-            names.append(_text(child, src).strip())
-        elif child.type in ("simple_base_type", "primary_constructor_base_type"):
-            # Older grammar versions wrapped types in simple_base_type
-            t = child.child_by_field_name("type") or child.child_by_field_name("name")
-            if t:
-                names.append(_text(t, src).strip())
-            elif child.named_children:
-                names.append(_text(child.named_children[0], src).strip())
-    return names
+# _base_type_names imported from cs_ast
 
 
 def _build_sig(node, src) -> str:
@@ -272,6 +209,12 @@ def q_methods(src, tree, lines):
             if name_node:
                 type_txt = _text(type_node, src).strip() if type_node else ""
                 results.append((ln, f"[event]  {type_txt} {_text(name_node, src)}"))
+        elif node.type == "event_field_declaration":
+            type_txt = _field_type(node, src)
+            for var in _find_all(node, lambda n: n.type == "variable_declarator"):
+                vn = var.child_by_field_name("name")
+                if vn:
+                    results.append((ln, f"[event]  {type_txt} {_text(vn, src)}"))
         elif node.type in ("method_declaration", "local_function_statement"):
             sig = _build_sig(node, src)
             if sig:
@@ -349,6 +292,25 @@ def q_calls(src, tree, lines, method_name):
             if len(raw) > 140:
                 raw = raw[:140] + "…"
             results.append((_line(node), raw))
+
+    # Constructor calls: new Foo(...) — only match when no qualifier specified
+    if qualifier is None:
+        for node in _find_all(tree.root_node,
+                              lambda n: n.type == "object_creation_expression"):
+            if _in_literal(node):
+                continue
+            type_node = node.child_by_field_name("type")
+            if not type_node:
+                continue
+            idents = _find_all(type_node, lambda n: n.type == "identifier")
+            if not idents:
+                continue
+            if _strip_generic(_text(idents[-1], src)) == bare_name:
+                raw = _text(node, src).replace("\n", " ").replace("\r", "")
+                if len(raw) > 140:
+                    raw = raw[:140] + "…"
+                results.append((_line(node), raw))
+
     return results
 
 
@@ -508,11 +470,13 @@ def q_field_type(src, tree, lines, type_name):
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("field_declaration",
+                                               "event_field_declaration",
                                                "property_declaration")):
-        if node.type == "field_declaration":
+        if node.type in ("field_declaration", "event_field_declaration"):
             type_txt = _field_type(node, src)
             if type_name not in _type_names(type_txt):
                 continue
+            label = "[field]" if node.type == "field_declaration" else "[event]"
             for var in _find_all(node, lambda n: n.type == "variable_declarator"):
                 vn = var.child_by_field_name("name")
                 if vn:
@@ -520,7 +484,7 @@ def q_field_type(src, tree, lines, type_name):
                     cls = _enclosing_type_name(node, src)
                     cls_prefix = f"[in {cls}] " if cls else ""
                     results.append((_line(node),
-                                    f"[field] {type_txt} {_text(vn, src)}  {cls_prefix}"))
+                                    f"{label} {type_txt} {_text(vn, src)}  {cls_prefix}"))
         else:  # property_declaration
             type_node = node.child_by_field_name("type")
             if not type_node:
