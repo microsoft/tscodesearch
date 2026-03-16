@@ -9,7 +9,7 @@
  *   - Upserts a realistic C# document (WidgetService.cs with full metadata)
  *   - Polls GET /collections/{col} until num_documents >= 1, then waits for the
  *     document to appear in search results (mirrors the real indexer pipeline)
- *   - Exercises every search mode: text, symbols, implements, callers, sig, uses, attr
+ *   - Exercises every search mode: text, symbols, implements, calls, sig, uses, attrs
  *   - Verifies extension and subsystem filters
  *   - Cleans up the test collection after all tests, even on failure
  */
@@ -106,6 +106,7 @@ const SCHEMA = {
         { name: 'mtime',         type: 'int64' },
         { name: 'base_types',    type: 'string[]', optional: true },
         { name: 'call_sites',    type: 'string[]', optional: true },
+        { name: 'cast_sites',    type: 'string[]', optional: true },
         { name: 'method_sigs',   type: 'string[]', optional: true },
         { name: 'type_refs',     type: 'string[]', optional: true },
         { name: 'attributes',    type: 'string[]', optional: true, facet: true },
@@ -326,13 +327,13 @@ describe('integration — WidgetService.cs indexed in real Typesense', () => {
         assert.ok(r.hits[0].document.base_types?.includes('IDisposable'));
     });
 
-    // ── callers mode ──────────────────────────────────────────────────────────
+    // ── calls mode ────────────────────────────────────────────────────────────
 
-    it('callers mode: finds files that call a given method', async (t) => {
+    it('calls mode: finds files that call a given method', async (t) => {
         if (skipIfUnavailable(t)) { return; }
         const r = await tsSearch('localhost', PORT, API_KEY, TEST_COLLECTION,
-            buildSearchParams('FindAsync', 'callers', '', '', 10));
-        assert.ok(r.found > 0, 'expected callers hit for FindAsync');
+            buildSearchParams('FindAsync', 'calls', '', '', 10));
+        assert.ok(r.found > 0, 'expected calls hit for FindAsync');
         assert.ok(r.hits[0].document.call_sites?.includes('FindAsync'));
     });
 
@@ -404,20 +405,20 @@ describe('integration — WidgetService.cs indexed in real Typesense', () => {
         assert.ok(r.hits[0].document.type_refs?.includes('IWidgetService'));
     });
 
-    // ── attr mode ─────────────────────────────────────────────────────────────
+    // ── attrs mode ────────────────────────────────────────────────────────────
 
-    it('attr mode: finds files decorated with a specific attribute', async (t) => {
+    it('attrs mode: finds files decorated with a specific attribute', async (t) => {
         if (skipIfUnavailable(t)) { return; }
         const r = await tsSearch('localhost', PORT, API_KEY, TEST_COLLECTION,
-            buildSearchParams('Authorize', 'attr', '', '', 10));
-        assert.ok(r.found > 0, 'expected attr hit for Authorize');
+            buildSearchParams('Authorize', 'attrs', '', '', 10));
+        assert.ok(r.found > 0, 'expected attrs hit for Authorize');
         assert.ok(r.hits[0].document.attributes?.includes('Authorize'));
     });
 
-    it('attr mode: finds files decorated with Route', async (t) => {
+    it('attrs mode: finds files decorated with Route', async (t) => {
         if (skipIfUnavailable(t)) { return; }
         const r = await tsSearch('localhost', PORT, API_KEY, TEST_COLLECTION,
-            buildSearchParams('Route', 'attr', '', '', 10));
+            buildSearchParams('Route', 'attrs', '', '', 10));
         assert.ok(r.found > 0);
         assert.ok(r.hits[0].document.attributes?.includes('Route'));
     });
@@ -481,5 +482,117 @@ describe('integration — WidgetService.cs indexed in real Typesense', () => {
             buildSearchParams('zzz_totally_nonexistent_xyzzy', 'text', '', '', 10));
         assert.equal(r.found, 0);
         assert.equal(r.hits.length, 0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Real-index BlobStore smoke tests — require a running, indexed Typesense
+//
+// These tests query the REAL production index (codesearch_default) and verify
+// that searching for 'BlobStore' works correctly across all relevant modes.
+// They are skipped automatically when the server is not running.
+// ---------------------------------------------------------------------------
+
+const REAL_COLLECTION = 'codesearch_default';
+
+describe('real-index — BlobStore smoke tests', () => {
+    let realAvailable = false;
+
+    before(async () => {
+        realAvailable = await serverIsUp();
+        if (!realAvailable) { return; }
+        // Check that the real collection exists and has documents
+        try {
+            const { status, data } = await tsAdmin('GET', `/collections/${REAL_COLLECTION}`);
+            const numDocs = (data as Record<string, unknown>)['num_documents'] as number ?? 0;
+            realAvailable = status === 200 && numDocs > 0;
+        } catch {
+            realAvailable = false;
+        }
+    });
+
+    function skipReal(t: { skip(msg?: string): void }): boolean {
+        if (!realAvailable) {
+            t.skip(`real index '${REAL_COLLECTION}' not available — run: ts start`);
+            return true;
+        }
+        return false;
+    }
+
+    it('uses mode: finds files that reference BlobStore type', async (t) => {
+        if (skipReal(t)) { return; }
+        const r = await tsSearch('localhost', PORT, API_KEY, REAL_COLLECTION,
+            buildSearchParams('BlobStore', 'uses', '', '', 20));
+        assert.ok(r.found > 0, 'expected uses hits for BlobStore');
+        // At least some hits should have BlobStore in type_refs
+        const withTypeRef = r.hits.filter((h) =>
+            (h.document.type_refs ?? []).some((t) => t.includes('BlobStore')));
+        assert.ok(withTypeRef.length > 0, `none of ${r.hits.length} hits have BlobStore in type_refs`);
+    });
+
+    it('implements mode: finds types that implement or extend BlobStore', async (t) => {
+        if (skipReal(t)) { return; }
+        const r = await tsSearch('localhost', PORT, API_KEY, REAL_COLLECTION,
+            buildSearchParams('BlobStore', 'implements', '', '', 20));
+        // There may or may not be implementors — just check the search succeeds
+        assert.ok(r.found >= 0);
+    });
+
+    it('calls mode: finds files that call BlobStore methods', async (t) => {
+        if (skipReal(t)) { return; }
+        const r = await tsSearch('localhost', PORT, API_KEY, REAL_COLLECTION,
+            buildSearchParams('BlobStore', 'calls', '', '', 20));
+        assert.ok(r.found >= 0);
+    });
+
+    it('sig mode: finds method signatures mentioning BlobStore', async (t) => {
+        if (skipReal(t)) { return; }
+        const r = await tsSearch('localhost', PORT, API_KEY, REAL_COLLECTION,
+            buildSearchParams('BlobStore', 'sig', '', '', 20));
+        assert.ok(r.found > 0, 'expected sig hits for BlobStore');
+        // Results should have method_sigs containing BlobStore
+        const withSig = r.hits.filter((h) =>
+            (h.document.method_sigs ?? []).some((s) => s.includes('BlobStore')));
+        assert.ok(withSig.length > 0, `none of ${r.hits.length} hits have BlobStore in method_sigs`);
+    });
+
+    it('sig mode: sigs look like method signatures (have return type + parens)', async (t) => {
+        if (skipReal(t)) { return; }
+        const r = await tsSearch('localhost', PORT, API_KEY, REAL_COLLECTION,
+            buildSearchParams('BlobStore', 'sig', '', '', 20));
+        if (r.found === 0) { t.skip('no BlobStore sigs in index'); return; }
+        // Every method_sig should contain '(' — it must be a declaration, not a raw source line
+        for (const hit of r.hits.slice(0, 5)) {
+            for (const sig of (hit.document.method_sigs ?? []).slice(0, 3)) {
+                assert.ok(
+                    sig.includes('('),
+                    `sig in ${hit.document.relative_path} has no parens (not a signature): ${sig}`
+                );
+            }
+        }
+    });
+
+    it('symbols mode: finds files declaring BlobStore symbols', async (t) => {
+        if (skipReal(t)) { return; }
+        const r = await tsSearch('localhost', PORT, API_KEY, REAL_COLLECTION,
+            buildSearchParams('BlobStore', 'symbols', '', '', 20));
+        assert.ok(r.found > 0, 'expected symbol hits for BlobStore');
+        // Top hit should be a file that defines or heavily uses BlobStore
+        const topDoc = r.hits[0].document;
+        const allSymbols = [...(topDoc.class_names ?? []), ...(topDoc.method_names ?? [])];
+        assert.ok(
+            allSymbols.some((s) => s.includes('BlobStore')),
+            `top hit ${topDoc.relative_path} has no BlobStore symbol; symbols: ${allSymbols.join(', ')}`
+        );
+    });
+
+    it('returns facet_counts with subsystem breakdown', async (t) => {
+        if (skipReal(t)) { return; }
+        const r = await tsSearch('localhost', PORT, API_KEY, REAL_COLLECTION,
+            buildSearchParams('BlobStore', 'uses', '', '', 20));
+        assert.ok(r.facet_counts && r.facet_counts.length > 0, 'expected facet_counts');
+        const subFacet = r.facet_counts!.find((f) => f.field_name === 'subsystem');
+        assert.ok(subFacet, 'expected subsystem facet');
+        assert.ok(subFacet!.counts.length > 0, 'expected at least one subsystem in facets');
     });
 });

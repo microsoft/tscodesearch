@@ -42,7 +42,7 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 | `config.py` | Shared constants: `HOST`, `PORT`, `API_KEY`, `ROOTS`, `COLLECTION`, `INCLUDE_EXTENSIONS`. Reads `config.json`. Provides `get_root(name)` → `(collection, src_path)` and `collection_for_root(name)` → `"codesearch_{name}"`. |
 | `search.py` | HTTP search wrapper. `search(query, ...)` builds params and calls Typesense; `format_results()` prints human-readable output. Used by `mcp_server.py`. |
 | `query.py` | Tree-sitter AST query functions (`q_classes`, `q_methods`, `q_calls`, `q_implements`, `q_field_type`, `q_param_type`, `q_casts`, `q_ident`, `q_uses`, `q_attrs`, `q_usings`, `q_find`, `q_params`). `process_file(path, mode, mode_arg, ...)` dispatches to them and prints matches. `files_from_search()` resolves Typesense hits to local file paths. |
-| `mcp_server.py` | FastMCP server. Exposes `search_code`, `query_cs`, `query_py`, `ready`, `verify_index`, `service_status` tools. Captures stdout with `StringIO`. Supports multi-root via `root=` parameter. |
+| `mcp_server.py` | FastMCP server. Exposes `search_code`, `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status` tools. Captures stdout with `StringIO`. Supports multi-root via `root=` parameter. |
 
 ### Server-side (`indexserver/`)
 
@@ -104,6 +104,33 @@ Default root → `codesearch_default`. Both `config.py` files compute this ident
 
 > **After upgrading from the old single-collection setup** (`codesearch_files`), run `ts index --reset` once to create the new `codesearch_default` collection. The `codesearch_files` name is no longer used.
 
+## Tool selection guide
+
+| Goal | Tool |
+|------|------|
+| Find which files mention a symbol (file-level, fast) | `search_code` |
+| Get exact line-level results across the codebase | `query_codebase` |
+| Inspect or enumerate contents of one specific file | `query_single_file` |
+
+**`query_codebase`** is the default "just find it" tool:
+- Typesense pre-filter narrows to ≤50 files → tree-sitter gives exact lines
+- If >50 files match, returns error with subsystem breakdown — never partial results
+- Accepts pattern-based modes only (`uses`, `calls`, `implements`, `casts`,
+  `field_type`, `param_type`, `ident`, `member_accesses`, `find`, `params`, `attrs`,
+  `decorators`); rejects listing modes with a redirect to `query_single_file`
+- Maps AST mode to the best Typesense `query_by` automatically:
+  - `uses`/`field_type`/`param_type`/`member_accesses` → `type_refs` field
+  - `calls` → `call_sites` field
+  - `implements` → `base_types` field
+  - `casts` → `cast_sites` field
+  - everything else → full-text search
+
+**`query_single_file`** for one file — no Typesense:
+- Supports all modes including listing modes (`methods`, `fields`, `classes`,
+  `usings`, `imports`) that enumerate file contents without a pattern filter
+- Works well on large source files; tree-sitter parses in memory, returns only matching nodes
+- Signature: `query_single_file(mode, pattern="", file="", ...)`
+
 ## Typesense schema — search mode mapping
 
 | `search_code` mode | `query_by` field(s) | What it finds |
@@ -111,10 +138,10 @@ Default root → `codesearch_default`. Both `config.py` files compute this ident
 | `text` (default) | `filename`, `class/method_names`, `content` | Broad keyword search |
 | `symbols` | `filename`, `class/method_names` only | Faster, no content noise |
 | `implements` | `base_types` (T1) | Files where a type inherits/implements the query |
-| `callers` | `call_sites` (T1) | Files that call the query method |
+| `calls` | `call_sites` (T1) | Files that call the query method |
 | `sig` | `method_sigs` (T1) | Methods whose signature contains the query |
 | `uses` | `type_refs` (T2) | Files that reference the query type in declarations |
-| `attr` | `attributes` (T2) | Files decorated with the query attribute |
+| `attrs` | `attributes` (T2) | Files decorated with the query attribute |
 
 T1 fields (`base_types`, `call_sites`, `method_sigs`) are precise tree-sitter extractions.
 T2 fields (`type_refs`, `attributes`, `usings`) are broader and may have minor false positives.
@@ -159,14 +186,27 @@ The venv at `/tmp/ts-test-venv` only needs `tree-sitter`, `tree-sitter-c-sharp`,
 
 ### Indexserver / search tests — `tests/`
 
-Tests are split into thematic files. Some require Typesense running (`ts start`); others run standalone. Run via **WSL indexserver venv**:
+Tests are split into thematic files. Some require Typesense running (`ts start`); others run standalone.
 
+**From the Claude Code Bash tool** (the correct way — avoids path-conversion problems):
 ```bash
-~/.local/indexserver-venv/bin/pytest tests/ -v
-~/.local/indexserver-venv/bin/pytest tests/ -v -k TestVerifier
+# All tests
+MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/q/spocore/tscodesearch/run_tests.sh
+
+# Filter by test name or class
+MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/q/spocore/tscodesearch/run_tests.sh -k TestQCasts
+
+# Single file
+MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/q/spocore/tscodesearch/run_tests.sh tests/test_mode_casts.py
 ```
 
-Or from Windows:
+From WSL directly:
+```bash
+bash /mnt/q/spocore/tscodesearch/run_tests.sh
+bash /mnt/q/spocore/tscodesearch/run_tests.sh -k TestVerifier
+```
+
+From Windows CMD/PowerShell:
 ```
 run-server-tests.cmd
 run-server-tests.cmd TestVerifier

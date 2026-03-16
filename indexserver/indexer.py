@@ -31,7 +31,7 @@ except ImportError:
 
 from indexserver.config import (
     TYPESENSE_CLIENT_CONFIG, COLLECTION, SRC_ROOT,
-    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES, MAX_CONTENT_CHARS,
+    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES,
     collection_for_root,
 )
 from cs_ast import (
@@ -90,6 +90,7 @@ _SCHEMA_FIELDS = [
     {"name": "base_types",    "type": "string[]", "optional": True},
     {"name": "call_sites",    "type": "string[]", "optional": True},
     {"name": "method_sigs",   "type": "string[]", "optional": True},
+    {"name": "cast_sites",    "type": "string[]", "optional": True},
     # Tier 2 semantic fields
     {"name": "type_refs",     "type": "string[]", "optional": True},
     {"name": "attributes",    "type": "string[]", "optional": True, "facet": True},
@@ -152,7 +153,7 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
     except Exception:
         return {
             "namespace": "", "class_names": [], "method_names": [],
-            "base_types": [], "call_sites": [], "method_sigs": [],
+            "base_types": [], "call_sites": [], "cast_sites": [], "method_sigs": [],
             "type_refs": [], "attributes": [], "usings": [],
         }
 
@@ -162,6 +163,7 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
     method_names = []
     base_types = []
     call_sites = []
+    cast_sites = []
     method_sigs = []
     type_refs = []
     attributes = []
@@ -220,7 +222,7 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
         # T1: method signatures (methods + constructors)
         if node.type in ("method_declaration", "local_function_statement",
                          "constructor_declaration"):
-            ret_node = node.child_by_field_name("type")
+            ret_node = node.child_by_field_name("returns") or node.child_by_field_name("type")
             name_node2 = node.child_by_field_name("name")
             params_node = node.child_by_field_name("parameters")
             if name_node2 and params_node:
@@ -247,7 +249,7 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
             if type_node:
                 type_refs.extend(_expand_type_refs(_node_text(type_node, src_bytes).strip()))
         if node.type == "method_declaration":
-            ret_node = node.child_by_field_name("type")
+            ret_node = node.child_by_field_name("returns") or node.child_by_field_name("type")
             if ret_node:
                 type_refs.extend(_expand_type_refs(_node_text(ret_node, src_bytes).strip()))
         if node.type in ("method_declaration", "constructor_declaration"):
@@ -272,12 +274,41 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
     # T1: call sites (constructor calls — new Foo(...))
     call_sites.extend(_collect_ctor_names(root, src_bytes))
 
+    # T2: local variable declaration types (BlobStore store = ...; inside methods)
+    for node in _find_all(root, lambda n: n.type == "local_declaration_statement"):
+        var_decl = next((c for c in node.children if c.type == "variable_declaration"), None)
+        if var_decl:
+            type_node = var_decl.child_by_field_name("type")
+            if type_node:
+                type_refs.extend(_expand_type_refs(_node_text(type_node, src_bytes).strip()))
+
+    # T2: static call receivers — PascalCase identifier as receiver of .Method(...)
+    # e.g. BlobStore.Delete(key) → 'BlobStore' added to type_refs
+    for node in _find_all(root, lambda n: n.type == "invocation_expression"):
+        fn_node = node.child_by_field_name("function")
+        if fn_node and fn_node.type == "member_access_expression":
+            expr = fn_node.child_by_field_name("expression")
+            if expr and expr.type == "identifier":
+                name = _node_text(expr, src_bytes)
+                if name and name[0].isupper():
+                    type_refs.extend(_expand_type_refs(name))
+
+    # T1: explicit cast target types — (BlobStore)obj → 'BlobStore' in cast_sites
+    for node in _find_all(root, lambda n: n.type == "cast_expression"):
+        type_node = node.child_by_field_name("type")
+        if type_node:
+            cast_sites.extend(_expand_type_refs(_node_text(type_node, src_bytes).strip()))
+
+    # base_types are also type_refs: if you implement IFoo, you're "using" IFoo
+    type_refs.extend(base_types)
+
     return {
         "namespace":    namespace,
         "class_names":  _dedupe(class_names),
         "method_names": _dedupe(method_names),
         "base_types":   _dedupe(base_types),
         "call_sites":   _dedupe(call_sites),
+        "cast_sites":   _dedupe(cast_sites),
         "method_sigs":  _dedupe(method_sigs),
         "type_refs":    _dedupe(type_refs),
         "attributes":   _dedupe(attributes),
@@ -289,7 +320,7 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
     """Extract Python metadata for tier 1+2 semantic indexing."""
     _empty = {
         "namespace": "", "class_names": [], "method_names": [],
-        "base_types": [], "call_sites": [], "method_sigs": [],
+        "base_types": [], "call_sites": [], "cast_sites": [], "method_sigs": [],
         "type_refs": [], "attributes": [], "usings": [],
     }
     if not _PY_AVAILABLE or _py_parser is None:
@@ -385,6 +416,7 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
         "method_names": _dedupe(method_names),
         "base_types":   _dedupe(base_types),
         "call_sites":   _dedupe(call_sites),
+        "cast_sites":   [],   # Python has no explicit cast syntax
         "method_sigs":  _dedupe(method_sigs),
         "type_refs":    _dedupe(type_refs),
         "attributes":   _dedupe(attributes),
@@ -435,12 +467,15 @@ def build_document(full_path: str, relative_path: str) -> dict:
     else:
         meta = {
             "namespace": "", "class_names": [], "method_names": [],
-            "base_types": [], "call_sites": [], "method_sigs": [],
+            "base_types": [], "call_sites": [], "cast_sites": [], "method_sigs": [],
             "type_refs": [], "attributes": [], "usings": [],
         }
 
     symbols = list(dict.fromkeys(meta["class_names"] + meta["method_names"]))
-    content = src_bytes.decode("utf-8", errors="replace")[:MAX_CONTENT_CHARS]
+    # Store only unique identifier tokens — keeps the index small while
+    # preserving full recall for word-level search (we never phrase-search content).
+    _raw = src_bytes.decode("utf-8", errors="replace")
+    content = " ".join(dict.fromkeys(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', _raw)))
     relative_path_norm = relative_path.replace("\\", "/")
 
     return {
@@ -458,6 +493,7 @@ def build_document(full_path: str, relative_path: str) -> dict:
         "priority":      _file_priority(ext),
         "base_types":    meta["base_types"],
         "call_sites":    meta["call_sites"],
+        "cast_sites":    meta["cast_sites"],
         "method_sigs":   meta["method_sigs"],
         "type_refs":     meta["type_refs"],
         "attributes":    meta["attributes"],

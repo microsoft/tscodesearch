@@ -297,6 +297,7 @@ def _run_query(mode: str, pattern: str, files: list) -> list:
         "attrs":           lambda s, t, l: _q.q_attrs(s, t, l, pattern or None),
         "find":            lambda s, t, l: _q.q_find(s, t, l, pattern),
         "params":          lambda s, t, l: _q.q_params(s, t, l, pattern),
+        "sig":             lambda s, t, l: _q.q_sig(s, t, l, pattern),
     }
 
     fn = dispatch.get(mode)
@@ -322,6 +323,26 @@ def _run_query(mode: str, pattern: str, files: list) -> list:
                 "matches": [{"line": ln, "text": text} for ln, text in raw],
             })
     return results
+
+
+# ── Mode mapping: extension mode key → (Typesense mode flag, AST mode) ─────────
+
+_EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
+    "text":            ("text",       "ident"),
+    "symbols":         ("symbols",    "find"),
+    "sig":             ("sig",        "sig"),
+    "uses":            ("uses",       "uses"),
+    "calls":           ("calls",      "calls"),
+    "implements":      ("implements", "implements"),
+    "casts":           ("casts",      "casts"),
+    "attrs":           ("attrs",      "attrs"),
+    "field_type":      ("uses",       "field_type"),
+    "param_type":      ("uses",       "param_type"),
+    "ident":           ("uses",       "ident"),
+    "member_accesses": ("uses",       "member_accesses"),
+    "find":            ("sig",        "find"),
+    "params":          ("sig",        "params"),
+}
 
 
 # ── HTTP handler ───────────────────────────────────────────────────────────────
@@ -521,6 +542,115 @@ class _Handler(BaseHTTPRequestHandler):
             })
             return
 
+        # ── POST /query-codebase ──────────────────────────────────────────────
+        if method == "POST" and path == "/query-codebase":
+            body    = self._read_body()
+            mode    = body.get("mode", "")
+            pattern = body.get("pattern", "")
+            sub     = body.get("sub", "") or None
+            ext     = body.get("ext", "") or None
+            root    = body.get("root", "")
+            limit   = int(body.get("limit", 50))
+
+            if mode not in _EXT_TO_TS_AND_AST:
+                self._send_json(400, {"error": f"unknown mode: {mode!r}"})
+                return
+
+            ts_mode_flag, ast_mode = _EXT_TO_TS_AND_AST[mode]
+
+            try:
+                collection, src_root = get_root(root)
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+
+            # Import search lazily (on sys.path via _base)
+            import search as _search_mod
+
+            ts_kwargs = dict(
+                query        = pattern,
+                ext          = ext,
+                sub          = sub,
+                limit        = min(limit, 250),  # Typesense max per_page; overflow detected via found > limit
+                symbols_only = (ts_mode_flag == "symbols"),
+                implements   = (ts_mode_flag == "implements"),
+                calls        = (ts_mode_flag == "calls"),
+                sig          = (ts_mode_flag == "sig"),
+                uses         = (ts_mode_flag == "uses"),
+                attrs        = (ts_mode_flag == "attrs"),
+                casts        = (ts_mode_flag == "casts"),
+                collection   = collection,
+            )
+
+            import io as _io
+            _ts_stdout_buf = _io.StringIO()
+            try:
+                import sys as _sys
+                _old_stdout = _sys.stdout
+                _sys.stdout = _ts_stdout_buf
+                try:
+                    ts_result, _ = _search_mod.search(**ts_kwargs)
+                finally:
+                    _sys.stdout = _old_stdout
+            except SystemExit:
+                detail = _ts_stdout_buf.getvalue().strip()
+                self._send_json(503, {"error": "Typesense search failed", "detail": detail})
+                return
+
+            found     = ts_result.get("found", 0)
+            hits      = ts_result.get("hits", [])
+            facets    = ts_result.get("facet_counts", [])
+
+            if found > limit:
+                self._send_json(200, {
+                    "overflow":     True,
+                    "found":        found,
+                    "hits":         [],
+                    "facet_counts": facets,
+                })
+                return
+
+            # Resolve absolute paths for the returned hits
+            file_list: list[str] = []
+            hit_by_path: dict[str, dict] = {}
+            for hit in hits:
+                rel = hit["document"].get("relative_path", "").replace("\\", "/")
+                abs_path = to_native_path(
+                    src_root.rstrip("/\\") + "/" + rel
+                )
+                if os.path.isfile(abs_path):
+                    file_list.append(abs_path)
+                    hit_by_path[abs_path] = hit
+
+            # Run AST query
+            ast_results = _run_query(ast_mode, pattern, file_list)
+
+            # Build response hits (only files with AST matches)
+            response_hits = []
+            for ast_item in ast_results:
+                file_path = ast_item["file"]
+                ts_hit    = hit_by_path.get(file_path)
+                if ts_hit is None:
+                    continue
+                doc = ts_hit.get("document", {})
+                response_hits.append({
+                    "document": {
+                        "id":            doc.get("id", ""),
+                        "relative_path": doc.get("relative_path", ""),
+                        "subsystem":     doc.get("subsystem", ""),
+                        "filename":      doc.get("filename", ""),
+                    },
+                    "matches": ast_item["matches"],
+                })
+
+            self._send_json(200, {
+                "overflow":     False,
+                "found":        found,
+                "hits":         response_hits,
+                "facet_counts": facets,
+            })
+            return
+
         # ── POST /query ───────────────────────────────────────────────────────
         if method == "POST" and path == "/query":
             body    = self._read_body()
@@ -608,7 +738,13 @@ def run(host: str = "127.0.0.1", port: int = API_PORT) -> None:
     _shutdown_event.wait()
 
     # Stop all threads
-    server.shutdown()
+    # server.shutdown() blocks until serve_forever() returns — run it with a timeout
+    # so a slow/hung HTTP handler can't hold up the entire shutdown sequence.
+    _srv_stop = threading.Thread(target=server.shutdown, daemon=True)
+    _srv_stop.start()
+    _srv_stop.join(timeout=5)
+    if _srv_stop.is_alive():
+        print("[api] HTTP server shutdown timed out — continuing anyway", flush=True)
     _hb_stop.set()
     _watcher_stop.set()
     if _verify_thread and _verify_thread.is_alive():

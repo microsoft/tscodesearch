@@ -16,13 +16,13 @@ Restart / reload instructions:
         Ctrl+Shift+P  →  "Developer: Reload Window"
 
 Tools:
-    search_code    - Typesense full-text / semantic search across the index
-    query_ast       - tree-sitter structural C# query (uses/calls/implements/...)
-    query_py       - tree-sitter structural Python query (classes/methods/calls/...)
-    ready          - Quick synchronous check: is the index up to date with disk?
-    verify_index   - Start/stop/monitor a background repair scan
-    service_status - Check if Typesense is running and how many docs are indexed
-    manage_service - Start, stop, or restart the Typesense + indexserver processes
+    search_code      - Typesense full-text / semantic search across the index (file-level)
+    query_codebase   - Typesense pre-filter + AST post-filter; exact line results, ≤250 files
+    query_single_file- tree-sitter AST query on one file (no search)
+    ready            - Quick synchronous check: is the index up to date with disk?
+    verify_index     - Start/stop/monitor a background repair scan
+    service_status   - Check if Typesense is running and how many docs are indexed
+    manage_service   - Start, stop, or restart the Typesense + indexserver processes
 """
 
 from __future__ import annotations
@@ -43,19 +43,6 @@ sys.path.insert(0, _THIS_DIR)
 
 from mcp.server.fastmcp import FastMCP
 
-# ── File resolution ───────────────────────────────────────────────────────────
-# Re-use the shared files_from_search from query.py.
-# Returns Windows native paths (SRC_ROOT + relative_path) for file I/O.
-
-from query import files_from_search as _files_from_search
-
-def _do_files_from_search(query: str, sub: str | None = None,
-                            ext: str = "cs", limit: int = 50,
-                            collection: str | None = None,
-                            src_root: str | None = None) -> list[str]:
-    """Delegate to the shared files_from_search."""
-    return _files_from_search(query=query, sub=sub, ext=ext, limit=limit,
-                               collection=collection, src_root=src_root)
 
 
 import re as _re_module
@@ -102,42 +89,91 @@ def _normalize_files_glob(path: str, src_root: str | None = None) -> str:
     return to_native_path(path)
 
 
-def _glob_to_regex(pattern: str) -> "re.Pattern[str]":
-    """
-    Convert a glob pattern (supporting ** for recursive matching) to a regex.
+def _glob_too_broad_hint(glob_pattern: str, src_root: str, ext: str = "cs") -> str:
+    """Return a hint listing immediate subdirectories of the glob base directory.
 
-    *   matches any character except /
-    **  (or **/) matches any sequence of characters including /
-    ?   matches any single character except /
+    Called when a files= glob matches too many files. Helps the caller narrow
+    to a specific subdirectory rather than re-trying the full tree.
     """
-    import re as _re
-    pattern = pattern.replace("\\", "/")
-    parts   = _re.split(r"(\*\*/?|\*|\?)", pattern)
-    rx      = ""
-    for part in parts:
-        if part in ("**/", "**"):
-            rx += ".*"
-        elif part == "*":
-            rx += "[^/]*"
-        elif part == "?":
-            rx += "[^/]"
+    # Find the fixed prefix before the first wildcard
+    star_idx = glob_pattern.find('*')
+    base = glob_pattern[:star_idx].rstrip('/\\') if star_idx >= 0 else glob_pattern
+    if not os.path.isdir(base):
+        base = os.path.dirname(base)
+    if not os.path.isdir(base):
+        return ""
+    try:
+        entries = sorted(os.scandir(base), key=lambda e: e.name)
+        subdirs = [e for e in entries if e.is_dir()]
+        if not subdirs:
+            return ""
+        rel_base = os.path.relpath(base, src_root).replace('\\', '/')
+        lines = [
+            "  " + os.path.relpath(e.path, src_root).replace('\\', '/') + f"/**/*.{ext}"
+            for e in subdirs
+        ]
+        return f"\nSubdirectories of {rel_base}/ — narrow your glob to one of these:\n" + "\n".join(lines)
+    except OSError:
+        return ""
+
+
+def _search_too_broad_hint(result: dict, total: int, limit: int,
+                           sub: str, ext: str, src_root: str) -> str:
+    """Return a breakdown of hits by subdirectory when search_code returns too many results.
+
+    When no sub= filter is set, uses the Typesense subsystem facet (already in the result)
+    to show per-subsystem counts.  When sub= is already set, groups the returned hits by
+    their second path component to suggest finer-grained globs.
+
+    Returns a multiline string the caller should return instead of the full result list.
+    """
+    ext_str = (ext or "cs").lstrip(".")
+    lines = [
+        f"Found {total} results but limit={limit} — too many to show reliably.",
+        "Repeat with a narrower sub= or files= glob instead of using grep.",
+        "",
+    ]
+
+    if not sub:
+        # First-level breakdown: use subsystem facet (already computed by Typesense)
+        subsystem_counts: list[tuple[str, int]] = []
+        for fc in result.get("facet_counts", []):
+            if fc.get("field_name") == "subsystem":
+                for c in fc.get("counts", []):
+                    subsystem_counts.append((c["value"], int(c["count"])))
+
+        if subsystem_counts:
+            subsystem_counts.sort(key=lambda x: -x[1])
+            lines.append("Hits by subsystem — call search_code again with sub=<name>:")
+            for name, count in subsystem_counts[:25]:
+                lines.append(f"  sub={name!r:<20}  {count:>5} hits")
         else:
-            rx += _re.escape(part)
-    return _re.compile("^" + rx + "$", _re.IGNORECASE)
+            lines.append("(No subsystem facet data available — try adding sub= or ext= to narrow.)")
+    else:
+        # Second-level breakdown: group returned hits by second path component
+        subdir_counts: dict[str, int] = {}
+        for hit in result.get("hits", []):
+            rel = hit["document"].get("relative_path", "").replace("\\", "/")
+            parts = rel.split("/")
+            # parts[0] = subsystem (already filtered), parts[1] = next level
+            key = "/".join(parts[:2]) if len(parts) >= 2 else parts[0] if parts else rel
+            subdir_counts[key] = subdir_counts.get(key, 0) + 1
 
+        shown = len(result.get("hits", []))
+        if subdir_counts:
+            lines.append(
+                f"Hits by subdirectory (sample of {shown}/{total} results shown) "
+                f"— call query_ast with files= glob:"
+            )
+            for path, count in sorted(subdir_counts.items(), key=lambda x: -x[1])[:25]:
+                glob_path = src_root.replace("\\", "/").rstrip("/") + "/" + path + f"/**/*.{ext_str}"
+                lines.append(f"  files={glob_path!r:<60}  {count}+ hits")
+        else:
+            lines.append("(Could not group hits — narrow your query or add ext= filter.)")
 
-def _ts_search_then_filter(glob_pattern: str, ts_query: str,
-                            limit: int = 250) -> tuple[list[str], int]:
-    """
-    Search Typesense for ts_query, then filter results in-memory against
-    glob_pattern — no filesystem glob expansion required.
-
-    Returns (matched_file_list, total_ts_hits).
-    """
-    ts_files = _files_from_search(query=ts_query, limit=min(limit, 250))
-    rx       = _glob_to_regex(glob_pattern)
-    matched  = [f for f in ts_files if rx.match(f.replace("\\", "/"))]
-    return matched, len(ts_files)
+    lines.append("")
+    lines.append("Do NOT fall back to grep. Repeat search_code with sub= or use query_ast with files= glob.")
+    return "\n".join(lines)
 
 
 # ── MCP server ────────────────────────────────────────────────────────────────
@@ -171,10 +207,11 @@ def search_code(
                "text"       — filename + class/method names + full content (default)
                "symbols"    — class/interface/method names only
                "implements" — files where query type appears in base_types (T1 field)
-               "callers"    — files where query method appears in call_sites (T1 field)
+               "calls"      — files where query method appears in call_sites (T1 field)
                "uses"       — files where query type appears in type declarations (T2)
                "sig"        — files where query appears in method signatures (T1)
-               "attr"       — files decorated with query attribute name (T2)
+               "attrs"      — files decorated with query attribute name (T2)
+               "casts"      — files with explicit (TYPE)expr casts to query type (T1)
         root:  Named source root to search (empty = default root).
                Configure roots in config.json under the "roots" key.
         debug: Show matched fields, full signature list, and raw match details per
@@ -197,16 +234,23 @@ def search_code(
             limit        = limit,
             symbols_only = (mode == "symbols"),
             implements   = (mode == "implements"),
-            callers      = (mode == "callers"),
+            calls        = (mode == "calls"),
             sig          = (mode == "sig"),
             uses         = (mode == "uses"),
-            attr         = (mode == "attr"),
+            attrs        = (mode == "attrs"),
+            casts        = (mode == "casts"),
             collection   = collection,
         )
     except SystemExit:
         return ("Typesense search failed. Is the server running?\n"
                 "Start it with: ts start\n"
                 "Check status with: ts status")
+
+    total = result.get("found", 0)
+    if total > limit:
+        return _queue_warning() + _search_too_broad_hint(
+            result, total, limit, sub, ext, _src_root
+        )
 
     buf = io.StringIO()
     sys.stdout, old = buf, sys.stdout
@@ -218,328 +262,267 @@ def search_code(
     return _queue_warning() + (buf.getvalue().strip() or "No results found.")
 
 
-@mcp.tool()
-def query_ast(
-    mode:         str,
-    pattern:      str = "",
-    search_query: str = "",
-    search_sub:   str = "",
-    files:        str = "",
-    context_lines: int = 0,
-    count_only:   bool = False,
-    root:         str = "",
-) -> str:
-    """
-    Structural C# AST query using tree-sitter.
-    Semantically precise: skips comments and string literals, understands syntax.
-    PREFER THIS TOOL OVER GREP for C# structural queries. Use instead of text
-    search when you need exact type references or call sites.
+_QUERY_CODEBASE_LIMIT = 250
 
-    Args:
-        mode:          Query type — one of:
-                       "uses"            every type reference to TYPE in declarations
-                       "calls"           every call site of METHOD.
-                                         Accepts bare name ("Create") or qualified
-                                         name ("Factory.Create") to restrict to
-                                         a specific class.
-                       "implements"      types that inherit or implement TYPE
-                       "field_type"      fields/properties declared with TYPE (migration analysis)
-                       "param_type"      method/constructor parameters typed as TYPE
-                       "casts"           every explicit cast expression (TYPE)expr
-                       "ident"           every identifier occurrence (semantic grep — skips comments/strings)
-                       "member_accesses" all .Member accesses on locals/params declared as TYPE.
-                                         Use to discover which properties callers read from a value,
-                                         e.g. what fields are used from a result object after a factory call.
-                       "methods"         all method/field/property signatures
-                       "fields"          all field/property declarations with types
-                       "classes"         all type declarations with base types
-                       "find"            full source body of method/type named NAME
-                       "params"          parameter list of METHOD
-                       "attrs"           all [Attribute] decorators
-                       "usings"          all using directives
-        pattern:       The TYPE, METHOD, or NAME to search for.
-                       Required for: uses, calls, implements, find, params, member_accesses.
-                       Optional for: attrs (filters by attribute name when provided).
-        search_query:  Typesense query to pre-filter files (STRONGLY RECOMMENDED).
-                       Finds ~50 most relevant files via the index before parsing.
-                       Example: use "Blobber" to find files mentioning Blobber.
-        search_sub:    Subsystem to scope the Typesense pre-filter search.
-                       This is the FIRST directory component of the file path
-                       relative to the source root — not a deeply nested folder.
-                       Example: "src/myapp/submodule/foo.cs" → search_sub="myapp".
-        files:         Glob pattern for direct file query. Accepts Windows
-                       forward-slash, Windows backslash, or WSL /mnt/ paths —
-                       all are normalised automatically. $SRC_ROOT is substituted.
-                       Examples: "$SRC_ROOT/myapp/services/**/*.cs"
-                                 "c:/myproject/src/mymodule/**/*.cs"
-                                 "c:\\myproject\\src\\mymodule\\**\\*.cs"
-                       Use this for comprehensive searches (scans every file).
-        context_lines: Surrounding source lines to show per match (like grep -C N).
-        count_only:    Return match counts per file instead of full match text.
-        root:          Named source root to query (empty = default root).
 
-    Examples:
-        query_ast("uses", "StorageProvider", search_query="StorageProvider", search_sub="myapp")
-        query_ast("calls", "DeleteItems", search_query="DeleteItems", search_sub="myapp")
-        query_ast("calls", "Factory.Create", files="$SRC_ROOT/myapp/**/*.cs")
-        query_ast("implements", "IStorageProvider", search_query="IStorageProvider")
-        query_ast("field_type", "StorageProvider", search_query="StorageProvider")
-        query_ast("field_type", "IStorageProvider", search_query="IStorageProvider")
-        query_ast("param_type", "StorageProvider", search_query="StorageProvider", search_sub="myapp")
-        query_ast("member_accesses", "ResultType", files="$SRC_ROOT/myapp/**/*.cs")
-        query_ast("methods", files="$SRC_ROOT/myapp/services/ItemProcessor.cs")
-        query_ast("find", "DeleteItems", files="$SRC_ROOT/myservice/StorageApi.cs")
-        query_ast("uses", "StorageProvider", search_query="StorageProvider", search_sub="myapp", count_only=True)
-    """
-    import glob as _glob
-    from query import process_file
-    from config import get_root, ROOTS
-
-    try:
-        _collection, _src_root = get_root(root)
-    except ValueError as e:
-        return f"Error: {e}\nConfigured roots: {', '.join(sorted(ROOTS))}"
-
-    VALID_MODES = ("uses", "calls", "implements", "methods", "fields",
-                   "classes", "find", "params", "attrs", "usings",
-                   "field_type", "param_type", "casts", "ident", "member_accesses")
-
-    m = mode.lower().strip().replace("-", "_")
-    if m not in VALID_MODES:
-        return f"Unknown mode: {mode!r}. Valid modes: {', '.join(VALID_MODES)}"
-
-    _PATTERN_REQUIRED = ("uses", "calls", "implements", "find", "params",
-                         "field_type", "param_type", "casts", "ident", "member_accesses")
-    if m in _PATTERN_REQUIRED and not pattern:
-        return (f"Mode '{m}' requires a pattern argument. "
-                f"Example: query_ast('{m}', 'TypeOrMethodName', search_query='...')")
-
-    # ── Resolve file list ─────────────────────────────────────────────────────
-    _prefilter_note = ""
-
-    if search_query:
-        file_list = _do_files_from_search(
-            search_query, sub=search_sub or None, limit=50,
-            collection=_collection, src_root=_src_root,
-        )
-    elif files:
-        files = _normalize_files_glob(files, src_root=_src_root)
-        _FILE_LIMIT = 250
-        file_list = []
-        for _f in _glob.iglob(files, recursive=True):
-            if os.path.isfile(_f):
-                file_list.append(_f)
-                if len(file_list) > _FILE_LIMIT:
-                    break
-        if not file_list:
-            return f"No files found matching glob: {files}"
-        if len(file_list) > _FILE_LIMIT:
-            sq = pattern or "your search term"
-            return (
-                f"Glob matched >{_FILE_LIMIT} files — too broad for tree-sitter scanning.\n"
-                f"Use search_query to pre-filter via Typesense instead:\n"
-                f"  query_ast('{m}', '{pattern}', search_query='{sq}', search_sub='mymodule')\n"
-                f"Or use search_code('{sq}') to locate relevant files first."
-            )
-        file_list.sort()
-        _prefilter_note = f"[glob: {len(file_list)} files]\n"
-    else:
-        return ("Provide either search_query (recommended for large subsystems) "
-                "or a files glob pattern.")
-
-    if not file_list:
-        return "No matching files found in index or on disk."
-
-    # ── Run tree-sitter query ─────────────────────────────────────────────────
+def _run_ast_on_files(
+    file_list: list[str],
+    m: str,
+    pattern: str,
+    context_lines: int,
+    src_root: str,
+    lang: str,
+) -> tuple[str, int]:
+    """Run tree-sitter query over file_list. Returns (output_text, file_match_count)."""
+    from query import process_file, process_py_file
     buf = io.StringIO()
     sys.stdout, old = buf, sys.stdout
     match_counts: dict[str, int] = {}
     try:
         for fpath in file_list:
-            n = process_file(
+            fn = process_py_file if lang == "py" else process_file
+            n = fn(
                 path       = fpath,
                 mode       = m,
                 mode_arg   = pattern,
                 show_path  = True,
                 count_only = False,
                 context    = context_lines,
-                src_root   = _src_root,
+                src_root   = src_root,
             )
             if n:
                 match_counts[fpath] = n
     finally:
         sys.stdout = old
 
-    if count_only:
-        rows = sorted(match_counts.items(), key=lambda x: -x[1])
-        lines = [f"  {n:4d}  {os.path.basename(p)}" for p, n in rows]
-        total = sum(match_counts.values())
-        lines.append(f"\nTotal: {total} matches in {len(match_counts)} files "
-                     f"(searched {len(file_list)} files)")
-        return _prefilter_note + "\n".join(lines)
-
     output = buf.getvalue().strip()
-    if not output:
-        return (_prefilter_note or "") + f"No matches found (searched {len(file_list)} files)."
-
-    # Cap output to ~200 lines to avoid context overflow
     output_lines = output.splitlines()
-    if len(output_lines) > 200:
-        output = "\n".join(output_lines[:200])
-        output += f"\n\n[truncated — {len(output_lines) - 200} more lines]"
-
-    return _prefilter_note + output
+    if len(output_lines) > 300:
+        output = "\n".join(output_lines[:300])
+        output += f"\n\n[truncated — {len(output_lines) - 300} more lines]"
+    return output, len(match_counts)
 
 
 @mcp.tool()
-def query_py(
+def query_codebase(
     mode:          str,
-    pattern:       str = "",
-    search_query:  str = "",
-    search_sub:    str = "",
-    files:         str = "",
+    pattern:       str,
+    sub:           str = "",
+    ext:           str = "",
     context_lines: int = 0,
-    count_only:    bool = False,
     root:          str = "",
 ) -> str:
     """
-    Structural Python AST query using tree-sitter.
-    Semantically precise: skips comments and string literals, understands syntax.
-    PREFER THIS TOOL OVER GREP for Python structural queries. Use instead of
-    text search when you need exact call sites, class hierarchies, etc.
+    Typesense pre-filter + tree-sitter AST in one call.
+    Returns exact line-level results. NEVER returns partial results.
+
+    If the search matches more than 250 files, returns an error with a
+    per-subsystem breakdown — repeat with sub= to narrow, or use
+    query_single_file for a specific file.
+
+    For listing modes that enumerate file contents without filtering
+    (methods, fields, classes, usings, imports) use query_single_file.
 
     Args:
-        mode:          Query type — one of:
-                       "classes"    all class definitions with base classes
-                       "methods"    all function/method definitions with signatures
-                       "calls"      every call site of a function/method name
-                       "implements" classes that inherit from the given base class
-                       "ident"      every identifier occurrence (semantic grep)
-                       "find"       full source body of function/class named NAME
-                       "decorators" all decorators, optionally filtered by name
-                       "imports"    all import statements
-                       "params"     parameter list of a function
-        pattern:       The name to search for.
-                       Required for: calls, implements, ident, find, params.
-                       Optional for: decorators (filters by decorator name when provided).
-        search_query:  Typesense query to pre-filter files (STRONGLY RECOMMENDED).
-                       Finds ~50 most relevant Python files before tree-sitter parsing.
-                       Example: use "MyBaseClass" to find files mentioning MyBaseClass.
-        search_sub:    Subsystem to scope the Typesense pre-filter search.
-                       This is the FIRST directory component of the file path
-                       relative to the source root — not a deeply nested folder.
-                       Example: "src/myapp/submodule/foo.py" → search_sub="myapp".
-        files:         Glob pattern for direct file query. $SRC_ROOT is substituted.
-                       Examples: "$SRC_ROOT/myapp/**/*.py"
-                       Use this for comprehensive searches (scans every file).
-        context_lines: Surrounding source lines to show per match (like grep -C N).
-        count_only:    Return match counts per file instead of full match text.
-        root:          Named source root to query (empty = default root).
+        mode:    Search + AST mode. All modes run Typesense pre-filter then
+                 tree-sitter AST to return exact line numbers.
+                 C#: text, symbols, sig, uses, calls, implements, casts,
+                     field_type, param_type, ident, member_accesses, find,
+                     params, attrs
+                 Python (ext="py"): calls, implements, ident, find,
+                     params, decorators
+        pattern: Type/method/name to search for. Used for both the
+                 Typesense pre-filter and the AST query.
+        sub:     Narrow to a subsystem — the FIRST path component only (the top-level
+                 directory name). Sub-directories are NOT valid sub= values; always
+                 use the immediate child of the source root.
+        ext:     File extension ("cs" or "py"). Default: cs.
+        context_lines: Surrounding source lines per match (like grep -C N).
+        root:    Named source root (empty = default).
 
     Examples:
-        query_py("classes", search_query="MyBaseClass")
-        query_py("calls", "fetch_data", search_query="fetch_data", search_sub="myapp")
-        query_py("implements", "BaseHandler", search_query="BaseHandler")
-        query_py("methods", files="$SRC_ROOT/myapp/services/processor.py")
-        query_py("find", "process", files="$SRC_ROOT/myapp/processor.py")
-        query_py("decorators", "route", search_query="route", search_sub="myapp")
-        query_py("params", "fetch_data", search_query="fetch_data")
+        query_codebase("casts", "BlobStore")
+        query_codebase("uses", "IAbsBlobStore", sub="sts")
+        query_codebase("calls", "WriteBlobs", sub="stsom")
+        query_codebase("implements", "IAbsBlobStore")
+        query_codebase("attrs", "Obsolete", sub="spo")
+        query_codebase("find", "WriteBlobs", sub="sts")
     """
-    import glob as _glob
-    from query import process_py_file
-    from config import get_root, ROOTS
+    import json as _json
+    import urllib.request as _urlreq
+    import urllib.error as _urlerr
+    from config import API_PORT, HOST, API_KEY as _API_KEY, ROOTS
+
+    # Listing modes enumerate file contents without a meaningful pattern —
+    # they belong in query_single_file, not in a codebase-wide search.
+    _LISTING_MODES = frozenset(("methods", "fields", "classes", "usings", "imports"))
+    m = mode.lower().strip().replace("-", "_")
+    if m in _LISTING_MODES:
+        return (f"Mode '{m}' lists file contents without filtering — "
+                f"use query_single_file instead:\n"
+                f"  query_single_file({m!r}, file='$SRC_ROOT/path/to/File.cs')")
+
+    # Call the indexserver /query-codebase endpoint
+    payload = _json.dumps({
+        "mode":    m,
+        "pattern": pattern,
+        "sub":     sub or "",
+        "ext":     (ext or "cs").lstrip("."),
+        "root":    root or "",
+        "limit":   _QUERY_CODEBASE_LIMIT,
+    }).encode()
+
+    req = _urlreq.Request(
+        f"http://{HOST}:{API_PORT}/query-codebase",
+        data=payload,
+        headers={
+            "X-TYPESENSE-API-KEY": _API_KEY,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with _urlreq.urlopen(req, timeout=120) as r:
+            data = _json.loads(r.read())
+    except _urlerr.HTTPError as e:
+        try:
+            body = _json.loads(e.read())
+            err    = body.get("error", str(e))
+            detail = body.get("detail", "")
+        except Exception:
+            err, detail = str(e), ""
+        msg = f"TSCODESEARCH ERROR — do not fall back to Grep/Glob; investigate and fix.\nError from indexserver: {err}"
+        if detail:
+            msg += f"\nDetail: {detail}"
+        return _queue_warning() + msg
+    except Exception as e:
+        return (_queue_warning() +
+                f"TSCODESEARCH ERROR — do not fall back to Grep/Glob; investigate and fix.\n"
+                f"Could not reach indexserver (port {API_PORT}): {e}\n"
+                f"Is the server running? Start it with: ts start")
+
+    found   = data.get("found", 0)
+    hits    = data.get("hits", [])
+    facets  = data.get("facet_counts", [])
+
+    if data.get("overflow"):
+        # Build per-subsystem breakdown from Typesense facets
+        lines = [
+            f"Too many files ({found}) — narrowing required.",
+            f"Repeat with sub= to scope to one subsystem, then re-run.",
+            "",
+        ]
+        if not sub:
+            subsystem_counts: list[tuple[str, int]] = []
+            for fc in facets:
+                if fc.get("field_name") == "subsystem":
+                    for c in fc.get("counts", []):
+                        subsystem_counts.append((c["value"], int(c["count"])))
+            if subsystem_counts:
+                subsystem_counts.sort(key=lambda x: -x[1])
+                lines.append(f"Subsystems with '{pattern}' hits — re-run with sub=<name>:")
+                for name, count in subsystem_counts[:25]:
+                    lines.append(f"  query_codebase({m!r}, {pattern!r}, sub={name!r})  "
+                                 f"# ~{count} files")
+            else:
+                lines.append("(No subsystem facet available — add sub= or ext= to narrow.)")
+        else:
+            lines.append("(Already scoped to a subsystem — narrow further with a more specific query.)")
+        lines.append("")
+        lines.append("Use query_single_file for a specific known file.")
+        return _queue_warning() + "\n".join(lines)
+
+    if not hits:
+        header = (f"[Typesense: {found} files | AST scanned: {found} "
+                  f"| files with matches: 0]\n")
+        return _queue_warning() + header + "No AST matches found."
+
+    # Format results as text
+    output_lines: list[str] = []
+    for hit in hits:
+        rel_path = hit["document"].get("relative_path", "")
+        for match in hit.get("matches", []):
+            line_num = match.get("line", 0)
+            text     = match.get("text", "").rstrip()
+            output_lines.append(f"{rel_path}:{line_num}: {text}")
+
+    n_files_matched = len(hits)
+    header = (f"[Typesense: {found} files | AST scanned: {found} "
+              f"| files with matches: {n_files_matched}]\n")
+
+    output = "\n".join(output_lines)
+    if not output:
+        return _queue_warning() + header + "No AST matches found."
+    return _queue_warning() + header + output
+
+
+@mcp.tool()
+def query_single_file(
+    mode:          str,
+    pattern:       str = "",
+    file:          str = "",
+    context_lines: int = 0,
+    root:          str = "",
+) -> str:
+    """
+    Run a tree-sitter AST query on a single file. No Typesense search.
+
+    Supports all modes including listing modes (methods, fields, classes,
+    usings, imports) that enumerate file contents without a pattern.
+    Works well on large source files — tree-sitter parses the whole file
+    in memory and returns only the matching nodes.
+
+    Args:
+        mode:    AST query mode.
+                 Pattern-required: uses, calls, implements, casts, field_type,
+                   param_type, ident, member_accesses, find, params, attrs,
+                   decorators (C# and/or Python)
+                 Listing (no pattern needed): methods, fields, classes,
+                   usings (C#), imports (Python)
+        pattern: Type/method/name to search for. Required for pattern modes;
+                 omit for listing modes.
+        file:    Path to the file. $SRC_ROOT is substituted. Accepts Windows
+                 paths, WSL /mnt/ paths, and relative paths from src root.
+        context_lines: Surrounding source lines per match (like grep -C N).
+        root:    Named source root (empty = default).
+
+    Examples:
+        query_single_file("methods", file="$SRC_ROOT/sts/stsom/AbsIntegration.cs")
+        query_single_file("classes", file="$SRC_ROOT/sts/stsom/AbsIntegration.cs")
+        query_single_file("casts", "BlobStore", file="$SRC_ROOT/sts/stsom/Foo.cs")
+        query_single_file("find", "WriteBlobs", file="$SRC_ROOT/spo/Bar.cs")
+        query_single_file("uses", "IAbsBlobStore", file="$SRC_ROOT/sts/stsom/Foo.cs")
+    """
+    from query import process_file, process_py_file
+    from config import get_root, ROOTS, to_native_path
 
     try:
         _collection, _src_root = get_root(root)
     except ValueError as e:
         return f"Error: {e}\nConfigured roots: {', '.join(sorted(ROOTS))}"
 
-    VALID_MODES = ("classes", "methods", "calls", "implements", "ident",
-                   "find", "decorators", "imports", "params")
+    if not file:
+        return "file= is required."
 
-    m = mode.lower().strip()
-    if m not in VALID_MODES:
-        return f"Unknown mode: {mode!r}. Valid modes: {', '.join(VALID_MODES)}"
+    abs_path = _normalize_files_glob(file, src_root=_src_root)
 
-    _PATTERN_REQUIRED = ("calls", "implements", "ident", "find", "params")
-    if m in _PATTERN_REQUIRED and not pattern:
-        return (f"Mode '{m}' requires a pattern argument. "
-                f"Example: query_py('{m}', 'FunctionOrClassName', search_query='...')")
+    if not os.path.isfile(abs_path):
+        return f"File not found: {abs_path}"
 
-    # ── Resolve file list ─────────────────────────────────────────────────────
-    _prefilter_note = ""
+    _ext = os.path.splitext(abs_path)[1].lower()
+    _lang = "py" if _ext == ".py" else "cs"
 
-    if search_query:
-        file_list = _do_files_from_search(
-            search_query, sub=search_sub or None, ext="py", limit=50,
-            collection=_collection, src_root=_src_root,
-        )
-    elif files:
-        files = _normalize_files_glob(files, src_root=_src_root)
-        _FILE_LIMIT = 250
-        file_list = []
-        for _f in _glob.iglob(files, recursive=True):
-            if os.path.isfile(_f):
-                file_list.append(_f)
-                if len(file_list) > _FILE_LIMIT:
-                    break
-        if not file_list:
-            return f"No files found matching glob: {files}"
-        if len(file_list) > _FILE_LIMIT:
-            sq = pattern or "your search term"
-            return (
-                f"Glob matched >{_FILE_LIMIT} files — too broad for tree-sitter scanning.\n"
-                f"Use search_query to pre-filter via Typesense instead:\n"
-                f"  query_py('{m}', '{pattern}', search_query='{sq}', search_sub='mymodule')\n"
-                f"Or use search_code('{sq}', ext='py') to locate relevant files first."
-            )
-        file_list.sort()
-        _prefilter_note = f"[glob: {len(file_list)} files]\n"
-    else:
-        return ("Provide either search_query (recommended for large codebases) "
-                "or a files glob pattern.")
+    m = mode.lower().strip().replace("-", "_")
 
-    if not file_list:
-        return "No matching Python files found in index or on disk."
+    output, _ = _run_ast_on_files(
+        [abs_path], m, pattern, context_lines, _src_root, _lang
+    )
 
-    # ── Run tree-sitter query ─────────────────────────────────────────────────
-    buf = io.StringIO()
-    sys.stdout, old = buf, sys.stdout
-    match_counts: dict[str, int] = {}
-    try:
-        for fpath in file_list:
-            n = process_py_file(
-                path       = fpath,
-                mode       = m,
-                mode_arg   = pattern,
-                show_path  = True,
-                count_only = False,
-                context    = context_lines,
-                src_root   = _src_root,
-            )
-            if n:
-                match_counts[fpath] = n
-    finally:
-        sys.stdout = old
-
-    if count_only:
-        rows = sorted(match_counts.items(), key=lambda x: -x[1])
-        lines_out = [f"  {n:4d}  {os.path.basename(p)}" for p, n in rows]
-        total = sum(match_counts.values())
-        lines_out.append(f"\nTotal: {total} matches in {len(match_counts)} files "
-                         f"(searched {len(file_list)} files)")
-        return _prefilter_note + "\n".join(lines_out)
-
-    output = buf.getvalue().strip()
+    rel = os.path.relpath(abs_path, _src_root).replace("\\", "/")
+    header = f"[{rel}]\n"
     if not output:
-        return (_prefilter_note or "") + f"No matches found (searched {len(file_list)} files)."
-
-    output_lines = output.splitlines()
-    if len(output_lines) > 200:
-        output = "\n".join(output_lines[:200])
-        output += f"\n\n[truncated — {len(output_lines) - 200} more lines]"
-
-    return _prefilter_note + output
+        return header + "No matches found."
+    return header + output
 
 
 @mcp.tool()
@@ -802,7 +785,7 @@ def manage_service(action: str = "status") -> str:
         timeout = 120
     else:
         cmd = ["bash", ts_sh, act]
-        timeout = 90 if act in ("start", "restart") else 30
+        timeout = 150 if act in ("start", "restart") else 30
 
     try:
         result = subprocess.run(

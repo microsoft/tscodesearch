@@ -534,6 +534,84 @@ def test_verify_lifecycle(port, api_key):
         _fail("POST /verify/stop (not running)", f"expected 404, got {code} body={body}")
 
 
+def test_query_codebase(port, api_key):
+    """Tests for POST /query-codebase endpoint."""
+
+    # Unknown mode → 400
+    code, body = _post(port, "/query-codebase", api_key,
+                       body={"mode": "nonexistent_mode", "pattern": "Foo"})
+    if code == 400:
+        _pass("POST /query-codebase unknown mode → 400",
+              body.get("error", "") if body else "")
+    else:
+        _fail("POST /query-codebase unknown mode", f"expected 400, got {code} body={body}")
+
+    # Valid mode, empty pattern — should return a valid response
+    code, body = _post(port, "/query-codebase", api_key,
+                       body={"mode": "uses", "pattern": "", "ext": "cs"})
+    if code == 200 and body is not None:
+        _pass("POST /query-codebase valid mode → 200")
+        # Check shape
+        has_found    = "found"    in body
+        has_overflow = "overflow" in body
+        has_hits     = "hits"     in body
+        has_facets   = "facet_counts" in body
+        if has_found and has_overflow and has_hits and has_facets:
+            _pass("POST /query-codebase response shape correct",
+                  f"found={body['found']} overflow={body['overflow']} hits={len(body['hits'])}")
+        else:
+            _fail("POST /query-codebase response shape",
+                  f"missing keys — got {list(body.keys())}")
+    else:
+        _fail("POST /query-codebase valid mode", f"code={code} body={body}")
+
+    # Overflow case: use limit=1 — if any files match, should overflow
+    code, body = _post(port, "/query-codebase", api_key,
+                       body={"mode": "uses", "pattern": "string", "limit": 1})
+    if code == 200 and body is not None:
+        if body.get("overflow"):
+            _pass("POST /query-codebase overflow case works",
+                  f"found={body.get('found')} overflow=true hits={len(body.get('hits', []))}")
+            if body.get("hits") == []:
+                _pass("POST /query-codebase overflow: hits is empty list")
+            else:
+                _fail("POST /query-codebase overflow: hits should be empty", str(body.get("hits")))
+        elif body.get("found", 0) == 0:
+            _skip("POST /query-codebase overflow case", "no 'string' matches — index may be empty")
+        else:
+            _fail("POST /query-codebase overflow", f"expected overflow=true, got body={body}")
+    else:
+        _fail("POST /query-codebase overflow", f"code={code} body={body}")
+
+    # Hits with matches have document field
+    code, body = _post(port, "/query-codebase", api_key,
+                       body={"mode": "uses", "pattern": "string", "limit": 50})
+    if code == 200 and body is not None and not body.get("overflow"):
+        hits = body.get("hits", [])
+        if hits:
+            h = hits[0]
+            has_doc     = "document"  in h
+            has_matches = "matches"   in h
+            if has_doc and has_matches:
+                doc = h["document"]
+                doc_ok = "relative_path" in doc
+                _pass("POST /query-codebase hits have document+matches",
+                      f"rel_path={doc.get('relative_path','?')} matches={len(h['matches'])}")
+                if doc_ok:
+                    _pass("POST /query-codebase document has relative_path")
+                else:
+                    _fail("POST /query-codebase document missing relative_path", str(doc))
+            else:
+                _fail("POST /query-codebase hit missing document or matches", str(h))
+        else:
+            _skip("POST /query-codebase hit document check",
+                  "no hits returned (empty index or no matches for 'string')")
+    elif body and body.get("overflow"):
+        _skip("POST /query-codebase hit document check", "overflowed at limit=50")
+    else:
+        _fail("POST /query-codebase document check", f"code={code} body={body}")
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -578,6 +656,7 @@ def main():
     test_status(api_port, api_key)
     test_unknown_route(api_port, api_key)
     test_check_ready_bad_root(api_port, api_key)
+    test_query_codebase(api_port, api_key)
 
     if args.no_verify:
         _skip("POST /check-ready", "--no-verify")

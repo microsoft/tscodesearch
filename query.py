@@ -146,7 +146,7 @@ def _field_type(node, src) -> str:
 
 def _build_sig(node, src) -> str:
     """Build 'RetType Name(Type param, ...)' for a method/ctor node."""
-    ret   = node.child_by_field_name("type")
+    ret   = node.child_by_field_name("returns") or node.child_by_field_name("type")
     name  = node.child_by_field_name("name")
     params = node.child_by_field_name("parameters")
 
@@ -444,16 +444,72 @@ def q_params(src, tree, lines, method_name):
         for p in _find_all(params_node, lambda n: n.type == "parameter"):
             pt   = p.child_by_field_name("type")
             pn   = p.child_by_field_name("name")
-            dfl  = p.child_by_field_name("default")
             pt_t = _text(pt, src).strip() if pt else ""
             pn_t = _text(pn, src).strip() if pn else ""
-            df_t = f" = {_text(dfl.children[-1], src).strip()}" if dfl and dfl.children else ""
-            # Check for ref/out/in/params modifiers
-            mods = [_text(c, src) for c in p.children if c.is_named and c.type in
-                    ("parameter_modifier",)]
+            # Default value: no named "default" field in this grammar —
+            # the '=' and value are direct children of the parameter node.
+            df_t = ""
+            children = p.children
+            for idx, ch in enumerate(children):
+                if not ch.is_named and _text(ch, src).strip() == "=" and idx + 1 < len(children):
+                    df_t = f" = {_text(children[idx + 1], src).strip()}"
+                    break
+            # Modifiers (ref/out/in/params) are "modifier" nodes in this grammar.
+            mods = [_text(c, src) for c in children
+                    if c.is_named and c.type in ("modifier", "parameter_modifier")]
             mod_t = " ".join(mods) + " " if mods else ""
             param_lines.append(f"  {mod_t}{pt_t} {pn_t}{df_t}".rstrip())
         results.append((_line(node), "\n".join(param_lines) or "(no parameters)"))
+    return results
+
+
+def q_sig(src, tree, lines, type_name):
+    """
+    Find method/constructor declarations whose return type or any parameter
+    type references TYPE.
+
+    Useful for locating method signatures that take or return a given type.
+    TYPE matching is exact on the bare (non-generic) name.
+    """
+    results = []
+    for node in _find_all(tree.root_node,
+                          lambda n: n.type in ("method_declaration",
+                                               "constructor_declaration",
+                                               "local_function_statement")):
+        # Check return type
+        type_node = node.child_by_field_name("type")
+        ret_type_txt = _text(type_node, src).strip() if type_node else ""
+        ret_matches = type_name in _type_names(ret_type_txt)
+
+        # Check parameter types
+        params_node = node.child_by_field_name("parameters")
+        param_matches = False
+        if params_node:
+            for p in _find_all(params_node, lambda n: n.type == "parameter"):
+                pt = p.child_by_field_name("type")
+                if pt and type_name in _type_names(_text(pt, src).strip()):
+                    param_matches = True
+                    break
+
+        if not ret_matches and not param_matches:
+            continue
+
+        name_node = node.child_by_field_name("name")
+        mname = _text(name_node, src).strip() if name_node else "<anonymous>"
+
+        # Build param list text
+        param_parts = []
+        if params_node:
+            for p in _find_all(params_node, lambda n: n.type == "parameter"):
+                pt = p.child_by_field_name("type")
+                pn = p.child_by_field_name("name")
+                pt_t = _text(pt, src).strip() if pt else ""
+                pn_t = _text(pn, src).strip() if pn else ""
+                param_parts.append(f"{pt_t} {pn_t}".strip())
+        params_text = ", ".join(param_parts)
+
+        sig_text = f"{ret_type_txt} {mname}({params_text})".strip()
+        results.append((_line(node), sig_text))
     return results
 
 
@@ -648,8 +704,13 @@ def q_member_accesses(src, tree, lines, type_name):
                     elem = t.child_by_field_name("type") if t.type == "array_type" else t
                     if type_name in _type_names(_text(elem, src)):
                         array_names.add(name)
-            elif expr.type in ("as_expression", "cast_expression"):
+            elif expr.type == "cast_expression":
                 t = expr.child_by_field_name("type")
+                if t and type_name in _type_names(_text(t, src)):
+                    var_names.add(name)
+            elif expr.type == "as_expression":
+                # Grammar: as_expression has "right" field for the target type.
+                t = expr.child_by_field_name("right") or expr.child_by_field_name("type")
                 if t and type_name in _type_names(_text(t, src)):
                     var_names.add(name)
 
@@ -742,7 +803,8 @@ def _enclosing_type_name(node, src) -> str:
 # ── Typesense file resolver ───────────────────────────────────────────────────
 
 def files_from_search(query, sub=None, ext="cs", limit=50,
-                       collection=None, src_root=None):
+                       collection=None, src_root=None,
+                       query_by=None):
     """
     Run a Typesense search and return the local file paths of matching documents.
     Faster than globbing when you already know roughly which files are relevant.
@@ -750,6 +812,12 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
     collection: Typesense collection name (defaults to COLLECTION from config).
     src_root:   Source root directory for constructing absolute paths
                 (defaults to SRC_ROOT from config).
+    query_by:   Typesense query_by field list override.  Defaults to broad full-text
+                search ("filename,symbols,class_names,method_names,content").
+                For listing modes (methods/fields/classes) pass a signature-focused
+                string like "method_sigs,class_names,base_types,type_refs,method_names,filename"
+                to avoid pulling in files that only mention the term in call sites or
+                comments (which would cause unrelated method/field defs to appear).
     """
     from config import COLLECTION, SRC_ROOT
 
@@ -764,7 +832,7 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
 
     params = {
         "q":         query,
-        "query_by":  "filename,symbols,class_names,method_names,content",
+        "query_by":  query_by or "filename,symbols,class_names,method_names,content",
         "per_page":  limit,
         "prefix":    "false",
         "num_typos": "1",

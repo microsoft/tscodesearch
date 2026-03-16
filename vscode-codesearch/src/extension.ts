@@ -4,55 +4,14 @@ import * as path from 'path';
 
 import {
     CodesearchConfig,
-    TypesenseHit,
+    MatchItem,
     MODES,
     loadConfig,
     getRoots,
-    doSearch,
-    queryAst,
+    runSearchPipeline,
     resolveFilePath,
 } from './client';
 import { BUILD_DATE } from './buildInfo';
-
-// ---------------------------------------------------------------------------
-// Per-file match items (shown as tree leaves)
-// ---------------------------------------------------------------------------
-
-interface MatchItem { text: string; line?: number; }
-
-function computeMatchItems(
-    hit: TypesenseHit,
-    mode: string,
-): MatchItem[] {
-    const doc = hit.document;
-    const hl = hit.highlights ?? [];
-    switch (mode) {
-        case 'text': {
-            for (const h of hl) {
-                if (h.field === 'content') {
-                    const s = h.snippet ?? h.snippets?.[0];
-                    if (s) { return [{ text: s.replace(/<\/?mark>/g, '').trim() }]; }
-                }
-            }
-            return (doc.method_names ?? []).slice(0, 6).map((n) => ({ text: n }));
-        }
-        case 'symbols':
-            return [
-                ...(doc.class_names ?? []).slice(0, 3).map((n) => ({ text: n })),
-                ...(doc.method_names ?? []).slice(0, 6).map((n) => ({ text: n })),
-            ].slice(0, 8);
-        case 'implements':
-            return (doc.base_types ?? []).map((t) => ({ text: t }));
-        case 'sig':
-            return (doc.method_sigs ?? []).slice(0, 5).map((s) => ({ text: s }));
-        case 'uses':
-            return (doc.type_refs ?? []).slice(0, 8).map((t) => ({ text: t }));
-        case 'attr':
-            return (doc.attributes ?? []).map((a) => ({ text: a }));
-        default:
-            return [];
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Config discovery (needs vscode API)
@@ -180,6 +139,12 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 .dot{display:inline-block;animation:blink 1.4s infinite}
 .dot:nth-child(2){animation-delay:.2s}
 .dot:nth-child(3){animation-delay:.4s}
+/* --- capped results --- */
+.cap-hint{padding:6px 10px;font-size:11px;color:var(--vscode-descriptionForeground);font-style:italic;border-bottom:1px solid var(--vscode-panel-border,#333)}
+.cap-loading{padding:2px 8px 2px 24px;font-size:11px;color:var(--vscode-descriptionForeground);font-style:italic}
+.cap-still-capped{padding:6px 8px 6px 24px;font-size:11px;color:var(--vscode-descriptionForeground)}
+.sub-hdr.is-cap{cursor:pointer}
+.sub-hdr.is-cap:hover{background:var(--vscode-list-hoverBackground)}
 ::-webkit-scrollbar{width:8px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--vscode-scrollbarSlider-background);border-radius:4px}
@@ -256,6 +221,12 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
   }
   function hideConfigError() { configErrorEl.style.display = 'none'; resultsEl.style.display = ''; }
 
+  // Current search params — needed when expanding capped subsystems
+  var currentSearch = { query: '', mode: '', ext: '', sub: '', root: '' };
+  // Cached facets and expansion state for capped results
+  var currentFacets = [];
+  var subExpansions = {}; // sub → { state: 'loading'|'loaded'|'capped', hits, found }
+
   function triggerSearch() {
     clearTimeout(timer);
     timer = setTimeout(function() {
@@ -265,10 +236,14 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
         statusEl.textContent = 'Built: ' + BUILD_DATE; statusEl.className = 'status-bar';
         return;
       }
+      subExpansions = {};
       statusEl.innerHTML = 'Searching<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>';
       statusEl.className = 'status-bar';
-      vscode.postMessage({ type: 'search', query: query, mode: modeEl.value,
-        ext: extEl.value.trim(), sub: subEl.value.trim(), root: rootEl.value, limit: 20 });
+      var params = { type: 'search', query: query, mode: modeEl.value,
+        ext: extEl.value.trim(), sub: subEl.value.trim(), root: rootEl.value, limit: 20 };
+      currentSearch = { query: params.query, mode: params.mode, ext: params.ext,
+                        sub: params.sub, root: params.root };
+      vscode.postMessage(params);
     }, 180);
   }
 
@@ -283,73 +258,79 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  function buildTree(hits) {
-    var subs = {};
+  // ── Tree rendering helpers ────────────────────────────────────────────────
+
+  function renderDirTree(hits) {
+    // Groups hits by directory, renders dir+file+match nodes (no sub header).
+    var dirs = {};
     hits.forEach(function(hit) {
-      var doc = hit.document;
-      var sub = doc.subsystem || '';
-      var rel = doc.relative_path || '';
+      var rel = hit.document.relative_path || '';
       var slash = rel.lastIndexOf('/');
       var dir = slash >= 0 ? rel.slice(0, slash) : '';
-      if (!subs[sub]) { subs[sub] = {}; }
-      if (!subs[sub][dir]) { subs[sub][dir] = []; }
-      subs[sub][dir].push(hit);
+      if (!dirs[dir]) { dirs[dir] = []; }
+      dirs[dir].push(hit);
     });
-    return subs;
+    var html = '';
+    Object.keys(dirs).sort().forEach(function(dir) {
+      var files = dirs[dir];
+      html += '<div class="dir-node">';
+      html += '<div class="dir-hdr"><span class="chev">&#9660;</span>';
+      html += '<span class="dir-name">' + esc(dir ? dir + '/' : '(root)') + '</span></div>';
+      html += '<div class="dir-body">';
+      files.forEach(function(hit) {
+        var doc = hit.document;
+        var matches = hit._matches || [];
+        var fname = doc.filename || (doc.relative_path || '').split('/').pop() || '';
+        html += '<div class="file-node">';
+        html += '<div class="file-hdr" tabindex="0" data-path="' + esc(doc.relative_path) + '">';
+        html += '<span class="file-name">' + esc(fname) + '</span></div>';
+        if (matches.length > 0) {
+          html += '<div class="file-body">';
+          matches.forEach(function(m, i) {
+            var last = (i === matches.length - 1);
+            var br = last ? '\u2514\u2500' : '\u251c\u2500';
+            var la = (m.line !== undefined && m.line !== null) ? ' data-line="' + m.line + '"' : '';
+            html += '<div class="match-item" tabindex="0" data-path="' + esc(doc.relative_path) + '"' + la + '>';
+            html += '<span class="tree-branch">' + br + '</span>';
+            html += '<span class="match-text">' + esc(m.text) + '</span>';
+            if (m.line !== undefined && m.line !== null) {
+              html += '<span class="match-line">:' + (m.line + 1) + '</span>';
+            }
+            html += '</div>';
+          });
+          html += '</div>';
+        }
+        html += '</div>';
+      });
+      html += '</div></div>'; // dir-body, dir-node
+    });
+    return html;
   }
 
   function renderTree(hits) {
-    var subs = buildTree(hits);
+    // Groups hits by subsystem, then renders subsystem > dir > file > matches.
+    var subs = {};
+    hits.forEach(function(hit) {
+      var sub = hit.document.subsystem || '';
+      if (!subs[sub]) { subs[sub] = []; }
+      subs[sub].push(hit);
+    });
     var html = '';
     Object.keys(subs).sort().forEach(function(sub) {
-      var dirs = subs[sub];
-      var fileCount = Object.keys(dirs).reduce(function(n, d) { return n + dirs[d].length; }, 0);
+      var subHits = subs[sub];
       html += '<div class="sub-node">';
       html += '<div class="sub-hdr"><span class="chev">&#9660;</span>';
       html += sub ? '<span class="sub-name">' + esc(sub) + '</span>'
                   : '<span class="sub-name dim">(no subsystem)</span>';
-      html += '<span class="badge">' + fileCount + '</span></div>';
-      html += '<div class="sub-body">';
-      Object.keys(dirs).sort().forEach(function(dir) {
-        var files = dirs[dir];
-        html += '<div class="dir-node">';
-        html += '<div class="dir-hdr"><span class="chev">&#9660;</span>';
-        html += '<span class="dir-name">' + esc(dir ? dir + '/' : '(root)') + '</span></div>';
-        html += '<div class="dir-body">';
-        files.forEach(function(hit) {
-          var doc = hit.document;
-          var matches = hit._matches || [];
-          var fname = doc.filename || (doc.relative_path || '').split('/').pop() || '';
-          html += '<div class="file-node">';
-          html += '<div class="file-hdr" tabindex="0" data-path="' + esc(doc.relative_path) + '">';
-          html += '<span class="file-name">' + esc(fname) + '</span></div>';
-          if (matches.length > 0) {
-            html += '<div class="file-body">';
-            matches.forEach(function(m, i) {
-              var last = (i === matches.length - 1);
-              var br = last ? '\u2514\u2500' : '\u251c\u2500';
-              var la = (m.line !== undefined && m.line !== null) ? ' data-line="' + m.line + '"' : '';
-              html += '<div class="match-item" tabindex="0" data-path="' + esc(doc.relative_path) + '"' + la + '>';
-              html += '<span class="tree-branch">' + br + '</span>';
-              html += '<span class="match-text">' + esc(m.text) + '</span>';
-              if (m.line !== undefined && m.line !== null) {
-                html += '<span class="match-line">:' + (m.line + 1) + '</span>';
-              }
-              html += '</div>';
-            });
-            html += '</div>';
-          }
-          html += '</div>';
-        });
-        html += '</div></div>'; // dir-body, dir-node
-      });
-      html += '</div></div>'; // sub-body, sub-node
+      html += '<span class="badge">' + subHits.length + '</span></div>';
+      html += '<div class="sub-body">' + renderDirTree(subHits) + '</div>';
+      html += '</div>';
     });
     return html;
   }
 
   function attachTreeHandlers() {
-    resultsEl.querySelectorAll('.sub-hdr').forEach(function(hdr) {
+    resultsEl.querySelectorAll('.sub-hdr:not(.is-cap)').forEach(function(hdr) {
       hdr.addEventListener('click', function() { hdr.parentNode.classList.toggle('collapsed'); });
     });
     resultsEl.querySelectorAll('.dir-hdr').forEach(function(hdr) {
@@ -357,7 +338,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     });
     resultsEl.querySelectorAll('.file-hdr').forEach(function(hdr) {
       hdr.addEventListener('click', function() {
-        vscode.postMessage({ type: 'openFile', relativePath: hdr.dataset.path, root: rootEl.value, query: qEl.value.trim() });
+        vscode.postMessage({ type: 'openFile', relativePath: hdr.dataset.path, root: currentSearch.root, query: currentSearch.query });
       });
       hdr.addEventListener('keydown', function(e) { if (e.key === 'Enter') { hdr.click(); } });
     });
@@ -366,26 +347,154 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
         e.stopPropagation();
         var line = (item.dataset.line !== undefined && item.dataset.line !== '')
           ? parseInt(item.dataset.line, 10) : undefined;
-        vscode.postMessage({ type: 'openFile', relativePath: item.dataset.path, root: rootEl.value, line: line, query: qEl.value.trim() });
+        vscode.postMessage({ type: 'openFile', relativePath: item.dataset.path, root: currentSearch.root, line: line, query: currentSearch.query });
       });
       item.addEventListener('keydown', function(e) { if (e.key === 'Enter') { item.click(); } });
     });
   }
 
+  // ── Capped results rendering ──────────────────────────────────────────────
+
+  function renderCappedTree() {
+    var html = '<div class="cap-hint">Too many results \u2014 click a subsystem to expand</div>';
+    currentFacets.forEach(function(f) {
+      var sub = f.value;
+      var exp = subExpansions[sub];
+      var isOpen = exp && exp.state !== 'idle';
+      html += '<div class="sub-node" id="capped-sub-' + esc(sub) + '">';
+      html += '<div class="sub-hdr is-cap" tabindex="0" data-sub="' + esc(sub) + '">';
+      html += '<span class="chev" style="' + (isOpen ? '' : 'transform:rotate(-90deg)') + '">&#9660;</span>';
+      html += '<span class="sub-name">' + esc(sub) + '</span>';
+      html += '<span class="badge">' + f.count + '</span>';
+      if (exp && exp.state === 'loading') {
+        html += '<span class="cap-loading">Loading\u2026</span>';
+      }
+      html += '</div>';
+      if (exp && exp.state === 'loaded') {
+        html += '<div class="sub-body">';
+        if (exp.hits.length === 0) {
+          html += '<div class="cap-still-capped">No results</div>';
+        } else {
+          if (exp.capped) {
+            html += '<div class="cap-still-capped">Showing ' + exp.hits.length + ' of ' + exp.found
+                  + ' \u2014 narrow further with the Sub filter</div>';
+          }
+          html += renderDirTree(exp.hits);
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    });
+    return html;
+  }
+
+  function attachCappedHandlers() {
+    resultsEl.querySelectorAll('.sub-hdr.is-cap').forEach(function(hdr) {
+      var sub = hdr.dataset.sub;
+      hdr.addEventListener('click', function() { handleSubExpand(sub); });
+      hdr.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') { handleSubExpand(sub); e.preventDefault(); }
+      });
+    });
+    attachTreeHandlers(); // handles any already-expanded file/match nodes
+  }
+
+  function handleSubExpand(sub) {
+    var exp = subExpansions[sub];
+    if (!exp || exp.state === 'idle') {
+      subExpansions[sub] = { state: 'loading' };
+      refreshCappedNode(sub);
+      vscode.postMessage({ type: 'expandSub', sub: sub,
+        query: currentSearch.query, mode: currentSearch.mode,
+        ext: currentSearch.ext, root: currentSearch.root });
+    } else {
+      // Toggle collapse on already-loaded node
+      var node = document.getElementById('capped-sub-' + sub);
+      if (node) { node.classList.toggle('collapsed'); }
+    }
+  }
+
+  function refreshCappedNode(sub) {
+    // Re-render just this subsystem node in place
+    var node = document.getElementById('capped-sub-' + sub);
+    if (!node) { return; }
+    var exp = subExpansions[sub];
+    var isOpen = exp && exp.state !== 'idle';
+    var hdr = node.querySelector('.sub-hdr.is-cap');
+    if (hdr) {
+      var chev = hdr.querySelector('.chev');
+      if (chev) { chev.style.transform = isOpen ? '' : 'rotate(-90deg)'; }
+      // Update loading indicator
+      var existing = hdr.querySelector('.cap-loading');
+      if (exp && exp.state === 'loading') {
+        if (!existing) {
+          var s = document.createElement('span');
+          s.className = 'cap-loading'; s.textContent = 'Loading\u2026';
+          hdr.appendChild(s);
+        }
+      } else if (existing) {
+        existing.remove();
+      }
+    }
+    // Update body
+    var body = node.querySelector('.sub-body');
+    if (exp && exp.state === 'loaded') {
+      if (!body) { body = document.createElement('div'); body.className = 'sub-body'; node.appendChild(body); }
+      var inner = '';
+      if (exp.capped) {
+        inner += '<div class="cap-still-capped">Showing ' + exp.hits.length + ' of ' + exp.found
+               + ' \u2014 narrow further with the Sub filter</div>';
+      }
+      inner += exp.hits.length === 0 ? '<div class="cap-still-capped">No results</div>' : renderDirTree(exp.hits);
+      body.innerHTML = inner;
+      attachTreeHandlers();
+    } else if (body) {
+      body.remove();
+    }
+  }
+
+  // ── Main result display ───────────────────────────────────────────────────
+
   function showResults(data) {
     hideConfigError();
     var hits = data.hits || [];
     var found = data.found || 0;
+    var isCapped = found > hits.length && found > 0;
     var modeLabel = MODES.find(function(m) { return m.key === data.mode; });
     modeLabel = modeLabel ? modeLabel.label : data.mode;
-    statusEl.textContent = found === 0
-      ? 'No results'
-      : found + ' result' + (found === 1 ? '' : 's') + ' \u2014 ' + data.elapsed + 'ms \u2014 ' + modeLabel + ' mode';
+
+    if (isCapped) {
+      statusEl.textContent = found + ' files matched \u2014 too many to show all \u2014 ' + modeLabel + ' mode';
+    } else {
+      statusEl.textContent = found === 0
+        ? 'No results'
+        : found + ' result' + (found === 1 ? '' : 's') + ' \u2014 ' + data.elapsed + 'ms \u2014 ' + modeLabel + ' mode';
+    }
     statusEl.className = 'status-bar';
-    if (hits.length === 0) {
+
+    if (found === 0) {
       resultsEl.innerHTML = '<div class="empty">No results for <strong>' + esc(data.query) + '</strong></div>';
       return;
     }
+
+    if (isCapped) {
+      // Build facet list from the data; fall back to whatever hits we got
+      currentFacets = [];
+      if (data.facet_counts) {
+        var subFacet = data.facet_counts.find(function(f) { return f.field_name === 'subsystem'; });
+        if (subFacet) { currentFacets = subFacet.counts || []; }
+      }
+      if (currentFacets.length === 0) {
+        // Synthesize from hits we received
+        var seen = {};
+        hits.forEach(function(h) { var s = h.document.subsystem || ''; seen[s] = (seen[s] || 0) + 1; });
+        currentFacets = Object.keys(seen).sort().map(function(s) { return { value: s, count: seen[s] }; });
+      }
+      resultsEl.innerHTML = renderCappedTree();
+      attachCappedHandlers();
+      return;
+    }
+
     resultsEl.innerHTML = renderTree(hits);
     attachTreeHandlers();
   }
@@ -397,6 +506,17 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
   window.addEventListener('message', function(ev) {
     var msg = ev.data;
     if (msg.type === 'results') { showResults(msg); }
+    else if (msg.type === 'subResults') {
+      var sub = msg.sub;
+      if (msg.error) {
+        subExpansions[sub] = { state: 'loaded', hits: [], found: 0, capped: false };
+      } else {
+        var hits = msg.hits || [];
+        var found = msg.found || 0;
+        subExpansions[sub] = { state: 'loaded', hits: hits, found: found, capped: found > hits.length };
+      }
+      refreshCappedNode(sub);
+    }
     else if (msg.type === 'error') {
       statusEl.textContent = 'Error: ' + msg.message;
       statusEl.className = 'status-bar error';
@@ -450,49 +570,46 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
                     // Rebuild HTML in case roots changed now that config loaded
                     webviewView.webview.html = buildWebviewHtml(getNonce(), this._roots, this._defaultRoot);
                 }
-                const start = Date.now();
                 try {
-                    const result = await doSearch(
-                        this._config!, msg.query, msg.mode,
+                    const pr = await runSearchPipeline(
+                        this._config!, msg.query as string, msg.mode as string,
                         msg.ext || '', msg.sub || '',
                         msg.root || this._defaultRoot, msg.limit || 20,
                     );
-                    const rootMap = getRoots(this._config!);
-                    const rootPath = rootMap[msg.root || this._defaultRoot] ?? Object.values(rootMap)[0];
-                    const rawHits = result.hits ?? [];
-                    let hits: Array<TypesenseHit & { _matches: MatchItem[] }>;
-                    if ((msg.mode === 'callers' || msg.mode === 'sig') && rootPath) {
-                        const filePaths = rawHits.map((h) =>
-                            resolveFilePath(rootPath, h.document.relative_path));
-                        // callers → 'calls' (find call sites of the method)
-                        // sig     → 'ident' (find every identifier occurrence of the pattern,
-                        //           server-side filtered — mirrors query_ast ident mode in MCP)
-                        const qMode = msg.mode === 'callers' ? 'calls' : 'ident';
-                        const qr = await queryAst(this._config!, qMode, msg.query as string, filePaths);
-                        const byFile = new Map(qr.map((r) => [r.file, r.matches]));
-                        hits = rawHits.map((h) => {
-                            const fp = resolveFilePath(rootPath, h.document.relative_path);
-                            return {
-                                ...h,
-                                _matches: (byFile.get(fp) ?? []).map((m) => ({
-                                    text: m.text,
-                                    line: m.line - 1,   // 1-indexed → 0-indexed
-                                })),
-                            };
-                        });
-                    } else {
-                        hits = rawHits.map((h) => ({ ...h, _matches: computeMatchItems(h, msg.mode as string) }));
-                    }
                     webviewView.webview.postMessage({
                         type: 'results',
-                        hits,
-                        found: result.found ?? 0,
-                        elapsed: Date.now() - start,
+                        hits: pr.hits,
+                        found: pr.found,
+                        elapsed: pr.elapsed,
                         query: msg.query,
                         mode: msg.mode,
+                        facet_counts: pr.facet_counts ?? [],
                     });
                 } catch (e: unknown) {
                     webviewView.webview.postMessage({ type: 'error', message: e instanceof Error ? e.message : String(e) });
+                }
+
+            } else if (msg.type === 'expandSub') {
+                if (!this._config && !this._reloadConfig()) { return; }
+                try {
+                    const pr = await runSearchPipeline(
+                        this._config!, msg.query as string, msg.mode as string,
+                        msg.ext || '', msg.sub as string,
+                        msg.root || this._defaultRoot, 50,
+                    );
+                    webviewView.webview.postMessage({
+                        type: 'subResults',
+                        sub: msg.sub,
+                        hits: pr.hits,
+                        found: pr.found,
+                        elapsed: pr.elapsed,
+                    });
+                } catch (e: unknown) {
+                    webviewView.webview.postMessage({
+                        type: 'subResults',
+                        sub: msg.sub,
+                        error: e instanceof Error ? e.message : String(e),
+                    });
                 }
 
             } else if (msg.type === 'openFile') {

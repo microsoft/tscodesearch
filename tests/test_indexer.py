@@ -361,7 +361,7 @@ class TestSearchFieldModes(unittest.TestCase):
         names = [h["filename"] for h in hits]
         self.assertIn("Foo.cs", names)
 
-    def test_callers_mode_call_sites(self):
+    def test_calls_mode_call_sites(self):
         hits = self._qby("DoWork", "call_sites,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("Bar.cs", names)
@@ -376,7 +376,7 @@ class TestSearchFieldModes(unittest.TestCase):
         names = [h["filename"] for h in hits]
         self.assertIn("Bar.cs", names)
 
-    def test_attr_mode_attributes(self):
+    def test_attrs_mode_attributes(self):
         hits = self._qby("Serializable", "attributes,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("Foo.cs", names)

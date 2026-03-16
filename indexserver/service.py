@@ -127,11 +127,27 @@ def _api_post(path: str, body: dict) -> tuple[int, dict]:
         return 0, {"error": str(e)}
 
 
-def _kill_pid(pid_file: str, label: str) -> None:
+def _kill_pid(pid_file: str, label: str, wait_secs: float = 5.0) -> None:
     alive, pid_str = _pid_alive(pid_file)
     if alive:
+        pid = int(pid_str)
         try:
-            os.kill(int(pid_str), signal.SIGTERM)
+            os.kill(pid, signal.SIGTERM)
+            # Wait for graceful exit
+            deadline = time.time() + wait_secs
+            while time.time() < deadline:
+                try:
+                    os.kill(pid, 0)
+                    time.sleep(0.2)
+                except (OSError, ProcessLookupError):
+                    break
+            else:
+                try:
+                    print(f"  {label} (PID {pid_str}) did not stop in {wait_secs:.0f}s — sending SIGKILL")
+                    os.kill(pid, signal.SIGKILL)
+                    time.sleep(0.3)
+                except (OSError, ProcessLookupError):
+                    pass
             print(f"  Stopped {label} (PID {pid_str})")
         except OSError:
             print(f"  {label}: kill failed (PID {pid_str})")
@@ -363,14 +379,17 @@ def cmd_stop(args) -> None:
     _kill_pid(_API_PID, "indexserver")
 
     print("  Stopping Typesense server...")
-    subprocess.run([_VENV_PY, _SERVER_PY, "--stop"])
+    try:
+        subprocess.run([_VENV_PY, _SERVER_PY, "--stop"], timeout=20)
+    except subprocess.TimeoutExpired:
+        print("  WARNING: Typesense stop timed out — force-killing any remaining process")
+        subprocess.run(["pkill", "-9", "-f", "typesense-server"], capture_output=True)
     if os.path.exists(_SERVER_PID):
         os.remove(_SERVER_PID)
 
 
 def cmd_restart(args) -> None:
     cmd_stop(args)
-    time.sleep(2)
     cmd_start(args)
 
 

@@ -70,7 +70,8 @@
     "prewatch": "npm run prebuild",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "node --require tsx/cjs --test src/test/client.test.ts src/test/callers.test.ts src/test/integration.test.ts",
+    "test": "node --require tsx/cjs --test src/test/client.test.ts src/test/callers.test.ts src/test/integration.test.ts src/test/pipeline.test.ts",
+    "test:pipeline": "node --require tsx/cjs --test src/test/pipeline.test.ts",
     "package": "vsce package --no-dependencies --allow-missing-repository"
   },
   "devDependencies": {

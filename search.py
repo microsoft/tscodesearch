@@ -8,7 +8,7 @@ Modes:
     Default:         full-text search across filenames, symbols, and content
     --symbols:       search only C# symbol names (class/interface/method)
     --implements X:  find types that inherit from or implement X            [T1]
-    --callers X:     find call sites that invoke method X                   [T1]
+    --calls X:       find call sites that invoke method X                   [T1]
     --sig X:         find methods whose signature contains X                [T1]
     --uses X:        find files that reference type X in declarations       [T2]
     --attr X:        find files decorated with attribute X                  [T2]
@@ -22,7 +22,7 @@ Examples:
     search.py "WriteItemsAsync" --symbols
     search.py "circuit breaker" --sub core --limit 5
     search.py "IStorageProvider" --implements     # find implementors
-    search.py "GetItemsAsync" --callers           # find call sites
+    search.py "GetItemsAsync" --calls             # find call sites
     search.py "Task GetItemsAsync" --sig          # find by signature
     search.py "ItemInfo" --uses                   # find type references
     search.py "Obsolete" --attr                   # find by attribute
@@ -52,22 +52,24 @@ def _ts_search(collection: str, params: dict) -> dict:
 
 
 def search(query, ext=None, sub=None, limit=10,
-           symbols_only=False, implements=False, callers=False,
-           sig=False, uses=False, attr=False, collection=None):
+           symbols_only=False, implements=False, calls=False,
+           sig=False, uses=False, attrs=False, casts=False, collection=None):
     from config import COLLECTION as _DEFAULT_COLLECTION
     coll_name = collection or _DEFAULT_COLLECTION
 
     # Determine query_by based on mode
     if implements:
         query_by = "base_types,class_names,filename"
-    elif callers:
+    elif calls:
         query_by = "call_sites,filename"
     elif sig:
-        query_by = "method_sigs,method_names,filename"
+        query_by = "method_sigs,filename"
     elif uses:
         query_by = "type_refs,symbols,class_names,filename"
-    elif attr:
+    elif attrs:
         query_by = "attributes,filename"
+    elif casts:
+        query_by = "cast_sites,filename"
     elif symbols_only:
         query_by = "symbols,class_names,method_names,filename"
     else:
@@ -207,7 +209,7 @@ def format_results(result, query, query_by, show_facets=False, debug=False):
             # Show a match snippet for content/semantic fields
             for hl in highlights:
                 if hl.get("field") in ("content", "method_sigs", "base_types", "call_sites",
-                                       "type_refs", "attributes"):
+                                       "cast_sites", "type_refs", "attributes"):
                     vals = _hl_values(hl)
                     snippet = "; ".join(v.replace("\n", " ") for v in vals if v)
                     snippet = snippet.encode("ascii", errors="replace").decode("ascii")
@@ -229,14 +231,16 @@ def main():
                     help="Search only C# symbol names")
     ap.add_argument("--implements", action="store_true",
                     help="[T1] Find types implementing/inheriting the query")
-    ap.add_argument("--callers", action="store_true",
+    ap.add_argument("--calls", action="store_true",
                     help="[T1] Find files that call the queried method")
     ap.add_argument("--sig", action="store_true",
                     help="[T1] Search method signatures (return type + param types)")
     ap.add_argument("--uses", action="store_true",
                     help="[T2] Find files that reference the queried type")
-    ap.add_argument("--attr", action="store_true",
+    ap.add_argument("--attrs", action="store_true",
                     help="[T2] Find files decorated with the queried attribute")
+    ap.add_argument("--casts", action="store_true",
+                    help="[T1] Find files with explicit casts to the queried type")
     ap.add_argument("--facets", action="store_true",
                     help="Show subsystem/extension facet counts in output")
     ap.add_argument("--debug", action="store_true",
@@ -252,10 +256,11 @@ def main():
         limit=args.limit,
         symbols_only=args.symbols,
         implements=args.implements,
-        callers=args.callers,
+        calls=args.calls,
         sig=args.sig,
         uses=args.uses,
-        attr=args.attr,
+        attrs=args.attrs,
+        casts=args.casts,
     )
 
     if args.json:

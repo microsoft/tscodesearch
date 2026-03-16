@@ -245,13 +245,20 @@ describe('sanitizeName', () => {
 
 describe('buildSearchParams — mode query_by fields', () => {
     const modeCases: Array<[string, string]> = [
-        ['text',       'filename,symbols,class_names,method_names,content'],
-        ['symbols',    'symbols,class_names,method_names,filename'],
-        ['implements', 'base_types,class_names,filename'],
-        ['callers',    'call_sites,filename'],
-        ['sig',        'method_sigs,method_names,filename'],
-        ['uses',       'type_refs,symbols,class_names,filename'],
-        ['attr',       'attributes,filename'],
+        ['text',           'filename,symbols,class_names,method_names,content'],
+        ['symbols',        'symbols,class_names,method_names,filename'],
+        ['sig',            'method_sigs,method_names,filename'],
+        ['implements',     'base_types,class_names,filename'],
+        ['calls',          'call_sites,filename'],
+        ['casts',          'cast_sites,filename'],
+        ['attrs',          'attributes,filename'],
+        ['uses',           'type_refs,symbols,class_names,filename'],
+        ['field_type',     'type_refs,symbols,class_names,filename'],
+        ['param_type',     'type_refs,symbols,class_names,filename'],
+        ['ident',          'type_refs,symbols,class_names,filename'],
+        ['member_accesses','type_refs,symbols,class_names,filename'],
+        ['find',           'method_sigs,method_names,filename'],
+        ['params',         'method_sigs,method_names,filename'],
     ];
 
     for (const [mode, expectedQueryBy] of modeCases) {
@@ -337,9 +344,32 @@ describe('buildSearchParams — prefix search is enabled', () => {
 // ---------------------------------------------------------------------------
 
 describe('MODES constant', () => {
-    it('contains all 7 modes', () => {
+    it('contains all 14 modes in declared order', () => {
         const keys = MODES.map((m) => m.key);
-        assert.deepEqual(keys, ['text', 'symbols', 'implements', 'callers', 'sig', 'uses', 'attr']);
+        assert.deepEqual(keys, [
+            // search-only
+            'text', 'symbols', 'sig',
+            // AST-backed
+            'uses', 'calls', 'implements', 'casts', 'attrs',
+            'field_type', 'param_type', 'ident', 'member_accesses',
+            'find', 'params',
+        ]);
+    });
+
+    it('search-only modes have no astMode', () => {
+        for (const key of ['text', 'symbols', 'sig']) {
+            const m = MODES.find((x) => x.key === key)!;
+            assert.equal(m.astMode, undefined, `${key} should not have astMode`);
+        }
+    });
+
+    it('AST-backed modes have astMode matching their key', () => {
+        for (const key of ['uses', 'calls', 'implements', 'casts', 'attrs',
+                           'field_type', 'param_type', 'ident', 'member_accesses',
+                           'find', 'params']) {
+            const m = MODES.find((x) => x.key === key)!;
+            assert.equal(m.astMode, key, `${key}: astMode should equal key`);
+        }
     });
 
     it('every mode has key, label, queryBy, weights, desc', () => {
@@ -589,20 +619,30 @@ describe('doSearch', () => {
 // ---------------------------------------------------------------------------
 
 describe('QUERY_MODES constant', () => {
-    it('contains all expected modes', () => {
-        const expected = [
-            'classes', 'methods', 'fields', 'calls', 'implements', 'uses',
-            'field_type', 'param_type', 'casts', 'ident', 'member_accesses',
-            'attrs', 'usings', 'find', 'params',
-        ];
-        assert.deepEqual([...QUERY_MODES], expected);
+    it('includes all C# pattern modes (usable in query_codebase)', () => {
+        const patternModes = ['uses', 'calls', 'implements', 'casts', 'field_type',
+                              'param_type', 'ident', 'member_accesses', 'find', 'params', 'attrs'];
+        for (const m of patternModes) {
+            assert.ok(QUERY_MODES.includes(m as never), `missing pattern mode: ${m}`);
+        }
     });
 
-    it('includes ident mode (used for sig enrichment)', () => {
+    it('includes C# listing modes (query_single_file only)', () => {
+        for (const m of ['methods', 'fields', 'classes', 'usings']) {
+            assert.ok(QUERY_MODES.includes(m as never), `missing listing mode: ${m}`);
+        }
+    });
+
+    it('includes Python modes', () => {
+        assert.ok(QUERY_MODES.includes('decorators' as never));
+        assert.ok(QUERY_MODES.includes('imports' as never));
+    });
+
+    it('includes ident mode', () => {
         assert.ok(QUERY_MODES.includes('ident'));
     });
 
-    it('includes calls mode (used for callers enrichment)', () => {
+    it('includes calls mode', () => {
         assert.ok(QUERY_MODES.includes('calls'));
     });
 });

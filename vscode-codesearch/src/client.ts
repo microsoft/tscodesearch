@@ -29,6 +29,7 @@ export interface TypesenseHit {
         symbols?: string[];
         base_types?: string[];
         call_sites?: string[];
+        cast_sites?: string[];
         method_sigs?: string[];
         type_refs?: string[];
         attributes?: string[];
@@ -38,6 +39,8 @@ export interface TypesenseHit {
         field: string;
         snippet?: string;
         snippets?: string[];
+        values?: string[];    // matched array element values (array fields)
+        indices?: number[];   // positions in the source array that matched
     }>;
 }
 
@@ -55,7 +58,17 @@ export interface TypesenseResult {
 // Search modes
 // ---------------------------------------------------------------------------
 
-export const MODES: Array<{ key: string; label: string; queryBy: string; weights: string; desc: string }> = [
+/**
+ * Search modes.  All modes go through the server's /query-codebase endpoint,
+ * which runs Typesense pre-filter + tree-sitter AST in one call and returns
+ * exact line numbers for every result.
+ *
+ * astMode: kept for backwards compat; server owns the Typesense→AST mapping.
+ */
+export const MODES: Array<{
+    key: string; label: string; queryBy: string; weights: string; desc: string;
+    astMode?: string;
+}> = [
     {
         key: 'text',
         label: 'Text',
@@ -68,42 +81,102 @@ export const MODES: Array<{ key: string; label: string; queryBy: string; weights
         label: 'Symbols',
         queryBy: 'symbols,class_names,method_names,filename',
         weights: '4,4,4,3',
-        desc: 'Search only C# class/interface/method/property names',
+        desc: 'Search only class/interface/method/property names [symbols]',
+    },
+    {
+        key: 'sig',
+        label: 'Signatures',
+        queryBy: 'method_sigs,method_names,filename',
+        weights: '4,3,2',
+        desc: 'Search method signatures by return/parameter types [method_sigs]',
+    },
+    {
+        key: 'uses',
+        label: 'Uses',
+        queryBy: 'type_refs,symbols,class_names,filename',
+        weights: '4,3,3,2',
+        desc: 'Every type reference: declarations, locals, static receivers [type_refs]',
+        astMode: 'uses',
+    },
+    {
+        key: 'calls',
+        label: 'Calls',
+        queryBy: 'call_sites,filename',
+        weights: '4,2',
+        desc: 'Every call site of the given method [call_sites]',
+        astMode: 'calls',
     },
     {
         key: 'implements',
         label: 'Implements',
         queryBy: 'base_types,class_names,filename',
         weights: '4,3,2',
-        desc: 'Find types that implement or inherit from the given interface/class [T1]',
+        desc: 'Types that inherit or implement the given interface/class [base_types]',
+        astMode: 'implements',
     },
     {
-        key: 'callers',
-        label: 'Callers',
-        queryBy: 'call_sites,filename',
+        key: 'casts',
+        label: 'Casts',
+        queryBy: 'cast_sites,filename',
         weights: '4,2',
-        desc: 'Find files that call the given method [T1]',
+        desc: 'Explicit (TYPE)expr cast expressions [cast_sites]',
+        astMode: 'casts',
     },
     {
-        key: 'sig',
-        label: 'Signature',
-        queryBy: 'method_sigs,method_names,filename',
-        weights: '4,3,2',
-        desc: 'Search method signatures (return type, parameter types) [T1]',
-    },
-    {
-        key: 'uses',
-        label: 'Type Refs',
-        queryBy: 'type_refs,symbols,class_names,filename',
-        weights: '4,3,3,2',
-        desc: 'Find files that reference the given type in declarations [T2]',
-    },
-    {
-        key: 'attr',
-        label: 'Attributes',
+        key: 'attrs',
+        label: 'Attrs',
         queryBy: 'attributes,filename',
         weights: '4,2',
-        desc: 'Find files decorated with the given attribute [T2]',
+        desc: 'Files decorated with the given [Attribute] [attributes]',
+        astMode: 'attrs',
+    },
+    {
+        key: 'field_type',
+        label: 'Field Type',
+        queryBy: 'type_refs,symbols,class_names,filename',
+        weights: '4,3,3,2',
+        desc: 'Fields/properties declared with the given type [type_refs]',
+        astMode: 'field_type',
+    },
+    {
+        key: 'param_type',
+        label: 'Param Type',
+        queryBy: 'type_refs,symbols,class_names,filename',
+        weights: '4,3,3,2',
+        desc: 'Method/constructor parameters typed as the given type [type_refs]',
+        astMode: 'param_type',
+    },
+    {
+        key: 'ident',
+        label: 'Ident',
+        queryBy: 'type_refs,symbols,class_names,filename',
+        weights: '4,3,3,2',
+        desc: 'Every identifier occurrence (semantic grep, skips comments/strings) [type_refs]',
+        astMode: 'ident',
+    },
+    {
+        key: 'member_accesses',
+        label: 'Members',
+        queryBy: 'type_refs,symbols,class_names,filename',
+        weights: '4,3,3,2',
+        desc: '.Member accesses on locals/params of the given type [type_refs]',
+        astMode: 'member_accesses',
+    },
+    {
+        key: 'find',
+        label: 'Find',
+        queryBy: 'method_sigs,method_names,filename',
+        weights: '4,3,2',
+        desc: 'Full source body of the method/type/property named NAME [method_sigs]',
+        astMode: 'find',
+    },
+    {
+        key: 'params',
+        label: 'Params',
+        queryBy: 'method_sigs,method_names,filename',
+        weights: '4,3,2',
+        desc: 'Parameter list of the given method [method_sigs]',
+        astMode: 'params',
     },
 ];
 
@@ -230,14 +303,79 @@ export async function doSearch(
 export interface QueryMatch { line: number; text: string; }  // line is 1-indexed
 export interface QueryFileResult { file: string; matches: QueryMatch[]; }
 
+/** A single match item displayed under a file node in the results tree. */
+export interface MatchItem { text: string; line?: number; }  // line is 0-indexed
+
 /**
- * Valid tree-sitter query modes for queryCs — mirrors the VALID_MODES list
- * in mcp_server.py's query_ast tool.
+ * Compute display match items from a Typesense hit (highlights-based).
+ * Used as a utility/fallback; live pipeline gets matches from the server's AST.
+ */
+export function computeMatchItems(hit: TypesenseHit, mode: string): MatchItem[] {
+    const doc = hit.document;
+    const hl = hit.highlights ?? [];
+    switch (mode) {
+        case 'text': {
+            for (const h of hl) {
+                if (h.field === 'content') {
+                    const s = h.snippet ?? h.snippets?.[0];
+                    if (s) { return [{ text: s.replace(/<\/?mark>/g, '').trim() }]; }
+                }
+            }
+            return (doc.method_names ?? []).slice(0, 6).map((n) => ({ text: n }));
+        }
+        case 'symbols':
+            return [
+                ...(doc.class_names ?? []).slice(0, 3).map((n) => ({ text: n })),
+                ...(doc.method_names ?? []).slice(0, 6).map((n) => ({ text: n })),
+            ].slice(0, 8);
+        case 'implements': {
+            const h = hl.find((e) => e.field === 'base_types');
+            return (h?.values ?? doc.base_types ?? []).map((t) => ({ text: t }));
+        }
+        case 'sig':
+        case 'find':
+        case 'params': {
+            // Use the Typesense highlight values — these are the specific sigs that
+            // matched the query.  A file only appears in results because method_sigs
+            // matched, so highlights are always present.
+            const h = hl.find((e) => e.field === 'method_sigs');
+            return (h?.values ?? []).map((s) => ({ text: s }));
+        }
+        case 'uses':
+        case 'field_type':
+        case 'param_type':
+        case 'ident':
+        case 'member_accesses': {
+            const h = hl.find((e) => e.field === 'type_refs');
+            return (h?.values ?? doc.type_refs ?? []).slice(0, 8).map((t) => ({ text: t }));
+        }
+        case 'attrs': {
+            const h = hl.find((e) => e.field === 'attributes');
+            return (h?.values ?? doc.attributes ?? []).map((a) => ({ text: a }));
+        }
+        case 'casts': {
+            const h = hl.find((e) => e.field === 'cast_sites');
+            return (h?.values ?? doc.cast_sites ?? []).map((c) => ({ text: c }));
+        }
+        default:
+            return [];
+    }
+}
+
+/**
+ * Valid tree-sitter query modes — mirrors the modes accepted by
+ * query_codebase and query_single_file in mcp_server.py.
  */
 export const QUERY_MODES = [
-    'classes', 'methods', 'fields', 'calls', 'implements', 'uses',
-    'field_type', 'param_type', 'casts', 'ident', 'member_accesses',
-    'attrs', 'usings', 'find', 'params',
+    // C# — pattern modes (query_codebase + query_single_file)
+    'uses', 'calls', 'implements', 'casts', 'field_type', 'param_type',
+    'ident', 'member_accesses', 'find', 'params', 'attrs',
+    // C# — listing modes (query_single_file only)
+    'methods', 'fields', 'classes', 'usings',
+    // Python — pattern modes
+    'decorators',
+    // Python — listing modes (query_single_file only)
+    'imports',
 ] as const;
 export type QueryMode = typeof QUERY_MODES[number];
 
@@ -286,6 +424,174 @@ export function queryAst(
         req.write(body);
         req.end();
     });
+}
+
+// ---------------------------------------------------------------------------
+// Full search pipeline: unified /query-codebase endpoint
+// ---------------------------------------------------------------------------
+
+export interface PipelineHit {
+    document: {
+        id?: string;
+        relative_path: string;
+        subsystem?: string;
+        filename?: string;
+    };
+    _matches: MatchItem[];
+}
+
+export interface PipelineResult {
+    hits: PipelineHit[];
+    found: number;           // Typesense count (before AST filter)
+    tsFound: number;         // Same as found (kept for backwards compatibility)
+    elapsed: number;
+    facet_counts: TypesenseResult['facet_counts'];
+    overflow?: boolean;
+}
+
+/**
+ * Call the indexserver's /query-codebase endpoint, which performs
+ * Typesense pre-filter + AST post-filter in one call on the server.
+ */
+export async function doQueryCodebase(
+    config: CodesearchConfig,
+    query: string,
+    mode: string,
+    ext: string,
+    sub: string,
+    rootName: string,
+    limit: number,
+): Promise<{ found: number; overflow: boolean; hits: PipelineHit[]; facet_counts: TypesenseResult['facet_counts'] }> {
+    const port   = (config.port ?? 8108) + 1;
+    const apiKey = config.api_key ?? 'codesearch-local';
+    const body   = JSON.stringify({ mode, pattern: query, sub, ext, root: rootName, limit });
+
+    return new Promise((resolve, reject) => {
+        const req = http.request(
+            {
+                hostname: 'localhost',
+                port,
+                path: '/query-codebase',
+                method: 'POST',
+                headers: {
+                    'X-TYPESENSE-API-KEY': apiKey,
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                },
+            },
+            (res) => {
+                let data = '';
+                res.on('data', (chunk) => (data += chunk));
+                res.on('end', () => {
+                    try {
+                        const parsed = JSON.parse(data) as {
+                            found: number; overflow: boolean;
+                            hits: Array<{ document: { id: string; relative_path: string; subsystem: string; filename: string }; matches: Array<{ line: number; text: string }> }>;
+                            facet_counts: TypesenseResult['facet_counts'];
+                            error?: string;
+                        };
+                        if (res.statusCode && res.statusCode >= 400) {
+                            reject(new Error(`Query-codebase API ${res.statusCode}: ${parsed.error ?? data.slice(0, 200)}`));
+                        } else {
+                            const hits: PipelineHit[] = (parsed.hits ?? []).map((h) => ({
+                                document: {
+                                    id:            h.document.id,
+                                    relative_path: h.document.relative_path,
+                                    subsystem:     h.document.subsystem,
+                                    filename:      h.document.filename,
+                                },
+                                _matches: (h.matches ?? []).map((m) => ({
+                                    text: m.text,
+                                    line: m.line - 1,  // 1-indexed → 0-indexed
+                                })),
+                            }));
+                            resolve({
+                                found:        parsed.found ?? 0,
+                                overflow:     parsed.overflow ?? false,
+                                hits,
+                                facet_counts: parsed.facet_counts,
+                            });
+                        }
+                    } catch {
+                        reject(new Error(`Bad JSON from query-codebase API: ${data.slice(0, 200)}`));
+                    }
+                });
+            }
+        );
+        req.setTimeout(30000, () => req.destroy(new Error('Query-codebase API timed out')));
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+/**
+ * Run a full search using the server's /query-codebase endpoint.
+ * The server handles Typesense pre-filter + AST post-filter in one call.
+ */
+export async function runSearchPipeline(
+    config: CodesearchConfig,
+    query: string,
+    modeKey: string,
+    ext: string,
+    sub: string,
+    rootName: string,
+    limit: number,
+    rootPath?: string,  // kept for backwards compatibility, no longer used
+): Promise<PipelineResult> {
+    const start = Date.now();
+    const result = await doQueryCodebase(config, query, modeKey, ext, sub, rootName, limit);
+    return {
+        hits:         result.hits,
+        found:        result.found,
+        tsFound:      result.found,
+        elapsed:      Date.now() - start,
+        facet_counts: result.facet_counts,
+        overflow:     result.overflow,
+    };
+}
+
+/**
+ * Render a pipeline result as a text tree, mirroring the webview layout.
+ * Useful for validating output in tests and CLI tools.
+ */
+export function renderTextTree(result: PipelineResult, query: string, mode: string): string {
+    const lines: string[] = [];
+    const modeEntry = MODES.find((m) => m.key === mode);
+    const modeLabel = modeEntry?.label ?? mode;
+    const isAst = !!modeEntry?.astMode;
+
+    lines.push(`Query: "${query}"  Mode: ${modeLabel}  Found: ${result.found}` +
+        (isAst ? ` (Typesense: ${result.tsFound})` : '') +
+        `  Elapsed: ${result.elapsed}ms`);
+
+    if (result.found === 0) { lines.push('  (no results)'); return lines.join('\n'); }
+
+    // Group by subsystem
+    const bySub = new Map<string, PipelineHit[]>();
+    for (const h of result.hits) {
+        const s = h.document.subsystem ?? '';
+        if (!bySub.has(s)) { bySub.set(s, []); }
+        bySub.get(s)!.push(h);
+    }
+
+    for (const [sub, subHits] of [...bySub.entries()].sort()) {
+        lines.push(`\n[${sub || '(no subsystem)'}]  ${subHits.length} file(s)`);
+        for (const h of subHits) {
+            lines.push(`  ${h.document.relative_path}`);
+            const matches = h._matches;
+            for (let i = 0; i < Math.min(matches.length, 10); i++) {
+                const m = matches[i];
+                const branch = i === matches.length - 1 || i === 9 ? '└─' : '├─';
+                const lineNum = m.line !== undefined ? `:${m.line + 1}` : '';
+                lines.push(`    ${branch} ${lineNum.padEnd(6)} ${m.text.trim().slice(0, 120)}`);
+            }
+            if (matches.length > 10) {
+                lines.push(`    └─ … ${matches.length - 10} more matches`);
+            }
+        }
+    }
+    return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------

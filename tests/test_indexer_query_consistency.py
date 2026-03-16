@@ -342,12 +342,16 @@ class TestMethodSigsFieldNameGap:
 
 class TestTypeRefsVsUsesGap:
     """
-    GAP: indexer type_refs covers field/property types, method return types,
-    and method/ctor parameter types.  q_uses additionally finds type references
-    in local variable declarations and as-cast/explicit-cast target types.
+    type_refs field coverage vs q_uses:
 
-    The indexer intentionally avoids scanning method bodies for performance,
-    so local variable type annotations and cast targets are missing from type_refs.
+    COVERED (type_refs AND q_uses):
+      - field/property types, method return types, method/ctor parameter types
+      - base_types (implements clause)  — added: base_types merged into type_refs
+      - local variable declaration types — gap CLOSED: indexer now scans local decls
+      - PascalCase static call receivers  — gap CLOSED: indexer now extracts these
+
+    SPLIT (explicit casts go to cast_sites, not type_refs):
+      - explicit cast targets — in cast_sites (new T1 field) but NOT in type_refs
     """
 
     # ── items that SHOULD be in type_refs ────────────────────────────────────
@@ -369,29 +373,12 @@ class TestTypeRefsVsUsesGap:
 
     # ── items that q_uses finds but type_refs does NOT ───────────────────────
 
-    def test_cast_target_not_in_type_refs(self):
+    def test_cast_target_in_cast_sites_not_type_refs(self):
         """
-        GAP: explicit cast '(BaseWidget)_inner' — the target type 'BaseWidget'
-        appears in q_uses but is NOT indexed in type_refs (method body scanning
-        is skipped by the indexer).
+        Explicit casts go to cast_sites (T1 field), NOT type_refs.
+        This keeps type_refs for declaration-site usages and cast_sites
+        for explicit narrowing casts — different query semantics.
         """
-        src = b"""
-namespace N {
-    public class BaseWidget {}
-    public class C {
-        private BaseWidget _x;
-        public void M(BaseWidget w) {
-            var cast = (BaseWidget)_x;  // cast target - in method body
-        }
-    }
-}
-"""
-        m = extract_cs_metadata(src)
-        # BaseWidget IS in type_refs because it's a field type and param type
-        assert "BaseWidget" in m["type_refs"], \
-            "field/param type should be indexed"
-
-        # But a DIFFERENT type used only in a cast in the body would be absent:
         src2 = b"""
 namespace N {
     public class CastOnly {}
@@ -404,12 +391,14 @@ namespace N {
 """
         m2 = extract_cs_metadata(src2)
         assert "CastOnly" not in m2["type_refs"], \
-            "GAP CONFIRMED: cast-only types in method bodies are not in type_refs"
+            "Cast-only types must not bleed into type_refs"
+        assert "CastOnly" in m2["cast_sites"], \
+            f"Cast-only types must be in cast_sites: {m2['cast_sites']}"
 
-    def test_local_variable_type_not_in_type_refs(self):
+    def test_local_variable_type_in_type_refs(self):
         """
-        GAP: local variable 'LocalOnly x = ...' — the declared type 'LocalOnly'
-        appears in q_uses but is NOT indexed in type_refs.
+        GAP CLOSED: local variable 'LocalOnly x = ...' — the declared type
+        'LocalOnly' is now indexed in type_refs.
         """
         src = b"""
 namespace N {
@@ -422,8 +411,8 @@ namespace N {
 }
 """
         m = extract_cs_metadata(src)
-        assert "LocalOnly" not in m["type_refs"], \
-            "GAP CONFIRMED: local variable types in method bodies not in type_refs"
+        assert "LocalOnly" in m["type_refs"], \
+            f"Local variable type must now be in type_refs: {m['type_refs']}"
 
     def test_typeof_not_in_type_refs(self):
         """
@@ -606,32 +595,27 @@ namespace N {
 
 
 # ===========================================================================
-# MISSING: cast sites — q_casts has no indexed equivalent
+# cast_sites — dedicated T1 field for explicit cast targets
 # ===========================================================================
 
 class TestCastSitesMissing:
     """
-    MISSING: q_casts finds explicit (TYPE)expr cast expressions, but the
-    Typesense index has no 'cast_sites' field.  Cast targets are also absent
-    from type_refs when they only appear in method bodies.
-
-    The content field contains the raw source text so a full-text search on
-    the collection can still find casts, but there is no semantic field for them.
+    GAP CLOSED: cast_sites is now a T1 field.
+    q_casts finds explicit (TYPE)expr cast expressions; the indexer now extracts
+    the same types into cast_sites for Typesense pre-filtering.
+    Cast targets do NOT bleed into type_refs — they remain in cast_sites only.
     """
 
     def test_q_casts_finds_explicit_cast(self, fx):
         r = q_casts(*fx, "BaseWidget")
         assert len(r) >= 1
 
-    def test_indexer_has_no_cast_sites_field(self, meta):
-        assert "cast_sites" not in meta, \
-            "Unexpected 'cast_sites' key in indexer metadata"
+    def test_indexer_has_cast_sites_field(self, meta):
+        assert "cast_sites" in meta, \
+            "cast_sites field must be present in indexer metadata"
 
-    def test_cast_target_absent_from_type_refs_when_body_only(self):
-        """
-        MISSING: A type used only as a cast target in a method body is absent
-        from type_refs in the index.
-        """
+    def test_cast_target_in_cast_sites_not_type_refs(self):
+        """Cast-only body types are in cast_sites, not type_refs."""
         src = b"""
 namespace N {
     public class BodyCastOnly {}
@@ -641,8 +625,10 @@ namespace N {
 }
 """
         m = extract_cs_metadata(src)
+        assert "BodyCastOnly" in m["cast_sites"], \
+            f"Cast-only body types must be in cast_sites: {m['cast_sites']}"
         assert "BodyCastOnly" not in m["type_refs"], \
-            "Cast-only body types should not be in type_refs (no cast_sites field)"
+            "Cast-only body types must not bleed into type_refs"
 
 
 # ===========================================================================

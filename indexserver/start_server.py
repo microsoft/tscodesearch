@@ -173,14 +173,31 @@ def stop():
         subprocess.run(["pkill", "-f", "typesense-server"], capture_output=True)
         print("Sent kill signal (no PID file found).")
         return
-    pid = PID_FILE.read_text().strip()
-    if pid.isdigit():
+    pid_str = PID_FILE.read_text().strip()
+    pid = int(pid_str) if pid_str.isdigit() else None
+    if pid:
         try:
-            os.kill(int(pid), signal.SIGTERM)
+            os.kill(pid, signal.SIGTERM)
+            # Wait up to 10s for graceful shutdown before escalating to SIGKILL
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                try:
+                    os.kill(pid, 0)  # existence check
+                    time.sleep(0.2)
+                except (OSError, ProcessLookupError):
+                    break  # process gone
+            else:
+                # Still alive after 10s — force kill
+                try:
+                    print(f"  Typesense (pid={pid}) did not stop in 10s — sending SIGKILL")
+                    os.kill(pid, signal.SIGKILL)
+                    time.sleep(0.5)
+                except (OSError, ProcessLookupError):
+                    pass
         except (OSError, ProcessLookupError):
             pass
     PID_FILE.unlink(missing_ok=True)
-    print(f"Typesense (pid={pid}) stopped.")
+    print(f"Typesense (pid={pid_str}) stopped.")
 
 
 def show_log():

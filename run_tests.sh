@@ -1,20 +1,14 @@
 #!/usr/bin/env bash
 # Run the full codesearch test suite.
-# Usage (from WSL): bash run_tests.sh [pytest args...]
-# Example: bash run_tests.sh -k TestIndexQueue
+# Usage:
+#   bash run_tests.sh                  -- all tests
+#   bash run_tests.sh -k TestQCasts    -- filter by name
+#   bash run_tests.sh tests/test_mode_casts.py  -- single file
+#
+# From the Claude Code Bash tool (Git Bash), use:
+#   MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/q/spocore/tscodesearch/run_tests.sh [args...]
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_PY="$HOME/.local/indexserver-venv/bin/pytest"
+REPO="$(cd "$(dirname "$0")" && pwd)"
+PYTEST="$HOME/.local/indexserver-venv/bin/pytest"
 
-cd "$SCRIPT_DIR"
-
-exec "$VENV_PY" \
-    tests/test_watcher.py \
-    tests/test_indexer.py \
-    tests/test_indexer_query_consistency.py \
-    tests/test_verifier.py \
-    tests/test_process_cs.py \
-    tests/test_python.py \
-    tests/test_query_cs.py \
-    -v --tb=short \
-    "$@"
+exec "$PYTEST" "$REPO/tests/" -v "$@"
