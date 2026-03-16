@@ -171,22 +171,46 @@ def cmd_status(args) -> None:
     else:
         print(f"  Server  : [--] not running")
 
-    for root_name, _src in ROOTS.items():
-        coll_name = collection_for_root(root_name)
-        stats = _collection_stats(coll_name)
-        if stats:
-            ndocs = stats.get("num_documents", 0)
-            fields = [f["name"] for f in stats.get("fields", [])]
-            idx_note = "" if "priority" in fields else \
-                f"  [re-index needed: ts index --root {root_name} --resethard]"
-            print(f"  [{root_name}] Index : {ndocs:,} docs  ({coll_name}){idx_note}")
-        elif health["ok"]:
-            print(f"  [{root_name}] Index : '{coll_name}' not found — run: ts index --root {root_name} --resethard")
-        else:
-            print(f"  [{root_name}] Index : (server unavailable)")
-
     api_alive, api_pid = _pid_alive(_API_PID)
     api_info = _api_status() if api_alive else None
+
+    missing_collections = []
+    api_collections = (api_info or {}).get("collections", {})
+    for root_name, _src in ROOTS.items():
+        coll_name = collection_for_root(root_name)
+        coll_info = api_collections.get(root_name)
+        if coll_info:
+            # api is up — use its validated collection status (schema checked server-side)
+            ndocs        = coll_info.get("num_documents") or 0
+            warnings     = coll_info.get("schema_warnings") or []
+            col_exists   = coll_info.get("collection_exists", coll_info.get("num_documents") is not None)
+            indexer_running = (api_info or {}).get("indexer", {}).get("running", False)
+            if not col_exists:
+                if indexer_running:
+                    print(f"  [{root_name}] Index : [>>] indexing in progress ({ndocs:,} docs so far)")
+                    # Don't add to missing_collections — searches will work once done
+                else:
+                    print(f"  [{root_name}] Index : [--] not yet indexed — run: ts index")
+                    missing_collections.append(root_name)
+            elif warnings:
+                print(f"  [{root_name}] Index : [!!] schema outdated ({ndocs:,} docs)")
+                for w in warnings:
+                    print(f"             {w}")
+                print(f"             Fix: ts index --root {root_name} --resethard")
+                missing_collections.append(root_name)
+            else:
+                print(f"  [{root_name}] Index : [OK]  {ndocs:,} docs  ({coll_name})")
+        elif health["ok"]:
+            # api is down but Typesense is up — doc count only, schema unverified
+            stats = _collection_stats(coll_name)
+            if stats:
+                ndocs = stats.get("num_documents", 0)
+                print(f"  [{root_name}] Index : [?]  {ndocs:,} docs  (schema unverified — indexserver not running)")
+            else:
+                print(f"  [{root_name}] Index : [!!] '{coll_name}' not found — searches will fail")
+                missing_collections.append(root_name)
+        else:
+            print(f"  [{root_name}] Index : (server unavailable)")
 
     if api_alive:
         print(f"  API     : [OK]  running  (PID {api_pid}, port={API_PORT})")
@@ -238,6 +262,9 @@ def cmd_status(args) -> None:
             if prog:
                 print(f"  Verifier: {prog.get('status', 'idle')}")
 
+    if missing_collections:
+        print(f"")
+        print(f"  !! SEARCHES WILL FAIL — index unavailable for: {', '.join(missing_collections)}")
     print("----------------------------------------------------------------------")
 
 

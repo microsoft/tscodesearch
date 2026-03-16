@@ -385,6 +385,19 @@ def test_status(port, api_key):
     else:
         _fail("GET /status — indexer.running missing", str(body))
 
+    collections = body.get("collections", {})
+    if collections:
+        _pass("GET /status — collections block present", f"{len(collections)} root(s)")
+        for root_name, info in collections.items():
+            has_keys = {"schema_ok", "schema_warnings", "collection"} <= set(info.keys())
+            if has_keys:
+                _pass(f"GET /status — collections[{root_name!r}] has required keys",
+                      f"schema_ok={info['schema_ok']}  docs={info.get('num_documents')}")
+            else:
+                _fail(f"GET /status — collections[{root_name!r}] missing keys", str(info))
+    else:
+        _fail("GET /status — collections block missing", str(list(body.keys())))
+
 
 def test_unknown_route(port, api_key):
     code, _ = _get(port, "/does-not-exist", api_key)
@@ -612,6 +625,82 @@ def test_query_codebase(port, api_key):
         _fail("POST /query-codebase document check", f"code={code} body={body}")
 
 
+def test_index_resethard(port, api_key):
+    """POST /index/start resethard=True → re-creates collection → schema must be OK."""
+
+    # Kick off the hard reset
+    code, body = _post(port, "/index/start", api_key,
+                       body={"root": "default", "resethard": True})
+    if code == 409:
+        _skip("POST /index/start resethard", "indexer already running — try again after it finishes")
+        return
+    if code != 200:
+        _fail("POST /index/start resethard", f"expected 200, got {code} body={body}")
+        return
+    _pass("POST /index/start resethard → 200", f"collection={body.get('collection')}")
+
+    # Poll GET /status until the indexer thread exits.
+    # Progress is measured by changes to indexer.running or discovered count.
+    def _indexer_done(s):
+        return not s.get("indexer", {}).get("running", True)
+
+    def _indexer_progress(prev, cur):
+        pi = prev.get("indexer", {}).get("progress") or {}
+        ci = cur.get("indexer", {}).get("progress") or {}
+        return (
+            pi.get("discovered", 0) != ci.get("discovered", 0)
+            or pi.get("status") != ci.get("status")
+            or prev.get("indexer", {}).get("running") != cur.get("indexer", {}).get("running")
+        )
+
+    ok, final_body, elapsed = _poll_with_progress(
+        port, api_key, "/status",
+        done_fn=_indexer_done,
+        progress_fn=_indexer_progress,
+        label="wait for indexer (resethard)",
+    )
+    if not ok:
+        _fail("POST /index/start resethard — indexer did not finish",
+              f"after {elapsed:.0f}s  last={final_body.get('indexer', {}).get('progress')}")
+        return
+    _pass("POST /index/start resethard — indexer finished", f"{elapsed:.1f}s")
+
+    progress = (final_body.get("indexer") or {}).get("progress") or {}
+    if progress.get("status") == "error":
+        _fail("POST /index/start resethard — indexer errored",
+              progress.get("error", "unknown error"))
+        return
+    _pass("POST /index/start resethard — indexer status",
+          f"status={progress.get('status', '?')}  discovered={progress.get('discovered', '?')}")
+
+    # Re-fetch /status and verify schema is healthy for every root
+    code, body = _get(port, "/status", api_key)
+    if code != 200:
+        _fail("GET /status after resethard", f"code={code}")
+        return
+
+    collections = body.get("collections", {})
+    if not collections:
+        _fail("GET /status after resethard — no collections block", str(list(body.keys())))
+        return
+
+    all_ok = True
+    for root_name, coll_info in collections.items():
+        warnings = coll_info.get("schema_warnings") or []
+        schema_ok = coll_info.get("schema_ok", False)
+        ndocs = coll_info.get("num_documents")
+        docs_str = f"{ndocs:,} docs" if ndocs is not None else "collection missing"
+        if not schema_ok or warnings:
+            _fail(f"Schema not OK for '{root_name}' after resethard",
+                  f"schema_ok={schema_ok}  warnings={warnings}  {docs_str}")
+            all_ok = False
+        else:
+            _pass(f"Schema OK for '{root_name}' after resethard", docs_str)
+
+    if all_ok:
+        _pass("All roots have valid schema after resethard")
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -619,6 +708,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--no-verify", action="store_true",
                     help="Skip the slow /check-ready and verify lifecycle tests")
+    ap.add_argument("--resethard", action="store_true",
+                    help="Run the destructive resethard test (wipes and re-indexes)")
     args = ap.parse_args()
 
     print("=" * 60)
@@ -666,8 +757,15 @@ def main():
         test_check_ready(api_port, api_key)
         test_verify_lifecycle(api_port, api_key)
 
+    if args.resethard:
+        print("\n[5] Destructive test: hard reset + schema verify")
+        _info("WARNING: this wipes and re-indexes the default root")
+        test_index_resethard(api_port, api_key)
+    else:
+        _skip("Resethard + schema verify", "pass --resethard to run")
+
     if we_started and proc:
-        print("\n[5] Teardown")
+        print("\n[6] Teardown")
         proc.terminate()
         try:
             proc.wait(timeout=5)

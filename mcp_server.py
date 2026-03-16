@@ -830,7 +830,7 @@ def manage_service(action: str = "status") -> str:
                 "status"  — Show detailed service status (PID, docs, watcher state).
                 "rebuild" — Wipe the index and re-index everything from scratch.
                             Use this after major source tree changes or index corruption.
-                            Equivalent to: ts index --reset
+                            Equivalent to: ts index --resethard
                             Runs in the background; monitor with action='status'.
     """
     import subprocess
@@ -845,7 +845,7 @@ def manage_service(action: str = "status") -> str:
         return f"ts.sh not found at {ts_sh}"
 
     if act == "rebuild":
-        cmd = ["bash", ts_sh, "index", "--reset"]
+        cmd = ["bash", ts_sh, "index", "--resethard"]
         timeout = 120
     else:
         cmd = ["bash", ts_sh, act]
@@ -906,23 +906,58 @@ def service_status(root: str = "") -> str:
         from config import collection_for_root
         root_items = [(name, collection_for_root(name)) for name in ROOTS]
 
-    lines = [f"Typesense running on port {PORT}."]
-    for root_name, coll_name in root_items:
-        req = urllib.request.Request(
-            f"http://{HOST}:{PORT}/collections/{coll_name}",
+    # Fetch per-root collection status from the indexserver API (schema validated server-side)
+    from config import API_PORT
+    api_status: dict = {}
+    api_collections: dict = {}
+    try:
+        api_req = urllib.request.Request(
+            f"http://{HOST}:{API_PORT}/status",
             headers={"X-TYPESENSE-API-KEY": API_KEY},
         )
-        try:
-            with urllib.request.urlopen(req, timeout=3) as r:
-                stats = json.loads(r.read())
-            ndocs        = stats.get("num_documents", "?")
-            has_priority = any(f["name"] == "priority" for f in stats.get("fields", []))
-            lines.append(
-                f"Root '{root_name}' ({coll_name}): {ndocs:,} docs"
-                + ("" if has_priority else "  [NO priority field — run: ts index --resethard]")
+        with urllib.request.urlopen(api_req, timeout=3) as r:
+            api_status = json.loads(r.read())
+            api_collections = api_status.get("collections", {})
+    except Exception:
+        pass  # indexserver may not be running; fall back to doc-count-only below
+
+    indexer_running = api_status.get("indexer", {}).get("running", False)
+
+    lines = [f"Typesense running on port {PORT}."]
+    for root_name, coll_name in root_items:
+        coll_info = api_collections.get(root_name)
+        if coll_info:
+            ndocs      = coll_info.get("num_documents")
+            warnings   = coll_info.get("schema_warnings") or []
+            col_exists = coll_info.get("collection_exists", ndocs is not None)
+            if not col_exists:
+                if indexer_running:
+                    docs_str = f"{ndocs:,} docs so far" if ndocs else "collection being created"
+                    lines.append(f"Root '{root_name}' ({coll_name}): indexing in progress ({docs_str})")
+                else:
+                    lines.append(f"Root '{root_name}' ({coll_name}): not yet indexed — run: ts index")
+            elif warnings:
+                warn_str = "; ".join(warnings)
+                lines.append(
+                    f"Root '{root_name}' ({coll_name}): {ndocs:,} docs  "
+                    f"[SCHEMA OUTDATED — {warn_str}]  "
+                    f"run: ts index --root {root_name} --resethard"
+                )
+            else:
+                lines.append(f"Root '{root_name}' ({coll_name}): {ndocs:,} docs")
+        else:
+            # indexserver not running — query Typesense directly for doc count only
+            req = urllib.request.Request(
+                f"http://{HOST}:{PORT}/collections/{coll_name}",
+                headers={"X-TYPESENSE-API-KEY": API_KEY},
             )
-        except Exception:
-            lines.append(f"Root '{root_name}' ({coll_name}): collection not found — run: ts index --root {root_name} --resethard")
+            try:
+                with urllib.request.urlopen(req, timeout=3) as r:
+                    stats = json.loads(r.read())
+                ndocs = stats.get("num_documents", "?")
+                lines.append(f"Root '{root_name}' ({coll_name}): {ndocs:,} docs  (schema unverified — indexserver not running)")
+            except Exception:
+                lines.append(f"Root '{root_name}' ({coll_name}): collection not found — run: ts index --root {root_name} --resethard")
 
     # Support Docker: TYPESENSE_DATA env var overrides default location
     _run_dir = Path(os.environ.get("TYPESENSE_DATA", Path.home() / ".local" / "typesense"))

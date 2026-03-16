@@ -33,6 +33,7 @@ import os
 import sys
 import json
 import argparse
+import urllib.error
 import urllib.request
 import urllib.parse
 
@@ -48,8 +49,19 @@ def _ts_search(collection: str, params: dict) -> dict:
     qs = urllib.parse.urlencode({k: str(v) for k, v in params.items()})
     url = f"http://{HOST}:{PORT}/collections/{collection}/documents/search?{qs}"
     req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": API_KEY})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        # Read the response body so callers get the actual Typesense error message
+        try:
+            body = json.loads(e.read())
+            msg = body.get("message", "")
+        except Exception:
+            msg = ""
+        raise urllib.error.HTTPError(
+            url, e.code, msg or e.reason, e.headers, None
+        ) from None
 
 
 def search(query, ext=None, sub=None, limit=10,
@@ -117,13 +129,37 @@ def search(query, ext=None, sub=None, limit=10,
 
     try:
         result = _ts_search(coll_name, params)
-    except Exception as e:
-        msg = str(e)
-        if "400" in msg or "non-indexed" in msg or "index" in msg.lower():
-            print(f"ERROR: Schema issue - re-index with: ts index --resethard")
+    except urllib.error.HTTPError as e:
+        ts_msg = e.reason  # already the Typesense message body (from _ts_search)
+        if e.code == 404:
+            if "not found" in ts_msg.lower() and "collection" in ts_msg.lower():
+                print(f"ERROR: Collection '{coll_name}' not found in Typesense.")
+                print(f"  The index has not been built yet (or was wiped).")
+                print(f"  Run: ts index --resethard")
+            else:
+                print(f"ERROR: Typesense returned 404: {ts_msg}")
+                print(f"  collection={coll_name!r}  query_by={params.get('query_by', '?')!r}")
+        elif e.code == 400:
+            print(f"ERROR: Bad search request — schema mismatch or invalid field.")
+            print(f"  Detail: {ts_msg}")
+            print(f"  Try: ts index --resethard")
+        elif e.code == 401 or e.code == 403:
+            print(f"ERROR: Typesense authentication failed (HTTP {e.code}).")
+            print(f"  Check api_key in config.json matches the running server.")
+        elif e.code == 503:
+            print(f"ERROR: Typesense is not ready yet (HTTP 503).")
+            print(f"  Wait a moment and retry, or check: ts status")
         else:
-            print(f"ERROR: Cannot reach Typesense — is the server running? Run: ts start")
-        print(f"  Detail: {e}")
+            print(f"ERROR: Typesense returned HTTP {e.code}.")
+            print(f"  Detail: {e}")
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"ERROR: Cannot reach Typesense at {HOST}:{PORT} — is the server running?")
+        print(f"  Run: ts start")
+        print(f"  Detail: {e.reason}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: Unexpected error talking to Typesense: {e}")
         sys.exit(1)
 
     return result, query_by

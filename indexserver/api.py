@@ -58,7 +58,7 @@ from indexserver.config import (
     to_native_path, collection_for_root, TYPESENSE_CLIENT_CONFIG,
 )
 from indexserver.index_queue import IndexQueue
-from indexserver.indexer import walk_and_enqueue, walk_source_files, ensure_collection, get_client
+from indexserver.indexer import walk_and_enqueue, walk_source_files, ensure_collection, get_client, verify_all_schemas, verify_schema
 from indexserver.verifier import check_ready, run_verify
 from indexserver.watcher import run_watcher
 
@@ -89,6 +89,13 @@ _verify_lock   = threading.Lock()
 _index_thread: threading.Thread | None = None
 _index_lock   = threading.Lock()
 _index_progress: dict = {}   # updated by the in-process indexer thread
+
+# Schema validation results cached at startup by verify_all_schemas().
+# Shape: {root_name: {"ok": bool, "warnings": [...], "collection": str}}
+_schema_status: dict = {}
+
+# Typesense client, set in run() and used by /status for live doc counts.
+_ts_client = None
 
 # Set to True by POST /watcher/pause (Windows watcher running — polling not needed).
 # Suppresses heartbeat auto-revival of the watcher thread.
@@ -145,14 +152,14 @@ def _enqueue_file_events(events: list) -> dict:
 
 # ── In-process indexer thread ──────────────────────────────────────────────────
 
-def _run_index_thread(src_root: str, collection: str, resethard: bool, stop_event: threading.Event) -> None:
+def _run_index_thread(src_root: str, collection: str, resethard: bool, stop_event: threading.Event, root_name: str = "") -> None:
     """Walk src_root and feed every file into _index_queue (runs as a thread in api.py).
 
     Retries up to 3 times (with a 15 s delay) if Typesense isn't fully ready
     yet after a hard reset.  On retry the collection is NOT dropped again —
     ensure_collection will create it if it doesn't exist.
     """
-    global _index_progress
+    global _index_progress, _schema_status
     _INDEXER_PID.write_text(str(os.getpid()))
     max_attempts = 3
     try:
@@ -168,7 +175,7 @@ def _run_index_thread(src_root: str, collection: str, resethard: bool, stop_even
                 print(f"[indexer] {prefix}Starting {'(resethard) ' if resethard else ''}for {src_root} → {collection}", flush=True)
                 n_new, n_dedup = walk_and_enqueue(
                     src_root, collection, _index_queue,
-                    reset=resethard, stop_event=stop_event,
+                    resethard=resethard, stop_event=stop_event,
                 )
                 _index_progress = {
                     "status":     "queued" if not stop_event.is_set() else "stopped",
@@ -178,6 +185,24 @@ def _run_index_thread(src_root: str, collection: str, resethard: bool, stop_even
                     "queue_depth": _index_queue.depth,
                 }
                 print(f"[indexer] Walk complete: {n_new} queued, {n_dedup} deduped, queue depth={_index_queue.depth}", flush=True)
+
+                # Refresh schema status now that the collection exists with the new schema
+                if root_name and _ts_client and not stop_event.is_set():
+                    exists, warnings = verify_schema(_ts_client, collection)
+                    _schema_status[root_name] = {
+                        "ok":                exists and not warnings,
+                        "collection_exists": exists,
+                        "warnings":          warnings,
+                        "collection":        collection,
+                    }
+                    if not exists:
+                        print(f"[indexer] schema MISSING {collection}", flush=True)
+                    elif warnings:
+                        for w in warnings:
+                            print(f"[indexer] schema WARN {collection}: {w}", flush=True)
+                    else:
+                        print(f"[indexer] schema OK {collection}", flush=True)
+
                 break  # success
             except Exception as e:
                 if attempt < max_attempts and not stop_event.is_set():
@@ -403,6 +428,30 @@ class _Handler(BaseHTTPRequestHandler):
                     result["verifier"]["progress"] = json.loads(_PROGRESS_FILE.read_text())
                 except Exception:
                     pass
+
+            # Per-root collection status: live doc count + cached schema check
+            collections: dict = {}
+            for root_name in ROOTS:
+                coll = collection_for_root(root_name)
+                schema = _schema_status.get(root_name, {})
+                ndocs: int | None = None
+                try:
+                    info = _ts_client.collections[coll].retrieve()
+                    ndocs = info.get("num_documents")
+                except Exception:
+                    pass
+                # Use the live Typesense retrieve() as the authoritative existence check;
+                # the cached _schema_status may be stale (e.g. collection just created).
+                col_live_exists = ndocs is not None
+                collections[root_name] = {
+                    "collection":        coll,
+                    "num_documents":     ndocs,
+                    "collection_exists": col_live_exists,
+                    "schema_ok":         col_live_exists and schema.get("ok", False),
+                    "schema_warnings":   schema.get("warnings", []) if col_live_exists else [],
+                }
+            result["collections"] = collections
+
             self._send_json(200, result)
             return
 
@@ -512,8 +561,10 @@ class _Handler(BaseHTTPRequestHandler):
         # ── POST /index/start ─────────────────────────────────────────────────
         if method == "POST" and path == "/index/start":
             body = self._read_body()
+            root_arg  = body.get("root", "")
+            root_name = root_arg if root_arg else ("default" if "default" in ROOTS else next(iter(ROOTS)))
             try:
-                collection, src_root = get_root(body.get("root", ""))
+                collection, src_root = get_root(root_name)
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
@@ -526,7 +577,7 @@ class _Handler(BaseHTTPRequestHandler):
                 _index_stop = threading.Event()
                 _index_thread = threading.Thread(
                     target=_run_index_thread,
-                    args=(src_root, collection, resethard, _index_stop),
+                    args=(src_root, collection, resethard, _index_stop, root_name),
                     name="indexer",
                     daemon=True,
                 )
@@ -727,7 +778,12 @@ def run(host: str = "127.0.0.1", port: int = API_PORT) -> None:
     signal.signal(signal.SIGTERM, _on_sigterm)
 
     # Start the index queue worker (needs a Typesense client — server must be up first)
-    _index_queue.start(get_client())
+    global _ts_client, _schema_status
+    _ts_client = get_client()
+    _index_queue.start(_ts_client)
+
+    # Verify collection schemas match the expected definition; cache for /status
+    _schema_status = verify_all_schemas(_ts_client)
 
     # Start watcher thread
     _start_watcher()

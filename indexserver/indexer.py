@@ -533,7 +533,89 @@ def get_client():
     return typesense.Client(TYPESENSE_CLIENT_CONFIG)
 
 
-def ensure_collection(client, reset=False, collection=None):
+# ---------------------------------------------------------------------------
+# Schema verification
+# ---------------------------------------------------------------------------
+
+_EXPECTED_TOKEN_SEPARATORS = set(build_schema("_")["token_separators"])
+
+def verify_schema(client, collection: str) -> tuple[bool, list[str]]:
+    """Check a Typesense collection against the expected schema.
+
+    Returns (exists, warnings):
+      exists=False — collection not found (not yet indexed); warnings is empty.
+      exists=True  — collection found; warnings lists any field/type mismatches.
+    Does not raise; callers should log the warnings.
+    """
+    try:
+        info = client.collections[collection].retrieve()
+    except Exception as e:
+        err_str = str(e).lower()
+        if "404" in err_str or "not found" in err_str:
+            return False, []   # collection simply doesn't exist yet
+        return False, [f"could not retrieve collection {collection!r}: {e}"]
+
+    warnings = []
+
+    # ── field checks ──────────────────────────────────────────────────────────
+    actual_fields = {f["name"]: f for f in info.get("fields", [])}
+    for expected in _SCHEMA_FIELDS:
+        name = expected["name"]
+        if name not in actual_fields:
+            warnings.append(f"field {name!r} missing from collection")
+            continue
+        actual = actual_fields[name]
+        if actual.get("type") != expected.get("type"):
+            warnings.append(
+                f"field {name!r} type: expected {expected['type']!r}, "
+                f"got {actual.get('type')!r}"
+            )
+        if bool(expected.get("facet")) != bool(actual.get("facet")):
+            warnings.append(
+                f"field {name!r} facet: expected {expected.get('facet', False)}, "
+                f"got {actual.get('facet', False)}"
+            )
+
+    # ── token_separators check ────────────────────────────────────────────────
+    actual_seps = set(info.get("token_separators", []))
+    missing_seps = _EXPECTED_TOKEN_SEPARATORS - actual_seps
+    extra_seps   = actual_seps - _EXPECTED_TOKEN_SEPARATORS
+    if missing_seps:
+        warnings.append(f"token_separators missing: {sorted(missing_seps)}")
+    if extra_seps:
+        warnings.append(f"token_separators unexpected: {sorted(extra_seps)}")
+
+    return True, warnings
+
+
+def verify_all_schemas(client) -> dict:
+    """Verify schema for every configured root; print results to stdout.
+
+    Returns a dict keyed by root name:
+        {"ok": bool, "warnings": [str, ...], "collection": str}
+    """
+    from indexserver.config import ROOTS, collection_for_root
+    results = {}
+    for name in ROOTS:
+        coll = collection_for_root(name)
+        exists, warnings = verify_schema(client, coll)
+        results[name] = {
+            "ok":                 exists and not warnings,
+            "collection_exists":  exists,
+            "warnings":           warnings,
+            "collection":         coll,
+        }
+        if not exists:
+            print(f"[schema] MISSING {coll} (not yet indexed)", flush=True)
+        elif warnings:
+            for w in warnings:
+                print(f"[schema] WARN  {coll}: {w}", flush=True)
+        else:
+            print(f"[schema] OK    {coll}", flush=True)
+    return results
+
+
+def ensure_collection(client, resethard=False, collection=None):
     coll_name = collection or COLLECTION
     schema = build_schema(coll_name)
 
@@ -560,7 +642,7 @@ def ensure_collection(client, reset=False, collection=None):
                 exists = False
                 break
 
-    if exists and reset:
+    if exists and resethard:
         print(f"Dropping existing collection '{coll_name}'...")
         client.collections[coll_name].delete()
         exists = False
@@ -716,17 +798,17 @@ def walk_and_enqueue(
     src_root: str,
     collection: str,
     queue,
-    reset: bool = False,
+    resethard: bool = False,
     stop_event=None,
 ) -> tuple[int, int]:
     """Walk *src_root* and feed every source file into *queue*.
 
-    Calls ensure_collection() first (dropping the collection when reset=True).
+    Calls ensure_collection() first (dropping the collection when resethard=True).
     Returns (new_entries, deduped_entries).
     """
     src_root = _to_native_path(src_root)
     client = get_client()
-    ensure_collection(client, reset=reset, collection=collection)
+    ensure_collection(client, resethard=resethard, collection=collection)
     return queue.enqueue_bulk(
         walk_source_files(src_root),
         collection=collection,
@@ -734,14 +816,14 @@ def walk_and_enqueue(
     )
 
 
-def run_index(src_root=None, reset=False, batch_size=50, verbose=False, collection=None):
+def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, collection=None):
     if src_root is None:
         src_root = _SRC_ROOT_NATIVE
     else:
         src_root = _to_native_path(src_root)
     coll_name = collection or COLLECTION
     client = get_client()
-    ensure_collection(client, reset=reset, collection=coll_name)
+    ensure_collection(client, resethard=resethard, collection=coll_name)
 
     t0 = time.time()
     last_report_t = t0
@@ -822,5 +904,5 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Cannot retrieve index stats: {e}")
     else:
-        run_index(src_root=args.src, reset=args.resethard, verbose=args.verbose,
+        run_index(src_root=args.src, resethard=args.resethard, verbose=args.verbose,
                   collection=coll)
