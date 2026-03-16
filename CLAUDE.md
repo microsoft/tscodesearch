@@ -1,5 +1,18 @@
 # codesearch — developer notes for Claude
 
+## CRITICAL: fictional names in examples and documentation
+
+When writing or fixing code in this repo — including docstrings, comments, CLI
+`--help` text, MCP tool descriptions, and inline examples — **never use real
+names from the codebase being searched** (type names, method names, property
+names, namespace names, etc.). Always substitute **fictional, generic names**
+(e.g. `Widget`, `IRepository`, `SaveChanges`, `ConnectionString`, `Order`).
+
+This applies everywhere: `query.py` docstrings, `mcp_server.py` tool
+descriptions, `CLAUDE.md`, test fixture comments, and any other documentation.
+Using real names leaks implementation details into tool metadata that is
+visible outside this repository.
+
 ## Architecture overview
 
 Two distinct layers that run in separate processes and venvs:
@@ -163,6 +176,7 @@ T2 fields (`type_refs`, `attributes`, `usings`) are broader and may have minor f
 | `casts` | TYPE | Every explicit `(TYPE)expr` cast |
 | `ident` | NAME | Every identifier occurrence (semantic grep) |
 | `member_accesses` | TYPE | All `.Member` accesses on locals/params typed as TYPE. Handles explicit type annotations and var-inferred locals: `var x = new T()`, `var arr = new T[n]` + `var x = arr[i]`, `var x = expr as T`, `var x = (T)expr`. |
+| `accesses_of` | MEMBER | Every access site of a property or field named MEMBER. Accepts bare name (`"Status"`) or qualified name (`"Order.Status"`) to restrict matches to a specific receiver class. |
 | `attrs` | NAME? | `[Attribute]` decorators, optionally filtered |
 | `usings` | — | All using directives |
 | `find` | NAME | Full source of method/type named NAME |

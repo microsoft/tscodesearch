@@ -263,44 +263,8 @@ def search_code(
 
 
 _QUERY_CODEBASE_LIMIT = 250
+_MAX_OUTPUT_CHARS = 40_000
 
-
-def _run_ast_on_files(
-    file_list: list[str],
-    m: str,
-    pattern: str,
-    context_lines: int,
-    src_root: str,
-    lang: str,
-) -> tuple[str, int]:
-    """Run tree-sitter query over file_list. Returns (output_text, file_match_count)."""
-    from query import process_file, process_py_file
-    buf = io.StringIO()
-    sys.stdout, old = buf, sys.stdout
-    match_counts: dict[str, int] = {}
-    try:
-        for fpath in file_list:
-            fn = process_py_file if lang == "py" else process_file
-            n = fn(
-                path       = fpath,
-                mode       = m,
-                mode_arg   = pattern,
-                show_path  = True,
-                count_only = False,
-                context    = context_lines,
-                src_root   = src_root,
-            )
-            if n:
-                match_counts[fpath] = n
-    finally:
-        sys.stdout = old
-
-    output = buf.getvalue().strip()
-    output_lines = output.splitlines()
-    if len(output_lines) > 300:
-        output = "\n".join(output_lines[:300])
-        output += f"\n\n[truncated — {len(output_lines) - 300} more lines]"
-    return output, len(match_counts)
 
 
 @mcp.tool()
@@ -327,8 +291,8 @@ def query_codebase(
         mode:    Search + AST mode. All modes run Typesense pre-filter then
                  tree-sitter AST to return exact line numbers.
                  C#: text, symbols, sig, uses, calls, implements, casts,
-                     field_type, param_type, ident, member_accesses, find,
-                     params, attrs
+                     field_type, param_type, ident, member_accesses,
+                     accesses_of, find, params, attrs
                  Python (ext="py"): calls, implements, ident, find,
                      params, decorators
         pattern: Type/method/name to search for. Used for both the
@@ -341,12 +305,14 @@ def query_codebase(
         root:    Named source root (empty = default).
 
     Examples:
-        query_codebase("casts", "BlobStore")
-        query_codebase("uses", "IAbsBlobStore", sub="sts")
-        query_codebase("calls", "WriteBlobs", sub="stsom")
-        query_codebase("implements", "IAbsBlobStore")
-        query_codebase("attrs", "Obsolete", sub="spo")
-        query_codebase("find", "WriteBlobs", sub="sts")
+        query_codebase("casts", "Widget")
+        query_codebase("uses", "IDataStore", sub="core")
+        query_codebase("calls", "SaveChanges", sub="services")
+        query_codebase("implements", "IRepository")
+        query_codebase("attrs", "Obsolete", sub="api")
+        query_codebase("find", "SaveChanges", sub="core")
+        query_codebase("accesses_of", "ConnectionString")
+        query_codebase("accesses_of", "DataStore.ConnectionString")
     """
     import json as _json
     import urllib.request as _urlreq
@@ -453,6 +419,33 @@ def query_codebase(
     output = "\n".join(output_lines)
     if not output:
         return _queue_warning() + header + "No AST matches found."
+
+    # Guard against oversized results that would exceed MCP token limits.
+    _MAX_CHARS = _MAX_OUTPUT_CHARS
+    if len(output) > _MAX_CHARS:
+        import datetime
+        log_dir = Path.home() / ".local" / "tscodesearch" / "query_results"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = log_dir / f"query_{ts}.txt"
+        log_path.write_text(
+            f"# query_codebase({mode!r}, {pattern!r}, sub={sub!r})\n\n{output}",
+            encoding="utf-8",
+        )
+        truncated = output[:_MAX_CHARS]
+        last_nl = truncated.rfind("\n")
+        if last_nl > 0:
+            truncated = truncated[:last_nl]
+        n_shown = truncated.count("\n") + 1
+        n_total = len(output_lines)
+        summary = (
+            f"[Result truncated — {n_total} matches across {n_files_matched} files "
+            f"({len(output):,} chars). Full results saved to:\n"
+            f"  {log_path}\n"
+            f"Showing first {n_shown} lines below.]\n\n"
+        )
+        return _queue_warning() + header + summary + truncated
+
     return _queue_warning() + header + output
 
 
@@ -475,8 +468,8 @@ def query_single_file(
     Args:
         mode:    AST query mode.
                  Pattern-required: uses, calls, implements, casts, field_type,
-                   param_type, ident, member_accesses, find, params, attrs,
-                   decorators (C# and/or Python)
+                   param_type, ident, member_accesses, accesses_of, find,
+                   params, attrs, decorators (C# and/or Python)
                  Listing (no pattern needed): methods, fields, classes,
                    usings (C#), imports (Python)
         pattern: Type/method/name to search for. Required for pattern modes;
@@ -514,14 +507,53 @@ def query_single_file(
 
     m = mode.lower().strip().replace("-", "_")
 
-    output, _ = _run_ast_on_files(
-        [abs_path], m, pattern, context_lines, _src_root, _lang
-    )
+    from query import process_file, process_py_file
+    buf = io.StringIO()
+    sys.stdout, _old = buf, sys.stdout
+    try:
+        fn = process_py_file if _lang == "py" else process_file
+        fn(
+            path       = abs_path,
+            mode       = m,
+            mode_arg   = pattern,
+            show_path  = True,
+            count_only = False,
+            context    = context_lines,
+            src_root   = _src_root,
+        )
+    finally:
+        sys.stdout = _old
 
+    output = buf.getvalue().strip()
     rel = os.path.relpath(abs_path, _src_root).replace("\\", "/")
     header = f"[{rel}]\n"
     if not output:
         return header + "No matches found."
+
+    _MAX_CHARS = _MAX_OUTPUT_CHARS
+    if len(output) > _MAX_CHARS:
+        import datetime
+        log_dir = Path.home() / ".local" / "tscodesearch" / "query_results"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = log_dir / f"query_{ts}.txt"
+        log_path.write_text(
+            f"# query_single_file({mode!r}, {pattern!r}, file={abs_path!r})\n\n{output}",
+            encoding="utf-8",
+        )
+        truncated = output[:_MAX_CHARS]
+        last_nl = truncated.rfind("\n")
+        if last_nl > 0:
+            truncated = truncated[:last_nl]
+        n_shown = truncated.count("\n") + 1
+        n_total = len(output.splitlines())
+        summary = (
+            f"[Result truncated — {n_total} lines ({len(output):,} chars). "
+            f"Full results saved to:\n  {log_path}\n"
+            f"Showing first {n_shown} lines below.]\n\n"
+        )
+        return header + summary + truncated
+
     return header + output
 
 
