@@ -294,6 +294,7 @@ def _run_query(mode: str, pattern: str, files: list) -> list:
         "casts":           lambda s, t, l: _q.q_casts(s, t, l, pattern),
         "ident":           lambda s, t, l: _q.q_ident(s, t, l, pattern),
         "member_accesses": lambda s, t, l: _q.q_member_accesses(s, t, l, pattern),
+        "accesses_of":     lambda s, t, l: _q.q_accesses_of(s, t, l, pattern),
         "attrs":           lambda s, t, l: _q.q_attrs(s, t, l, pattern or None),
         "find":            lambda s, t, l: _q.q_find(s, t, l, pattern),
         "params":          lambda s, t, l: _q.q_params(s, t, l, pattern),
@@ -340,6 +341,7 @@ _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
     "param_type":      ("uses",       "param_type"),
     "ident":           ("uses",       "ident"),
     "member_accesses": ("uses",       "member_accesses"),
+    "accesses_of":     ("uses",       "accesses_of"),
     "find":            ("sig",        "find"),
     "params":          ("sig",        "params"),
 }

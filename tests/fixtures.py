@@ -632,3 +632,44 @@ namespace Synth {
     }
 }
 """
+
+# ── accesses_of fixtures ──────────────────────────────────────────────────────
+
+# ✓ Two accesses of .Status on different receiver types.
+ACCESSES_OF_STATUS = """\
+namespace Synth {
+    public class OrderProcessor {
+        private IOrderRepository _repo;
+        private ILogger _log;
+        public void Process(Order order) {
+            var s = order.Status;
+            _log.Info(order.Status.ToString());
+            var name = order.Name;
+        }
+    }
+}
+"""
+
+# ✓ Qualified name: only Order.Status, not Logger.Status.
+ACCESSES_OF_STATUS_QUALIFIED = """\
+namespace Synth {
+    public class Mixed {
+        public void Run(Order order, ILogger log) {
+            var s1 = order.Status;
+            var s2 = log.Status;
+        }
+    }
+}
+"""
+
+# ✓ No .Status access — must return empty.
+ACCESSES_OF_NO_STATUS = """\
+namespace Synth {
+    public class NoStatus {
+        public void Run(Order order) {
+            var n = order.Name;
+            order.Process();
+        }
+    }
+}
+"""

@@ -314,6 +314,42 @@ def q_calls(src, tree, lines, method_name):
     return results
 
 
+def q_accesses_of(src, tree, lines, member_name):
+    """
+    Find every access site of a property or field named MEMBER_NAME.
+
+    member_name may be a bare name ("SiteKeyStore") or a dot-qualified name
+    ("BlobStore.SiteKeyStore") to restrict matches to accesses through a
+    specific class or namespace prefix.
+    """
+    if "." in member_name:
+        qualifier, bare_name = member_name.rsplit(".", 1)
+    else:
+        qualifier, bare_name = None, member_name
+
+    results = []
+    for node in _find_all(tree.root_node,
+                          lambda n: n.type == "member_access_expression"):
+        if _in_literal(node):
+            continue
+        member = node.child_by_field_name("name")
+        expr   = node.child_by_field_name("expression")
+        if not member:
+            continue
+        if _strip_generic(_text(member, src)) != bare_name:
+            continue
+        if qualifier:
+            expr_txt = _text(expr, src).strip() if expr else ""
+            if not (expr_txt == qualifier or expr_txt.endswith("." + qualifier)):
+                continue
+        raw = _text(node, src).replace("\n", " ").replace("\r", "")
+        if len(raw) > 140:
+            raw = raw[:140] + "…"
+        results.append((_line(node), raw))
+
+    return results
+
+
 def q_implements(src, tree, lines, type_name):
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
@@ -1175,6 +1211,7 @@ def process_file(path, mode, mode_arg, show_path, count_only, context=0, src_roo
         "casts":           lambda: q_casts(src_bytes, tree, lines, mode_arg),
         "ident":           lambda: q_ident(src_bytes, tree, lines, mode_arg),
         "member_accesses": lambda: q_member_accesses(src_bytes, tree, lines, mode_arg),
+        "accesses_of":     lambda: q_accesses_of(src_bytes, tree, lines, mode_arg),
         "attrs":           lambda: q_attrs(src_bytes, tree, lines, mode_arg),
         "usings":          lambda: q_usings(src_bytes, tree, lines),
         "find":            lambda: q_find(src_bytes, tree, lines, mode_arg),
@@ -1283,6 +1320,8 @@ def main():
                     help="Find every identifier occurrence (semantic grep, skips comments/strings)")
     mg.add_argument("--member-accesses",  metavar="TYPE",
                     help="Find all .Member accesses on locals/params declared as TYPE")
+    mg.add_argument("--accesses-of",      metavar="MEMBER",
+                    help="Find every access site of property/field MEMBER (optionally Class.MEMBER)")
     mg.add_argument("--attrs",            metavar="NAME", nargs="?", const="",
                     help="List [Attribute] decorators (optionally filter by NAME)")
     mg.add_argument("--usings",     action="store_true",
@@ -1338,6 +1377,8 @@ def main():
         mode, mode_arg = "ident",            args.ident
     elif args.member_accesses:
         mode, mode_arg = "member_accesses",  args.member_accesses
+    elif args.accesses_of:
+        mode, mode_arg = "accesses_of",      args.accesses_of
     elif args.attrs is not None:
         mode, mode_arg = "attrs",      args.attrs or None
     elif args.usings:
