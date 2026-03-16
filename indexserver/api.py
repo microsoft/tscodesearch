@@ -26,8 +26,10 @@ Endpoints (all require X-TYPESENSE-API-KEY header):
   POST /query               → body {"mode": "calls", "pattern": "MethodName", "files": ["/abs/path.cs"]}
                               Run a tree-sitter C# AST query against the given files.
                               Returns {"results": [{"file": path, "matches": [{"line": N, "text": "..."}]}]}
-                              Modes: calls, implements, uses, field_type, param_type, casts, ident,
-                                     member_accesses, attrs, find, params, classes, methods, fields, usings
+                              Modes: text, find, calls, implements, uses, casts, attrs, accesses_of,
+                                     accesses_on, all_refs, attrs, find, params, classes, methods, fields, usings
+                              Aliases: symbols→find, ident→all_refs, member_accesses→accesses_on,
+                                       field_type→uses(kind=field), param_type→uses(kind=param), sig→uses(kind=return)
 """
 
 from __future__ import annotations
@@ -273,7 +275,7 @@ def _get_query_module():
     return _query_module
 
 
-def _run_query(mode: str, pattern: str, files: list) -> list:
+def _run_query(mode: str, pattern: str, files: list, include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
     """Run a tree-sitter C# AST query against a list of absolute file paths.
 
     Returns a list of {"file": path, "matches": [{"line": N, "text": "..."}]}
@@ -288,17 +290,14 @@ def _run_query(mode: str, pattern: str, files: list) -> list:
         "usings":          lambda s, t, l: _q.q_usings(s, t, l),
         "calls":           lambda s, t, l: _q.q_calls(s, t, l, pattern),
         "implements":      lambda s, t, l: _q.q_implements(s, t, l, pattern),
-        "uses":            lambda s, t, l: _q.q_uses(s, t, l, pattern),
-        "field_type":      lambda s, t, l: _q.q_field_type(s, t, l, pattern),
-        "param_type":      lambda s, t, l: _q.q_param_type(s, t, l, pattern),
+        "uses":            lambda s, t, l: _q.q_uses(s, t, l, pattern, uses_kind=uses_kind),
+        "accesses_on":     lambda s, t, l: _q.q_accesses_on(s, t, l, pattern),
+        "all_refs":        lambda s, t, l: _q.q_all_refs(s, t, l, pattern),
         "casts":           lambda s, t, l: _q.q_casts(s, t, l, pattern),
-        "ident":           lambda s, t, l: _q.q_ident(s, t, l, pattern),
-        "member_accesses": lambda s, t, l: _q.q_member_accesses(s, t, l, pattern),
-        "accesses_of":     lambda s, t, l: _q.q_accesses_of(s, t, l, pattern),
         "attrs":           lambda s, t, l: _q.q_attrs(s, t, l, pattern or None),
-        "find":            lambda s, t, l: _q.q_find(s, t, l, pattern),
+        "accesses_of":     lambda s, t, l: _q.q_accesses_of(s, t, l, pattern),
+        "declarations":    lambda s, t, l: _q.q_declarations(s, t, l, pattern, include_body=include_body, symbol_kind=symbol_kind),
         "params":          lambda s, t, l: _q.q_params(s, t, l, pattern),
-        "sig":             lambda s, t, l: _q.q_sig(s, t, l, pattern),
     }
 
     fn = dispatch.get(mode)
@@ -329,21 +328,17 @@ def _run_query(mode: str, pattern: str, files: list) -> list:
 # ── Mode mapping: extension mode key → (Typesense mode flag, AST mode) ─────────
 
 _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
-    "text":            ("text",       "ident"),
-    "symbols":         ("symbols",    "find"),
-    "sig":             ("sig",        "sig"),
-    "uses":            ("uses",       "uses"),
+    # Primary modes
+    "text":            ("text",       "all_refs"),
+    "declarations":    ("symbols",    "declarations"),
     "calls":           ("calls",      "calls"),
     "implements":      ("implements", "implements"),
+    "uses":            ("uses",       "uses"),
     "casts":           ("casts",      "casts"),
     "attrs":           ("attrs",      "attrs"),
-    "field_type":      ("uses",       "field_type"),
-    "param_type":      ("uses",       "param_type"),
-    "ident":           ("uses",       "ident"),
-    "member_accesses": ("uses",       "member_accesses"),
-    "accesses_of":     ("uses",       "accesses_of"),
-    "find":            ("sig",        "find"),
-    "params":          ("sig",        "params"),
+    "accesses_of":     ("text",       "accesses_of"),   # content pre-filter
+    "accesses_on":     ("uses",       "accesses_on"),
+    "all_refs":        ("text",       "all_refs"),
 }
 
 
@@ -547,12 +542,23 @@ class _Handler(BaseHTTPRequestHandler):
         # ── POST /query-codebase ──────────────────────────────────────────────
         if method == "POST" and path == "/query-codebase":
             body    = self._read_body()
-            mode    = body.get("mode", "")
-            pattern = body.get("pattern", "")
-            sub     = body.get("sub", "") or None
-            ext     = body.get("ext", "") or None
-            root    = body.get("root", "")
-            limit   = int(body.get("limit", 50))
+            mode         = body.get("mode", "")
+            pattern      = body.get("pattern", "")
+            sub          = body.get("sub", "") or None
+            ext          = body.get("ext", "") or None
+            root         = body.get("root", "")
+            limit        = int(body.get("limit", 50))
+            include_body = bool(body.get("include_body", False))
+            symbol_kind  = str(body.get("symbol_kind", "") or "")
+            uses_kind    = str(body.get("uses_kind", "") or "")
+
+            # Backward-compat: map old modes to uses_kind
+            if mode == "sig" and not uses_kind:
+                uses_kind = "return"
+            elif mode == "field_type" and not uses_kind:
+                uses_kind = "field"
+            elif mode == "param_type" and not uses_kind:
+                uses_kind = "param"
 
             if mode not in _EXT_TO_TS_AND_AST:
                 self._send_json(400, {"error": f"unknown mode: {mode!r}"})
@@ -582,6 +588,8 @@ class _Handler(BaseHTTPRequestHandler):
                 attrs        = (ts_mode_flag == "attrs"),
                 casts        = (ts_mode_flag == "casts"),
                 collection   = collection,
+                symbol_kind  = symbol_kind,
+                uses_kind    = uses_kind,
             )
 
             import io as _io
@@ -625,7 +633,7 @@ class _Handler(BaseHTTPRequestHandler):
                     hit_by_path[abs_path] = hit
 
             # Run AST query
-            ast_results = _run_query(ast_mode, pattern, file_list)
+            ast_results = _run_query(ast_mode, pattern, file_list, include_body=include_body, symbol_kind=symbol_kind, uses_kind=uses_kind)
 
             # Build response hits (only files with AST matches)
             response_hits = []
@@ -659,6 +667,7 @@ class _Handler(BaseHTTPRequestHandler):
             mode    = body.get("mode", "")
             pattern = body.get("pattern", "")
             files   = body.get("files", [])
+            uses_kind_q = str(body.get("uses_kind", "") or "")
             if not mode:
                 self._send_json(400, {"error": "mode required"})
                 return
@@ -666,7 +675,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "files must be a non-empty list"})
                 return
             try:
-                results = _run_query(mode, pattern, files)
+                results = _run_query(mode, pattern, files, uses_kind=uses_kind_q)
                 self._send_json(200, {"results": results})
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})

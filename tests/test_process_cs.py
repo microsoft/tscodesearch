@@ -49,7 +49,7 @@ class TestQueryCs(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
-    def _run(self, path, mode, mode_arg=None):
+    def _run(self, path, mode, mode_arg=None, uses_kind=None):
         buf = io.StringIO()
         old = sys.stdout
         sys.stdout = buf
@@ -58,6 +58,7 @@ class TestQueryCs(unittest.TestCase):
                 path=path, mode=mode, mode_arg=mode_arg,
                 show_path=True, count_only=False, context=0,
                 src_root=self.tmpdir,
+                uses_kind=uses_kind,
             )
         finally:
             sys.stdout = old
@@ -125,17 +126,17 @@ class TestQueryCs(unittest.TestCase):
         self.assertGreater(n, 0)
         self.assertIn("Foo", out)
 
-    # ── mode: field_type ──────────────────────────────────────────────────────
+    # ── mode: uses(kind=field) ────────────────────────────────────────────────
 
     def test_field_type_foo_in_bar(self):
-        n, out = self._run(self.bar_path, "field_type", "Foo")
+        n, out = self._run(self.bar_path, "uses", "Foo", uses_kind="field")
         self.assertGreater(n, 0)
         self.assertIn("_foo", out)
 
-    # ── mode: param_type ──────────────────────────────────────────────────────
+    # ── mode: uses(kind=param) ────────────────────────────────────────────────
 
     def test_param_type_foo_in_bar_ctor(self):
-        n, out = self._run(self.bar_path, "param_type", "Foo")
+        n, out = self._run(self.bar_path, "uses", "Foo", uses_kind="param")
         self.assertGreater(n, 0)
         self.assertIn("Foo", out)
 
@@ -194,7 +195,7 @@ class TestQueryCs(unittest.TestCase):
     def test_type_refs_consistent(self):
         meta = extract_cs_metadata(_BAR_CS.encode())
         self.assertIn("Foo", meta["type_refs"])
-        n, out = self._run(self.bar_path, "field_type", "Foo")
+        n, out = self._run(self.bar_path, "uses", "Foo", uses_kind="field")
         self.assertGreater(n, 0)
 
     def test_attributes_consistent(self):
@@ -225,12 +226,12 @@ class TestQueryCs(unittest.TestCase):
 
     def test_field_type_qualified_matches_simple(self):
         path = self._make_qualified_file()
-        n, out = self._run(path, "field_type", "IBlobStore")
+        n, out = self._run(path, "uses", "IBlobStore", uses_kind="field")
         self.assertGreater(n, 0)
 
     def test_param_type_qualified_matches_simple(self):
         path = self._make_qualified_file()
-        n, out = self._run(path, "param_type", "IBlobStore")
+        n, out = self._run(path, "uses", "IBlobStore", uses_kind="param")
         self.assertGreater(n, 0)
 
     def test_attrs_qualified_matches_simple(self):
@@ -249,17 +250,17 @@ class TestQueryCs(unittest.TestCase):
 
     def test_field_type_matches_generic_wrapper_arg(self):
         path = self._make_generic_wrapper_file()
-        n, out = self._run(path, "field_type", "IBlobStore")
+        n, out = self._run(path, "uses", "IBlobStore", uses_kind="field")
         self.assertGreater(n, 0)
 
     def test_param_type_matches_generic_wrapper_arg(self):
         path = self._make_generic_wrapper_file()
-        n, out = self._run(path, "param_type", "IBlobStore")
+        n, out = self._run(path, "uses", "IBlobStore", uses_kind="param")
         self.assertGreater(n, 0)
 
     def test_field_type_outer_still_matches(self):
         path = self._make_generic_wrapper_file()
-        n, out = self._run(path, "field_type", "IList")
+        n, out = self._run(path, "uses", "IList", uses_kind="field")
         self.assertGreater(n, 0)
 
 
@@ -304,44 +305,44 @@ class TestQueryApi(unittest.TestCase):
     # ── result structure ───────────────────────────────────────────────────────
 
     def test_returns_list(self):
-        result = _run_query("ident", "IBlobStore", [self.generic_path])
+        result = _run_query("all_refs", "IBlobStore", [self.generic_path])
         self.assertIsInstance(result, list)
 
     def test_result_has_file_and_matches_keys(self):
-        result = _run_query("ident", "IBlobStore", [self.generic_path])
+        result = _run_query("all_refs", "IBlobStore", [self.generic_path])
         self.assertEqual(len(result), 1)
         self.assertIn("file", result[0])
         self.assertIn("matches", result[0])
 
     def test_match_has_line_and_text_keys(self):
-        result = _run_query("ident", "IBlobStore", [self.generic_path])
+        result = _run_query("all_refs", "IBlobStore", [self.generic_path])
         m = result[0]["matches"][0]
         self.assertIn("line", m)
         self.assertIn("text", m)
 
     def test_line_is_1_indexed(self):
-        result = _run_query("ident", "IBlobStore", [self.generic_path])
+        result = _run_query("all_refs", "IBlobStore", [self.generic_path])
         for m in result[0]["matches"]:
             self.assertGreaterEqual(m["line"], 1)
 
     def test_original_path_preserved(self):
         """File path in result must match exactly what was passed in."""
-        result = _run_query("ident", "IBlobStore", [self.generic_path])
+        result = _run_query("all_refs", "IBlobStore", [self.generic_path])
         self.assertEqual(result[0]["file"], self.generic_path)
 
     # ── ident mode vs direct call ──────────────────────────────────────────────
 
-    def test_ident_matches_direct_q_ident(self):
-        """_run_query('ident', ...) returns same (line, text) pairs as q_ident directly."""
+    def test_ident_matches_direct_q_all_refs(self):
+        """_run_query('all_refs', ...) returns same (line, text) pairs as q_all_refs directly."""
         direct = self._direct(self.generic_path,
-                              lambda s, t, l: _q.q_ident(s, t, l, "IBlobStore"))
-        via_api = _run_query("ident", "IBlobStore", [self.generic_path])
+                              lambda s, t, l: _q.q_all_refs(s, t, l, "IBlobStore"))
+        via_api = _run_query("all_refs", "IBlobStore", [self.generic_path])
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
 
     def test_ident_finds_all_occurrences(self):
         """ident mode finds every occurrence, not just method signatures."""
-        result = _run_query("ident", "IBlobStore", [self.generic_path])
+        result = _run_query("all_refs", "IBlobStore", [self.generic_path])
         texts = [m["text"] for m in result[0]["matches"]]
         # _GENERIC_WRAPPER_CS uses IBlobStore in field, property, method return type, param
         self.assertGreater(len(texts), 1)
@@ -349,12 +350,12 @@ class TestQueryApi(unittest.TestCase):
 
     def test_ident_generic_wrapper_found_in_sig(self):
         """ident mode finds IBlobStore even when wrapped in a generic type like IList<IBlobStore>."""
-        result = _run_query("ident", "IBlobStore", [self.generic_path])
+        result = _run_query("all_refs", "IBlobStore", [self.generic_path])
         texts = [m["text"] for m in result[0]["matches"]]
         self.assertTrue(any("IBlobStore" in t for t in texts))
 
     def test_ident_no_match_returns_empty(self):
-        result = _run_query("ident", "NonExistentType999", [self.foo_path])
+        result = _run_query("all_refs", "NonExistentType999", [self.foo_path])
         self.assertEqual(result, [])
 
     # ── calls mode vs direct call ─────────────────────────────────────────────
@@ -398,8 +399,8 @@ class TestQueryApi(unittest.TestCase):
 
     def test_field_type_matches_direct(self):
         direct = self._direct(self.generic_path,
-                              lambda s, t, l: _q.q_field_type(s, t, l, "IBlobStore"))
-        via_api = _run_query("field_type", "IBlobStore", [self.generic_path])
+                              lambda s, t, l: _q.q_uses(s, t, l, "IBlobStore", uses_kind="field"))
+        via_api = _run_query("uses", "IBlobStore", [self.generic_path], uses_kind="field")
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
 
@@ -407,22 +408,22 @@ class TestQueryApi(unittest.TestCase):
 
     def test_param_type_matches_direct(self):
         direct = self._direct(self.generic_path,
-                              lambda s, t, l: _q.q_param_type(s, t, l, "IBlobStore"))
-        via_api = _run_query("param_type", "IBlobStore", [self.generic_path])
+                              lambda s, t, l: _q.q_uses(s, t, l, "IBlobStore", uses_kind="param"))
+        via_api = _run_query("uses", "IBlobStore", [self.generic_path], uses_kind="param")
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
 
     # ── multiple files ────────────────────────────────────────────────────────
 
     def test_multiple_files_results_ordered_by_input(self):
-        result = _run_query("ident", "IBlobStore",
+        result = _run_query("all_refs", "IBlobStore",
                             [self.generic_path, self.blob_path])
         paths = [r["file"] for r in result]
         self.assertIn(self.generic_path, paths)
         self.assertIn(self.blob_path, paths)
 
     def test_multiple_files_only_matching_files_in_result(self):
-        result = _run_query("ident", "IBlobStore",
+        result = _run_query("all_refs", "IBlobStore",
                             [self.foo_path, self.generic_path])
         paths = [r["file"] for r in result]
         self.assertNotIn(self.foo_path, paths)  # Foo.cs has no IBlobStore
@@ -436,12 +437,12 @@ class TestQueryApi(unittest.TestCase):
         self.assertIn("bad_mode_xyz", str(ctx.exception))
 
     def test_missing_file_is_silently_skipped(self):
-        result = _run_query("ident", "IBlobStore",
+        result = _run_query("all_refs", "IBlobStore",
                             ["/tmp/does_not_exist_999.cs"])
         self.assertEqual(result, [])
 
     def test_missing_file_does_not_prevent_other_results(self):
-        result = _run_query("ident", "IBlobStore",
+        result = _run_query("all_refs", "IBlobStore",
                             ["/tmp/does_not_exist_999.cs", self.generic_path])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["file"], self.generic_path)

@@ -24,7 +24,7 @@ Modes (pick exactly one):
     --member-accesses  TYPE   Find all .Member accesses on locals/params declared as TYPE
     --attrs           [NAME]  List [Attribute] decorators, optionally filter by NAME
     --usings                  List all using/using-alias directives
-    --find             NAME   Print the full source of method/type/property named NAME
+    --declarations     NAME   Print declaration(s) named NAME (signature only; --include-body for full source)
     --params           METHOD Show the full parameter list of METHOD
 
 Options:
@@ -41,7 +41,7 @@ Examples:
     query.py --field-type StorageProvider --search "StorageProvider"
     query.py --field-type IStorageProvider --search "IStorageProvider"
     query.py --param-type StorageProvider --search "StorageProvider"
-    query.py --find Process ItemProcessor.cs
+    query.py --declarations Process ItemProcessor.cs
     query.py --classes --no-path IStorageProvider.cs
     query.py --attrs TestMethod "$SRC_ROOT/myapp/tests/**/*.cs"
     query.py --params DeleteItems StorageApi.cs
@@ -65,6 +65,7 @@ from cs_ast import (
     _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
     _find_all, _text, _unqualify, _unqualify_type,
     _base_type_names, _collect_ctor_names,
+    SYMBOL_KIND_TO_NODES,
 )
 
 try:
@@ -366,7 +367,7 @@ def q_implements(src, tree, lines, type_name):
     return results
 
 
-def q_uses(src, tree, lines, type_name):
+def _q_uses_all(src, tree, lines, type_name):
     """
     Find every line where type_name is referenced as a type.
     Skips: comments, string literals, declaration names, and bare method-call identifiers.
@@ -443,23 +444,44 @@ def q_usings(src, tree, lines):
     return results
 
 
-def q_find(src, tree, lines, name):
-    """Print the full source span of every method/type/property named NAME."""
+def q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None):
+    """Find every method/type/property declaration named NAME.
+
+    By default returns only the signature (lines up to but not including the
+    body block), so call sites inside the body do not bleed into the output at
+    wrong line locations.  Pass include_body=True to get the full source span.
+    For members without a body (interface methods, abstract declarations) the
+    full single-line text is returned regardless.
+
+    symbol_kind: optional filter restricting which declaration kinds are
+    returned.  Accepted values: method, constructor, property, field, event,
+    class, interface, struct, enum, record, delegate, type, member.
+    """
+    kind_nodes = SYMBOL_KIND_TO_NODES.get((symbol_kind or "").lower().strip())
+    target_nodes = kind_nodes if kind_nodes is not None else (_TYPE_DECL_NODES | _MEMBER_DECL_NODES)
     results = []
     all_targets = _find_all(
         tree.root_node,
-        lambda n: n.type in _TYPE_DECL_NODES | _MEMBER_DECL_NODES
+        lambda n: n.type in target_nodes
     )
     for node in all_targets:
         name_node = node.child_by_field_name("name")
         if not name_node or _text(name_node, src).strip() != name:
             continue
-        kind       = node.type.replace("_declaration", "").replace("statement", "").replace("_", " ").strip()
-        start_row  = node.start_point[0]
-        end_row    = node.end_point[0]
-        body_lines = "\n".join(lines[start_row:end_row + 1])
-        header     = f"── [{kind}] {name}  (lines {start_row + 1}–{end_row + 1}) ──"
-        results.append((_line(node), f"{header}\n{body_lines}"))
+        kind      = node.type.replace("_declaration", "").replace("statement", "").replace("_", " ").strip()
+        start_row = node.start_point[0]
+        end_row   = node.end_point[0]
+
+        body_node = node.child_by_field_name("body")
+        if body_node and not include_body:
+            # Signature only — stop before the opening {
+            sig_end_row = body_node.start_point[0]
+            content = "\n".join(lines[start_row:sig_end_row]).rstrip()
+        else:
+            content = "\n".join(lines[start_row:end_row + 1])
+
+        header = f"── [{kind}] {name}  (lines {start_row + 1}–{end_row + 1}) ──"
+        results.append((_line(node), f"{header}\n{content}"))
     return results
 
 
@@ -499,57 +521,7 @@ def q_params(src, tree, lines, method_name):
     return results
 
 
-def q_sig(src, tree, lines, type_name):
-    """
-    Find method/constructor declarations whose return type or any parameter
-    type references TYPE.
-
-    Useful for locating method signatures that take or return a given type.
-    TYPE matching is exact on the bare (non-generic) name.
-    """
-    results = []
-    for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("method_declaration",
-                                               "constructor_declaration",
-                                               "local_function_statement")):
-        # Check return type
-        type_node = node.child_by_field_name("type")
-        ret_type_txt = _text(type_node, src).strip() if type_node else ""
-        ret_matches = type_name in _type_names(ret_type_txt)
-
-        # Check parameter types
-        params_node = node.child_by_field_name("parameters")
-        param_matches = False
-        if params_node:
-            for p in _find_all(params_node, lambda n: n.type == "parameter"):
-                pt = p.child_by_field_name("type")
-                if pt and type_name in _type_names(_text(pt, src).strip()):
-                    param_matches = True
-                    break
-
-        if not ret_matches and not param_matches:
-            continue
-
-        name_node = node.child_by_field_name("name")
-        mname = _text(name_node, src).strip() if name_node else "<anonymous>"
-
-        # Build param list text
-        param_parts = []
-        if params_node:
-            for p in _find_all(params_node, lambda n: n.type == "parameter"):
-                pt = p.child_by_field_name("type")
-                pn = p.child_by_field_name("name")
-                pt_t = _text(pt, src).strip() if pt else ""
-                pn_t = _text(pn, src).strip() if pn else ""
-                param_parts.append(f"{pt_t} {pn_t}".strip())
-        params_text = ", ".join(param_parts)
-
-        sig_text = f"{ret_type_txt} {mname}({params_text})".strip()
-        results.append((_line(node), sig_text))
-    return results
-
-
-def q_field_type(src, tree, lines, type_name):
+def _q_field_type(src, tree, lines, type_name):
     """
     Find fields and properties whose declared type is (or starts with) TYPE.
 
@@ -593,7 +565,7 @@ def q_field_type(src, tree, lines, type_name):
     return results
 
 
-def q_param_type(src, tree, lines, type_name):
+def _q_param_type(src, tree, lines, type_name):
     """
     Find method/constructor parameters whose type is TYPE.
 
@@ -633,6 +605,85 @@ def q_param_type(src, tree, lines, type_name):
             results.append((_line(p),
                              f"[{kind}] {mname}({mod_t}{pt_txt} {pn_txt})"))
     return results
+
+
+def _q_return_type(src, tree, lines, type_name):
+    """
+    Find method/constructor declarations whose return type references TYPE.
+
+    TYPE matching is exact on the bare (non-generic) name.
+    """
+    results = []
+    for node in _find_all(tree.root_node,
+                          lambda n: n.type in ("method_declaration",
+                                               "constructor_declaration",
+                                               "local_function_statement")):
+        # Check return type only
+        type_node = node.child_by_field_name("type")
+        ret_type_txt = _text(type_node, src).strip() if type_node else ""
+        if type_name not in _type_names(ret_type_txt):
+            continue
+
+        name_node = node.child_by_field_name("name")
+        mname = _text(name_node, src).strip() if name_node else "<anonymous>"
+
+        # Build param list text
+        params_node = node.child_by_field_name("parameters")
+        param_parts = []
+        if params_node:
+            for p in _find_all(params_node, lambda n: n.type == "parameter"):
+                pt = p.child_by_field_name("type")
+                pn = p.child_by_field_name("name")
+                pt_t = _text(pt, src).strip() if pt else ""
+                pn_t = _text(pn, src).strip() if pn else ""
+                param_parts.append(f"{pt_t} {pn_t}".strip())
+        params_text = ", ".join(param_parts)
+
+        sig_text = f"{ret_type_txt} {mname}({params_text})".strip()
+        results.append((_line(node), sig_text))
+    return results
+
+
+def _q_base_uses(src, tree, lines, type_name):
+    """
+    Find type declarations (class/interface/struct/record) that have type_name
+    in their base list. Uses _type_names for flexible matching (handles generics).
+    Returns the declaration header line.
+    """
+    results = []
+    for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
+        bases = _base_type_names(node, src)
+        if not any(type_name in _type_names(b) for b in bases):
+            continue
+        name_node = node.child_by_field_name("name")
+        if not name_node:
+            continue
+        kind     = node.type.replace("_declaration", "").replace("_", " ")
+        name     = _text(name_node, src)
+        base_str = ", ".join(bases)
+        results.append((_line(node), f"[{kind}] {name} : {base_str}"))
+    return results
+
+
+def q_uses(src, tree, lines, type_name, uses_kind=None):
+    """Find usages of TYPE in type-annotation positions.
+
+    uses_kind: 'all' (default), 'field', 'param', 'return', 'cast', 'base'
+    """
+    k = (uses_kind or "all").lower().strip()
+    if k == "field":
+        return _q_field_type(src, tree, lines, type_name)
+    elif k == "param":
+        return _q_param_type(src, tree, lines, type_name)
+    elif k == "return":
+        return _q_return_type(src, tree, lines, type_name)
+    elif k == "cast":
+        return q_casts(src, tree, lines, type_name)
+    elif k == "base":
+        return _q_base_uses(src, tree, lines, type_name)
+    else:
+        return _q_uses_all(src, tree, lines, type_name)
+
 
 
 def q_casts(src, tree, lines, type_name):
@@ -676,7 +727,7 @@ def _get_init_expr(declarator):
     return None
 
 
-def q_member_accesses(src, tree, lines, type_name):
+def q_accesses_on(src, tree, lines, type_name):
     """
     Find all .Member accesses on local variables and parameters declared as TYPE.
 
@@ -795,7 +846,9 @@ def q_member_accesses(src, tree, lines, type_name):
     return results
 
 
-def q_ident(src, tree, lines, name):
+
+
+def q_all_refs(src, tree, lines, name):
     """
     Find every occurrence of identifier NAME in source code.
 
@@ -820,6 +873,8 @@ def q_ident(src, tree, lines, name):
         line_text = lines[row].strip() if row < len(lines) else ""
         results.append((_line(node), line_text))
     return results
+
+
 
 
 # ── Internal helper ───────────────────────────────────────────────────────────
@@ -1035,7 +1090,7 @@ def py_q_ident(src, tree, lines, name):
     return results
 
 
-def py_q_find(src, tree, lines, name):
+def py_q_declarations(src, tree, lines, name):
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("function_definition", "class_definition")):
@@ -1108,7 +1163,7 @@ def py_q_params(src, tree, lines, method_name):
 
 # ── Python file processing ────────────────────────────────────────────────────
 
-def process_py_file(path, mode, mode_arg, show_path, count_only, context=0, src_root=None):
+def process_py_file(path, mode, mode_arg, show_path, count_only, context=0, src_root=None, include_body=False, symbol_kind=None, uses_kind=None):
     if not _PY_AVAILABLE or _py_parser is None:
         print(f"ERROR: tree-sitter-python not installed. "
               f"Run: pip install tree-sitter-python", file=sys.stderr)
@@ -1131,9 +1186,9 @@ def process_py_file(path, mode, mode_arg, show_path, count_only, context=0, src_
         "methods":    lambda: py_q_methods(src_bytes, tree, lines),
         "calls":      lambda: py_q_calls(src_bytes, tree, lines, mode_arg),
         "implements": lambda: py_q_implements(src_bytes, tree, lines, mode_arg),
-        "ident":      lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
-        "find":       lambda: py_q_find(src_bytes, tree, lines, mode_arg),
-        "decorators": lambda: py_q_decorators(src_bytes, tree, lines, mode_arg),
+        "ident":         lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
+        "declarations":  lambda: py_q_declarations(src_bytes, tree, lines, mode_arg),
+        "decorators":    lambda: py_q_decorators(src_bytes, tree, lines, mode_arg),
         "imports":    lambda: py_q_imports(src_bytes, tree, lines),
         "params":     lambda: py_q_params(src_bytes, tree, lines, mode_arg),
     }
@@ -1166,7 +1221,7 @@ def process_py_file(path, mode, mode_arg, show_path, count_only, context=0, src_
         else:
             print(f"{line_num_str}: {text}")
 
-        if context > 0 and mode not in ("find",):
+        if context > 0 and mode not in ("declarations", "find"):
             try:
                 row = int(line_num_str) - 1
                 start = max(0, row - context)
@@ -1184,7 +1239,7 @@ def process_py_file(path, mode, mode_arg, show_path, count_only, context=0, src_
 
 # ── C# file processing ────────────────────────────────────────────────────────
 
-def process_file(path, mode, mode_arg, show_path, count_only, context=0, src_root=None):
+def process_file(path, mode, mode_arg, show_path, count_only, context=0, src_root=None, include_body=False, symbol_kind=None, uses_kind=None):
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
@@ -1205,16 +1260,14 @@ def process_file(path, mode, mode_arg, show_path, count_only, context=0, src_roo
         "fields":          lambda: q_fields(src_bytes, tree, lines),
         "calls":           lambda: q_calls(src_bytes, tree, lines, mode_arg),
         "implements":      lambda: q_implements(src_bytes, tree, lines, mode_arg),
-        "uses":            lambda: q_uses(src_bytes, tree, lines, mode_arg),
-        "field_type":      lambda: q_field_type(src_bytes, tree, lines, mode_arg),
-        "param_type":      lambda: q_param_type(src_bytes, tree, lines, mode_arg),
+        "uses":            lambda: q_uses(src_bytes, tree, lines, mode_arg, uses_kind=uses_kind),
+        "accesses_on":     lambda: q_accesses_on(src_bytes, tree, lines, mode_arg),
+        "all_refs":        lambda: q_all_refs(src_bytes, tree, lines, mode_arg),
         "casts":           lambda: q_casts(src_bytes, tree, lines, mode_arg),
-        "ident":           lambda: q_ident(src_bytes, tree, lines, mode_arg),
-        "member_accesses": lambda: q_member_accesses(src_bytes, tree, lines, mode_arg),
-        "accesses_of":     lambda: q_accesses_of(src_bytes, tree, lines, mode_arg),
         "attrs":           lambda: q_attrs(src_bytes, tree, lines, mode_arg),
+        "accesses_of":     lambda: q_accesses_of(src_bytes, tree, lines, mode_arg),
         "usings":          lambda: q_usings(src_bytes, tree, lines),
-        "find":            lambda: q_find(src_bytes, tree, lines, mode_arg),
+        "declarations":    lambda: q_declarations(src_bytes, tree, lines, mode_arg, include_body=include_body, symbol_kind=symbol_kind),
         "params":          lambda: q_params(src_bytes, tree, lines, mode_arg),
     }
 
@@ -1247,7 +1300,7 @@ def process_file(path, mode, mode_arg, show_path, count_only, context=0, src_roo
             print(f"{line_num_str}: {text}")
 
         # Optional surrounding context lines (like grep -C)
-        if context > 0 and mode not in ("find",):
+        if context > 0 and mode not in ("declarations", "find"):
             try:
                 row = int(line_num_str) - 1  # convert back to 0-based
                 start = max(0, row - context)
@@ -1326,8 +1379,8 @@ def main():
                     help="List [Attribute] decorators (optionally filter by NAME)")
     mg.add_argument("--usings",     action="store_true",
                     help="List all using directives")
-    mg.add_argument("--find",       metavar="NAME",
-                    help="Print full source of method/type named NAME")
+    mg.add_argument("--declarations", metavar="NAME",
+                    help="Print declaration(s) named NAME (signature by default; --include-body for full source)")
     mg.add_argument("--params",     metavar="METHOD",
                     help="Show parameter list of METHOD")
 
@@ -1383,8 +1436,8 @@ def main():
         mode, mode_arg = "attrs",      args.attrs or None
     elif args.usings:
         mode, mode_arg = "usings",     None
-    elif args.find:
-        mode, mode_arg = "find",       args.find
+    elif args.declarations:
+        mode, mode_arg = "declarations", args.declarations
     elif args.params:
         mode, mode_arg = "params",     args.params
     else:

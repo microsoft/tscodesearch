@@ -1,7 +1,7 @@
 """
-Tests for ident mode (semantic grep).
+Tests for all_refs mode (semantic grep).
 
-mode: --ident NAME (q_ident)
+mode: --all-refs NAME (q_all_refs)
 Finds every identifier occurrence that is NOT inside a comment or string literal.
 
 Gaps tested:
@@ -21,7 +21,7 @@ from tests.fixtures import (
     IDENT_BLOBSTORE_MANY_CONTEXTS, IDENT_COMMENT_ONLY, IDENT_STRING_ONLY,
     CALLS_FETCHWIDGET, IMPLEMENTS_IDATASTORE,
 )
-from query import q_ident, q_uses
+from query import q_all_refs, q_uses
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -31,7 +31,7 @@ from query import q_ident, q_uses
 class TestQIdent(unittest.TestCase):
 
     def _ident(self, src, name):
-        return q_ident(*_parse(src), name=name)
+        return q_all_refs(*_parse(src), name=name)
 
     def test_finds_field_declaration(self):
         r = self._ident(IDENT_BLOBSTORE_MANY_CONTEXTS, "BlobStore")

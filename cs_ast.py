@@ -22,6 +22,40 @@ _MEMBER_DECL_NODES = {
     "local_function_statement",
 }
 
+# Map user-facing symbol_kind strings to the tree-sitter node types they cover.
+# "type" and "member" are umbrella aliases for all type / all member declarations.
+SYMBOL_KIND_TO_NODES: dict[str, frozenset] = {
+    "method":      frozenset({"method_declaration", "local_function_statement"}),
+    "constructor": frozenset({"constructor_declaration"}),
+    "property":    frozenset({"property_declaration"}),
+    "field":       frozenset({"field_declaration"}),
+    "event":       frozenset({"event_declaration", "event_field_declaration"}),
+    "class":       frozenset({"class_declaration"}),
+    "interface":   frozenset({"interface_declaration"}),
+    "struct":      frozenset({"struct_declaration"}),
+    "enum":        frozenset({"enum_declaration"}),
+    "record":      frozenset({"record_declaration"}),
+    "delegate":    frozenset({"delegate_declaration"}),
+    "type":        frozenset(_TYPE_DECL_NODES),
+    "member":      frozenset(_MEMBER_DECL_NODES),
+}
+
+# Typesense field to search when narrowing by symbol_kind.
+_TYPE_KINDS   = frozenset({"class", "interface", "struct", "enum", "record", "delegate", "type"})
+_MEMBER_KINDS = frozenset({"method", "constructor", "property", "field", "event", "member"})
+
+def symbol_kind_query_by(kind: str) -> str:
+    """Return the Typesense query_by string for a given symbol_kind.
+
+    Returns empty string when kind is unknown (caller should fall back to default).
+    """
+    k = kind.lower().strip() if kind else ""
+    if k in _TYPE_KINDS:
+        return "class_names,filename"
+    if k in _MEMBER_KINDS:
+        return "method_names,filename"
+    return ""
+
 # ── Basic helpers ──────────────────────────────────────────────────────────────
 
 def _find_all(node, predicate, results=None):

@@ -21,8 +21,8 @@ from tree_sitter import Language, Parser
 
 from query import (
     q_classes, q_methods, q_fields, q_calls, q_implements, q_uses,
-    q_attrs, q_usings, q_find, q_params, q_field_type, q_param_type,
-    q_casts, q_ident, q_member_accesses,
+    q_attrs, q_usings, q_declarations, q_params, q_uses,
+    q_casts, q_all_refs, q_accesses_on,
 )
 
 # ── fixture setup ─────────────────────────────────────────────────────────────
@@ -335,7 +335,7 @@ class TestUsings:
 class TestFind:
     def test_find_method_returns_body(self, fx):
         src, tree, lines = fx
-        r = q_find(src, tree, lines, "Transform")
+        r = q_declarations(src, tree, lines, "Transform")
         assert len(r) == 1
         _, body = r[0]
         assert "Transform" in body
@@ -344,14 +344,14 @@ class TestFind:
 
     def test_find_class_returns_body(self, fx):
         src, tree, lines = fx
-        r = q_find(src, tree, lines, "ProcessorFactory")
+        r = q_declarations(src, tree, lines, "ProcessorFactory", include_body=True)
         assert len(r) == 1
         _, body = r[0]
         assert "Create" in body
 
     def test_find_struct(self, fx):
         src, tree, lines = fx
-        r = q_find(src, tree, lines, "ProcessResult")
+        r = q_declarations(src, tree, lines, "ProcessResult", include_body=True)
         # finds both the struct declaration and its constructor (both named ProcessResult)
         assert len(r) >= 1
         bodies = [body for _, body in r]
@@ -359,7 +359,7 @@ class TestFind:
 
     def test_find_no_match(self, fx):
         src, tree, lines = fx
-        r = q_find(src, tree, lines, "NonExistentMethod")
+        r = q_declarations(src, tree, lines, "NonExistentMethod")
         assert len(r) == 0
 
 
@@ -417,24 +417,24 @@ class TestParams:
 class TestFieldType:
     def test_finds_field_typed_as_interface(self, fx):
         src, tree, lines = fx
-        r = q_field_type(src, tree, lines, "IProcessor")
+        r = q_uses(src, tree, lines, "IProcessor", uses_kind="field")
         assert len(r) >= 1
         for _, t in r:
             assert "IProcessor" in t
 
     def test_finds_field_typed_as_logger(self, fx):
         src, tree, lines = fx
-        r = q_field_type(src, tree, lines, "ILogger")
+        r = q_uses(src, tree, lines, "ILogger", uses_kind="field")
         assert len(r) >= 1
 
     def test_finds_property(self, fx):
         src, tree, lines = fx
-        r = q_field_type(src, tree, lines, "string")
+        r = q_uses(src, tree, lines, "string", uses_kind="field")
         assert any("Prefix" in t for _, t in r)
 
     def test_no_match_for_unknown_type(self, fx):
         src, tree, lines = fx
-        r = q_field_type(src, tree, lines, "NonExistentType")
+        r = q_uses(src, tree, lines, "NonExistentType", uses_kind="field")
         assert len(r) == 0
 
 
@@ -443,24 +443,24 @@ class TestFieldType:
 class TestParamType:
     def test_finds_in_method(self, fx):
         src, tree, lines = fx
-        r = q_param_type(src, tree, lines, "IProcessor")
+        r = q_uses(src, tree, lines, "IProcessor", uses_kind="param")
         assert len(r) >= 1
 
     def test_finds_in_constructor(self, fx):
         src, tree, lines = fx
-        r = q_param_type(src, tree, lines, "ILogger")
+        r = q_uses(src, tree, lines, "ILogger", uses_kind="param")
         assert len(r) >= 1
 
     def test_result_contains_method_name(self, fx):
         src, tree, lines = fx
-        r = q_param_type(src, tree, lines, "ILogger")
+        r = q_uses(src, tree, lines, "ILogger", uses_kind="param")
         for _, t in r:
             # Should mention the enclosing method/ctor name
             assert "(" in t
 
     def test_no_match_for_unknown_type(self, fx):
         src, tree, lines = fx
-        r = q_param_type(src, tree, lines, "NonExistentType")
+        r = q_uses(src, tree, lines, "NonExistentType", uses_kind="param")
         assert len(r) == 0
 
 
@@ -506,24 +506,24 @@ class TestCasts:
 class TestIdent:
     def test_finds_multiple_occurrences(self, fx):
         src, tree, lines = fx
-        r = q_ident(src, tree, lines, "ProcessResult")
+        r = q_all_refs(src, tree, lines, "ProcessResult")
         # Should appear in: struct decl, field types, param types, local vars, etc.
         assert len(r) >= 3
 
     def test_skips_string_contents(self, fx):
         # "IDENT_IN_STRING" appears inside a string literal in the fixture
         src, tree, lines = fx
-        r = q_ident(src, tree, lines, "IDENT_IN_STRING")
+        r = q_all_refs(src, tree, lines, "IDENT_IN_STRING")
         assert len(r) == 0
 
     def test_no_match_for_unknown(self, fx):
         src, tree, lines = fx
-        r = q_ident(src, tree, lines, "NoSuchIdentifier99")
+        r = q_all_refs(src, tree, lines, "NoSuchIdentifier99")
         assert len(r) == 0
 
     def test_finds_in_various_contexts(self, fx):
         src, tree, lines = fx
-        r = q_ident(src, tree, lines, "IProcessor")
+        r = q_all_refs(src, tree, lines, "IProcessor")
         # Should appear as interface decl, base type, field type, param type, return type
         assert len(r) >= 4
 
@@ -531,7 +531,7 @@ class TestIdent:
         """Searching for 'ProcessResult' must not match the identifier
         'ProcessResultSummary' — identifiers must match exactly."""
         src, tree, lines = fx
-        r = q_ident(src, tree, lines, "ProcessResult")
+        r = q_all_refs(src, tree, lines, "ProcessResult")
         # Lines that mention only ProcessResultSummary (never the bare token
         # "ProcessResult") should not appear in the results.
         for _, t in r:
@@ -548,7 +548,7 @@ class TestMemberAccesses:
     def test_explicit_param_finds_accesses(self, fx):
         """Finds .Member accesses on an explicitly typed parameter."""
         src, tree, lines = fx
-        r = q_member_accesses(src, tree, lines, "ProcessResult")
+        r = q_accesses_on(src, tree, lines, "ProcessResult")
         members = texts(r)
         assert any(".Success" in m for m in members)
         assert any(".Output" in m for m in members)
@@ -557,14 +557,14 @@ class TestMemberAccesses:
     def test_var_new_object(self, fx):
         """Finds accesses on var x = new T(...)."""
         src, tree, lines = fx
-        r = q_member_accesses(src, tree, lines, "TextProcessor")
+        r = q_accesses_on(src, tree, lines, "TextProcessor")
         members = texts(r)
         assert any(".Prefix" in m for m in members)
 
     def test_var_array_then_element(self, fx):
         """Finds accesses on var x = arr[i] where arr is T[]."""
         src, tree, lines = fx
-        r = q_member_accesses(src, tree, lines, "ProcessResult")
+        r = q_accesses_on(src, tree, lines, "ProcessResult")
         members = texts(r)
         # item.Output, item.Success, item.ErrorCode come from var item = results[i]
         assert any(".Output" in m for m in members)
@@ -574,7 +574,7 @@ class TestMemberAccesses:
     def test_var_as_cast(self, fx):
         """Finds accesses on var x = expr as T."""
         src, tree, lines = fx
-        r = q_member_accesses(src, tree, lines, "TextProcessor")
+        r = q_accesses_on(src, tree, lines, "TextProcessor")
         members = texts(r)
         # proc.Prefix where var proc = obj as TextProcessor
         assert any(".Prefix" in m for m in members)
@@ -582,20 +582,20 @@ class TestMemberAccesses:
     def test_var_explicit_cast(self, fx):
         """Finds accesses on var x = (T)expr."""
         src, tree, lines = fx
-        r = q_member_accesses(src, tree, lines, "TextProcessor")
+        r = q_accesses_on(src, tree, lines, "TextProcessor")
         members = texts(r)
         # proc.Prefix where var proc = (TextProcessor)obj
         assert any(".Prefix" in m for m in members)
 
     def test_no_match_for_unknown_type(self, fx):
         src, tree, lines = fx
-        r = q_member_accesses(src, tree, lines, "NonExistentType")
+        r = q_accesses_on(src, tree, lines, "NonExistentType")
         assert len(r) == 0
 
     def test_explicit_param_logger(self, fx):
         """ILogger is an explicit parameter type in some methods."""
         src, tree, lines = fx
-        r = q_member_accesses(src, tree, lines, "ILogger")
+        r = q_accesses_on(src, tree, lines, "ILogger")
         # No direct member accesses on ILogger params in fixture
         # (calls go through _logger field, not a local param of ILogger type)
         # This test just verifies no crash for a valid type with no accesses
@@ -605,7 +605,7 @@ class TestMemberAccesses:
         """result.Output.Length — only .Output should match for ProcessResult.
         .Length is on the string returned by .Output, not on ProcessResult itself."""
         src, tree, lines = fx
-        r = q_member_accesses(src, tree, lines, "ProcessResult")
+        r = q_accesses_on(src, tree, lines, "ProcessResult")
         members = texts(r)
         # .Output is correct (it's a member of ProcessResult)
         # .Length must NOT appear because it's a member of string, not ProcessResult

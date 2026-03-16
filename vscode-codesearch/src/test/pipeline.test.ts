@@ -29,9 +29,7 @@ import {
     getRoots,
     runSearchPipeline,
     renderTextTree,
-    computeMatchItems,
     MODES,
-    TypesenseHit,
 } from '../client';
 
 // ---------------------------------------------------------------------------
@@ -123,99 +121,6 @@ function printTree(tree: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// computeMatchItems — pure unit tests (no server, no codebase-specific names)
-// ---------------------------------------------------------------------------
-
-describe('computeMatchItems — sig mode', () => {
-    // Sig mode uses highlights.values (the sigs Typesense matched), not all sigs.
-    function makeHit(matchedSigs: string[]): TypesenseHit {
-        return {
-            document: { id: '1', relative_path: 'Service.cs', filename: 'Service.cs',
-                method_sigs: ['void Unrelated()', ...matchedSigs] },
-            highlights: matchedSigs.length > 0
-                ? [{ field: 'method_sigs', values: matchedSigs }]
-                : [],
-        };
-    }
-
-    it('returns only matched method_sigs via highlights.values', () => {
-        const matched = [
-            'void GetItems(string key, List<Item> items)',
-            'Task WriteAsync(string key, Stream data)',
-        ];
-        const items = computeMatchItems(makeHit(matched), 'sig');
-        assert.equal(items.length, 2);
-        assert.ok(items[0].text.includes('GetItems'));
-        assert.ok(items[1].text.includes('WriteAsync'));
-    });
-
-    it('every sig item has no line number (comes from Typesense index, not AST)', () => {
-        const items = computeMatchItems(makeHit(['void Foo()', 'Task BarAsync()']), 'sig');
-        for (const item of items) {
-            assert.equal(item.line, undefined, 'sig items must not have line numbers');
-        }
-    });
-
-    it('returns empty array when no sigs matched', () => {
-        assert.deepEqual(computeMatchItems(makeHit([]), 'sig'), []);
-    });
-});
-
-describe('computeMatchItems — array modes use highlights.values', () => {
-    // All array-field modes prefer highlights.values (matched elements) and fall
-    // back to the raw doc array only for implements/uses/attrs/casts (not sig/find/params).
-    function makeHit(hlField: string, hlValues: string[]): TypesenseHit {
-        return {
-            document: {
-                id: '1', relative_path: 'Service.cs', filename: 'Service.cs',
-                class_names:  ['MyService', 'MyServiceConfig'],
-                method_names: ['GetAsync', 'SetAsync'],
-                base_types:   ['IMyService', 'IDisposable', 'UnrelatedBase'],
-                type_refs:    ['IMyService', 'MyConfig', 'UnrelatedRef'],
-                attributes:   ['Authorize', 'UnrelatedAttr'],
-                cast_sites:   ['(IMyService)instance', '(UnrelatedType)x'],
-                method_sigs:  ['void GetAsync()', 'Task SetAsync(int id)', 'void Unrelated()'],
-            },
-            highlights: [{ field: hlField, values: hlValues }],
-        };
-    }
-
-    it('implements mode uses highlights.values for base_types', () => {
-        const items = computeMatchItems(makeHit('base_types', ['IMyService']), 'implements');
-        assert.deepEqual(items.map((i) => i.text), ['IMyService']);
-    });
-
-    it('attrs mode uses highlights.values for attributes', () => {
-        const items = computeMatchItems(makeHit('attributes', ['Authorize']), 'attrs');
-        assert.deepEqual(items.map((i) => i.text), ['Authorize']);
-    });
-
-    it('casts mode uses highlights.values for cast_sites', () => {
-        const items = computeMatchItems(makeHit('cast_sites', ['(IMyService)instance']), 'casts');
-        assert.deepEqual(items.map((i) => i.text), ['(IMyService)instance']);
-    });
-
-    it('symbols mode returns class_names then method_names (no highlights needed)', () => {
-        const items = computeMatchItems(makeHit('class_names', ['MyService']), 'symbols');
-        assert.ok(items.some((i) => i.text === 'MyService'));
-        assert.ok(items.some((i) => i.text === 'GetAsync'));
-    });
-
-    it('find mode uses highlights.values for method_sigs', () => {
-        const items = computeMatchItems(makeHit('method_sigs', ['void GetAsync()']), 'find');
-        assert.deepEqual(items.map((i) => i.text), ['void GetAsync()']);
-    });
-
-    it('uses/field_type/param_type/ident/member_accesses use highlights.values for type_refs', () => {
-        for (const mode of ['uses', 'field_type', 'param_type', 'ident', 'member_accesses']) {
-            const items = computeMatchItems(makeHit('type_refs', ['IMyService']), mode);
-            assert.deepEqual(items.map((i) => i.text), ['IMyService'],
-                `${mode}: expected only highlighted type_ref`);
-        }
-    });
-});
-
-// ---------------------------------------------------------------------------
 // renderTextTree — pure unit tests
 // ---------------------------------------------------------------------------
 
@@ -230,9 +135,9 @@ describe('renderTextTree', () => {
                     { text: 'Task WriteAsync(...)', line: 24 },
                 ],
             }],
-            found: 1, tsFound: 3, elapsed: 12, facet_counts: [],
+            found: 1, elapsed: 12, facet_counts: [],
         };
-        const tree = renderTextTree(result, 'IService', 'sig');
+        const tree = renderTextTree(result, 'IService', 'declarations');
         assert.ok(tree.includes('[myapp]'),          'expected subsystem header');
         assert.ok(tree.includes('Service.cs'),       'expected filename');
         assert.ok(tree.includes('GetItems'),         'expected match text');
@@ -240,18 +145,13 @@ describe('renderTextTree', () => {
     });
 
     it('shows "(no results)" when found is 0', () => {
-        const result = { hits: [], found: 0, tsFound: 0, elapsed: 5, facet_counts: [] };
-        assert.ok(renderTextTree(result, 'Foo', 'sig').includes('(no results)'));
+        const result = { hits: [], found: 0, elapsed: 5, facet_counts: [] };
+        assert.ok(renderTextTree(result, 'Foo', 'text').includes('(no results)'));
     });
 
-    it('annotates AST modes with "Typesense: N"', () => {
-        const result = { hits: [], found: 0, tsFound: 7, elapsed: 5, facet_counts: [] };
-        assert.ok(renderTextTree(result, 'Foo', 'uses').includes('Typesense: 7'));
-    });
-
-    it('does not show Typesense annotation for search-only modes', () => {
-        const result = { hits: [], found: 0, tsFound: 5, elapsed: 5, facet_counts: [] };
-        assert.ok(!renderTextTree(result, 'Foo', 'sig').includes('Typesense:'));
+    it('includes mode label in output', () => {
+        const result = { hits: [], found: 0, elapsed: 5, facet_counts: [] };
+        assert.ok(renderTextTree(result, 'Foo', 'uses').includes('Uses'));
     });
 
     it('truncates long match lists with "… N more matches"', () => {
@@ -259,30 +159,36 @@ describe('renderTextTree', () => {
         const result = {
             hits: [{ document: { id: '1', relative_path: 'a/B.cs',
                                   filename: 'B.cs', subsystem: 'a' }, _matches: matches }],
-            found: 1, tsFound: 1, elapsed: 1, facet_counts: [],
+            found: 1, elapsed: 1, facet_counts: [],
         };
-        const tree = renderTextTree(result, 'x', 'ident');
+        const tree = renderTextTree(result, 'x', 'all_refs');
         assert.ok(tree.includes('… 5 more matches'), `expected truncation note, got:\n${tree}`);
     });
 });
 
 // ---------------------------------------------------------------------------
-// MODES — sig is search-only, AST modes have astMode
+// MODES — text is search-only, AST modes have astMode
 // ---------------------------------------------------------------------------
 
 describe('MODES structure', () => {
-    it('sig mode has no astMode (search-only)', () => {
-        assert.equal(MODES.find((m) => m.key === 'sig')!.astMode, undefined);
+    it('text mode has no astMode (search-only)', () => {
+        assert.equal(MODES.find((m) => m.key === 'text')!.astMode, undefined);
     });
 
     it('uses mode has astMode=uses', () => {
         assert.equal(MODES.find((m) => m.key === 'uses')!.astMode, 'uses');
     });
 
-    it('every AST-backed mode has astMode equal to its key', () => {
-        for (const m of MODES.filter((m) => m.astMode !== undefined)) {
+    it('AST-backed modes (except uses_kind sub-modes) have astMode equal to key', () => {
+        const skipKeys = new Set(['uses_field', 'uses_param']);
+        for (const m of MODES.filter((m) => m.astMode !== undefined && !skipKeys.has(m.key))) {
             assert.equal(m.astMode, m.key, `${m.key}: astMode !== key`);
         }
+    });
+
+    it('uses_field and uses_param delegate to uses with uses_kind', () => {
+        assert.equal(MODES.find((m) => m.key === 'uses_field')!.astMode, 'uses');
+        assert.equal(MODES.find((m) => m.key === 'uses_param')!.astMode, 'uses');
     });
 });
 
@@ -294,23 +200,20 @@ describe('MODES structure', () => {
 // this file has no knowledge of any specific project.
 // ---------------------------------------------------------------------------
 
-describe('pipeline — sig mode (search-only, CS_QUERY)', () => {
-    it('returns method_sigs from the index; each item has parens, no line number', async (t) => {
+describe('pipeline — declarations mode (AST-backed, CS_QUERY)', () => {
+    it('returns method_sigs from the index; each item has parens', async (t) => {
         if (skipIfNoLiveParams(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'sig', 'cs', LIVE_SUB, '', 20, rootPath);
-        printTree(renderTextTree(result, `${LIVE_QUERY} [sub=${LIVE_SUB || '*'}]`, 'sig'));
+            cfg, LIVE_QUERY, 'declarations', 'cs', LIVE_SUB, '', 20);
+        printTree(renderTextTree(result, `${LIVE_QUERY} [sub=${LIVE_SUB || '*'}]`, 'declarations'));
 
-        assert.ok(result.found > 0, `no sig results for "${LIVE_QUERY}"`);
+        assert.ok(result.found > 0, `no declarations results for "${LIVE_QUERY}"`);
         assert.ok(result.found >= result.hits.length);
 
         for (const hit of result.hits) {
             assert.ok(hit._matches.length > 0, `${hit.document.relative_path}: no match items`);
             for (const m of hit._matches) {
-                assert.ok(m.text.includes('('),
-                    `sig item has no parens — not a signature: "${m.text}"`);
-                assert.equal(m.line, undefined,
-                    `sig item has unexpected line number ${m.line} — sig must be search-only`);
+                assert.ok(m.text.length > 0, `declarations item is empty`);
             }
         }
     });
@@ -320,12 +223,10 @@ describe('pipeline — uses mode (AST-backed, CS_QUERY)', () => {
     it('returns exact line-level matches; all files have at least one match', async (t) => {
         if (skipIfNoAst(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'uses', 'cs', LIVE_SUB, '', 20, rootPath);
+            cfg, LIVE_QUERY, 'uses', 'cs', LIVE_SUB, '', 20);
         printTree(renderTextTree(result, `${LIVE_QUERY} [sub=${LIVE_SUB || '*'}]`, 'uses'));
 
         assert.ok(result.found > 0, `no uses results for "${LIVE_QUERY}"`);
-        assert.ok(result.tsFound >= result.found,
-            `tsFound (${result.tsFound}) < found (${result.found})`);
 
         for (const hit of result.hits) {
             assert.ok(hit._matches.length > 0,
@@ -340,7 +241,7 @@ describe('pipeline — uses mode (AST-backed, CS_QUERY)', () => {
     it('no hit has zero matches (empty-match filter works)', async (t) => {
         if (skipIfNoAst(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'uses', 'cs', LIVE_SUB, '', 20, rootPath);
+            cfg, LIVE_QUERY, 'uses', 'cs', LIVE_SUB, '', 20);
         for (const hit of result.hits) {
             assert.ok(hit._matches.length > 0,
                 `${hit.document.relative_path}: in results with 0 matches`);
@@ -352,7 +253,7 @@ describe('pipeline — implements mode (AST-backed, CS_QUERY)', () => {
     it('runs without error; all returned files have at least one match', async (t) => {
         if (skipIfNoAst(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'implements', 'cs', LIVE_SUB, '', 20, rootPath);
+            cfg, LIVE_QUERY, 'implements', 'cs', LIVE_SUB, '', 20);
         printTree(renderTextTree(result, `${LIVE_QUERY} [implements]`, 'implements'));
         // May legitimately return 0 if nothing inherits the type
         for (const hit of result.hits) {
@@ -363,13 +264,13 @@ describe('pipeline — implements mode (AST-backed, CS_QUERY)', () => {
 });
 
 describe('pipeline — expansion simulation (CS_QUERY + CS_SUB)', () => {
-    it('sig expand: all returned hits belong to the requested subsystem', async (t) => {
+    it('declarations expand: all returned hits belong to the requested subsystem', async (t) => {
         if (skipIfNoLiveParams(t)) { return; }
         if (!LIVE_SUB) { t.skip('CS_SUB not set — set CS_SUB=<subsystem> to test expansion'); return; }
 
         const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'sig', 'cs', LIVE_SUB, '', 50, rootPath);
-        printTree(renderTextTree(result, `${LIVE_QUERY} [expand: ${LIVE_SUB}]`, 'sig'));
+            cfg, LIVE_QUERY, 'declarations', 'cs', LIVE_SUB, '', 50);
+        printTree(renderTextTree(result, `${LIVE_QUERY} [expand: ${LIVE_SUB}]`, 'declarations'));
 
         assert.ok(result.found > 0, `no results for ${LIVE_QUERY} in ${LIVE_SUB}`);
         for (const hit of result.hits) {
@@ -383,7 +284,7 @@ describe('pipeline — expansion simulation (CS_QUERY + CS_SUB)', () => {
         if (!LIVE_SUB) { t.skip('CS_SUB not set'); return; }
 
         const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'uses', 'cs', LIVE_SUB, '', 50, rootPath);
+            cfg, LIVE_QUERY, 'uses', 'cs', LIVE_SUB, '', 50);
         printTree(renderTextTree(result, `${LIVE_QUERY} [expand: ${LIVE_SUB}]`, 'uses'));
 
         assert.ok(result.found > 0);

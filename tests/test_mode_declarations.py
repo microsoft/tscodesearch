@@ -1,13 +1,13 @@
 """
-Tests for find mode.
+Tests for declarations mode.
 
-mode: --find NAME (q_find)
+mode: --declarations NAME (q_declarations)
 
-Finds the full source span of every method, type, property, or local function
-named NAME.
+Finds every method, type, property, or local function declaration named NAME.
+Returns signature only by default; include_body=True for the full source span.
 
 Gaps tested:
-  - Methods with the given name are returned with their full body.
+  - Methods with the given name are returned.
   - Types (classes, interfaces) with the given name are returned.
   - Same name in multiple types returns multiple results.
   - Non-matching names return empty.
@@ -21,17 +21,17 @@ import unittest
 
 from tests.base import _parse
 from tests.fixtures import FIND_TARGET
-from query import q_find
+from query import q_declarations
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# q_find AST function
+# q_declarations AST function
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestQFind(unittest.TestCase):
 
     def _find(self, src, name):
-        return q_find(*_parse(src), name=name)
+        return q_declarations(*_parse(src), name=name)
 
     def test_finds_method(self):
         r = self._find(FIND_TARGET, "TargetMethod")
@@ -63,12 +63,27 @@ class TestQFind(unittest.TestCase):
         assert any("lines" in t for t in texts), \
             f"Output must include line range: {texts}"
 
-    def test_output_includes_body(self):
-        """Full body of the method should appear in the output."""
+    def test_output_includes_signature(self):
+        """Signature of the method should appear in the output."""
         r = self._find(FIND_TARGET, "TargetMethod")
         texts = [t for _, t in r]
-        # At least one result should contain the method body content
         assert any("TargetMethod" in t for t in texts)
+
+    def test_body_excluded_by_default(self):
+        """Body content must NOT appear unless include_body=True."""
+        r = self._find(FIND_TARGET, "TargetMethod")
+        texts = [t for _, t in r]
+        assert not any("Lookup" in t for t in texts), \
+            "Body call 'Lookup' must not appear in default (sig-only) output"
+
+    def test_include_body_flag(self):
+        """include_body=True restores the full source span."""
+        from query import q_declarations
+        from tests.base import _parse
+        r = q_declarations(*_parse(FIND_TARGET), name="TargetMethod", include_body=True)
+        texts = [t for _, t in r]
+        assert any("Lookup" in t for t in texts), \
+            "Body call 'Lookup' must appear when include_body=True"
 
     def test_finds_class(self):
         r = self._find(FIND_TARGET, "FindMe")
@@ -88,7 +103,7 @@ namespace Synth {
 }
 """
         r = self._find(src, "InnerHelper")
-        assert r, "Local function must be found by q_find"
+        assert r, "Local function must be found by q_declarations"
 
     def test_finds_property(self):
         src = """\

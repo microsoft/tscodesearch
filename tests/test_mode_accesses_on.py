@@ -25,7 +25,7 @@ from tests.fixtures import (
     MEMBER_ACCESS_INTERFACE_ONLY, MEMBER_ACCESS_VAR_INFERRED,
     USES_BLOBSTORE_NO_CAST,
 )
-from query import q_member_accesses
+from query import q_accesses_on
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -35,7 +35,7 @@ from query import q_member_accesses
 class TestQMemberAccesses(unittest.TestCase):
 
     def _accesses(self, src, type_name):
-        return q_member_accesses(*_parse(src), type_name=type_name)
+        return q_accesses_on(*_parse(src), type_name=type_name)
 
     def test_finds_param_accesses(self):
         r = self._accesses(MEMBER_ACCESS_BLOBSTORE_PARAM, "BlobStore")

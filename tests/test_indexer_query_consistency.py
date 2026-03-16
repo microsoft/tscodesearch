@@ -24,7 +24,7 @@ from tree_sitter import Language, Parser
 from indexserver.indexer import extract_cs_metadata
 from query import (
     q_classes, q_methods, q_fields, q_calls, q_implements, q_uses,
-    q_attrs, q_usings, q_field_type, q_param_type, q_casts, q_ident,
+    q_attrs, q_usings, q_uses, q_casts, q_all_refs,
 )
 
 # ---------------------------------------------------------------------------
@@ -589,8 +589,8 @@ namespace N {
     def test_q_field_type_finds_field_style_event(self):
         """q_field_type now finds event_field_declaration by type."""
         s, t, ls = _parse(self._SRC_FIELD)
-        r = q_field_type(s, t, ls, "EventHandler")
-        assert len(r) >= 1, "q_field_type should find event_field_declaration by type"
+        r = q_uses(s, t, ls, "EventHandler", uses_kind="field")
+        assert len(r) >= 1, "uses(kind=field) should find event_field_declaration by type"
         assert any("OnChanged" in txt for _, txt in r)
 
 
@@ -644,13 +644,13 @@ class TestIdentMissing:
     """
 
     def test_q_ident_finds_all_occurrences(self, fx):
-        r = q_ident(*fx, "IWidget")
+        r = q_all_refs(*fx,"IWidget")
         # Should find: interface decl, base types, field type, param types, return type
         assert len(r) >= 4
 
     def test_q_ident_skips_strings(self, fx):
         # "IDENT_IN_STRING" — not in fixture, so 0 results
-        r = q_ident(*fx, "COMMENT_CALL")
+        r = q_all_refs(*fx,"COMMENT_CALL")
         assert len(r) == 0
 
     def test_indexer_has_no_ident_field(self, meta):
@@ -719,15 +719,15 @@ class TestFieldParamTypeConsistency:
         """Every type returned by q_field_type should be in type_refs."""
         from cs_ast import _unqualify_type
         import re
-        for _, txt in q_field_type(*fx, "IWidget"):
+        for _, txt in q_uses(*fx, "IWidget", uses_kind="field"):
             # type_refs stores individual type names, not full qualified strings
             assert "IWidget" in meta["type_refs"], \
-                f"q_field_type found IWidget field but it's absent from type_refs"
+                f"uses(kind=field) found IWidget field but it's absent from type_refs"
 
     def test_param_type_results_in_type_refs(self, fx, meta):
-        """Every type returned by q_param_type should be in type_refs."""
-        r = q_param_type(*fx, "IWidget")
-        assert len(r) >= 1, "q_param_type(IWidget) should find results"
+        """Every type returned by uses(kind=param) should be in type_refs."""
+        r = q_uses(*fx, "IWidget", uses_kind="param")
+        assert len(r) >= 1, "uses(kind=param)(IWidget) should find results"
         assert "IWidget" in meta["type_refs"], \
             "IWidget param type missing from type_refs"
 
@@ -751,8 +751,8 @@ namespace N {
             f"generic wrapper missing from type_refs: {m['type_refs']}"
 
         s, t, ls = _parse(src)
-        r = q_field_type(s, t, ls, "IBlobStore")
-        assert len(r) >= 1, "q_field_type should find field typed as generic IList<IBlobStore>"
+        r = q_uses(s, t, ls, "IBlobStore", uses_kind="field")
+        assert len(r) >= 1, "uses(kind=field) should find field typed as generic IList<IBlobStore>"
 
 
 # ===========================================================================

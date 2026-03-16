@@ -23,17 +23,17 @@ from tests.fixtures import (
     LISTING_TARGET,
 )
 from indexserver.indexer import extract_cs_metadata
-from query import q_param_type
+from query import q_uses
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# q_param_type AST function
+# q_uses(uses_kind="param") AST function
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestQParamType(unittest.TestCase):
 
     def _ptype(self, src, type_name):
-        return q_param_type(*_parse(src), type_name=type_name)
+        return q_uses(*_parse(src), type_name, uses_kind="param")
 
     def test_finds_param_typed_blobstore(self):
         r = self._ptype(PARAM_TYPED_BLOBSTORE_MULTI, "BlobStore")
@@ -152,7 +152,7 @@ class TestParamTypeMetadataConsistency(unittest.TestCase):
         """q_param_type returns empty for field-only file, but type_refs has BlobStore.
         This confirms the two modes are correctly distinct."""
         meta = extract_cs_metadata(FIELD_ONLY_NO_PARAMS.encode())
-        r    = q_param_type(*_parse(FIELD_ONLY_NO_PARAMS), type_name="BlobStore")
+        r    = q_uses(*_parse(FIELD_ONLY_NO_PARAMS), "BlobStore", uses_kind="param")
         assert "BlobStore" in meta["type_refs"]  # uses mode would find this
         assert r == []                            # but param_type mode would not
 

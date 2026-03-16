@@ -205,11 +205,10 @@ def search_code(
         limit: Maximum results to return. Default 20.
         mode:  Search strategy:
                "text"       — filename + class/method names + full content (default)
-               "symbols"    — class/interface/method names only
+               "declarations" — declaration names only (class/interface/method names)
                "implements" — files where query type appears in base_types (T1 field)
                "calls"      — files where query method appears in call_sites (T1 field)
-               "uses"       — files where query type appears in type declarations (T2)
-               "sig"        — files where query appears in method signatures (T1)
+               "uses"       — files where query type appears in type annotation positions (T1/T2)
                "attrs"      — files decorated with query attribute name (T2)
                "casts"      — files with explicit (TYPE)expr casts to query type (T1)
         root:  Named source root to search (empty = default root).
@@ -232,7 +231,7 @@ def search_code(
             ext          = ext   or None,
             sub          = sub   or None,
             limit        = limit,
-            symbols_only = (mode == "symbols"),
+            symbols_only = (mode == "declarations"),
             implements   = (mode == "implements"),
             calls        = (mode == "calls"),
             sig          = (mode == "sig"),
@@ -275,6 +274,9 @@ def query_codebase(
     ext:           str = "",
     context_lines: int = 0,
     root:          str = "",
+    include_body:  bool = False,
+    symbol_kind:   str = "",
+    uses_kind:     str = "",
 ) -> str:
     """
     Typesense pre-filter + tree-sitter AST in one call.
@@ -290,10 +292,9 @@ def query_codebase(
     Args:
         mode:    Search + AST mode. All modes run Typesense pre-filter then
                  tree-sitter AST to return exact line numbers.
-                 C#: text, symbols, sig, uses, calls, implements, casts,
-                     field_type, param_type, ident, member_accesses,
-                     accesses_of, find, params, attrs
-                 Python (ext="py"): calls, implements, ident, find,
+                 C#: text, declarations, calls, implements, uses, casts, attrs,
+                     accesses_of, accesses_on, all_refs
+                 Python (ext="py"): calls, implements, ident, declarations,
                      params, decorators
         pattern: Type/method/name to search for. Used for both the
                  Typesense pre-filter and the AST query.
@@ -303,6 +304,21 @@ def query_codebase(
         ext:     File extension ("cs" or "py"). Default: cs.
         context_lines: Surrounding source lines per match (like grep -C N).
         root:    Named source root (empty = default).
+        include_body: For declarations mode — include the full method/type body instead
+                 of signature only. Default False.
+        symbol_kind: For declarations mode — restrict results to a specific declaration
+                 kind. Accepted values: method, constructor, property, field,
+                 event, class, interface, struct, enum, record, delegate,
+                 type (all types), member (all members).
+                 Also narrows the Typesense pre-filter.
+        uses_kind: For uses mode — which annotation positions to search.
+                 Values: all (default), field, param, return, cast, base.
+                 all:    fields + params + return types + casts + base types
+                 field:  only field/property declarations typed as TYPE
+                 param:  only method parameters typed as TYPE
+                 return: only methods returning TYPE
+                 cast:   only explicit (TYPE)expr casts
+                 base:   only types inheriting/implementing TYPE
 
     Examples:
         query_codebase("casts", "Widget")
@@ -310,7 +326,7 @@ def query_codebase(
         query_codebase("calls", "SaveChanges", sub="services")
         query_codebase("implements", "IRepository")
         query_codebase("attrs", "Obsolete", sub="api")
-        query_codebase("find", "SaveChanges", sub="core")
+        query_codebase("declarations", "SaveChanges", sub="core")
         query_codebase("accesses_of", "ConnectionString")
         query_codebase("accesses_of", "DataStore.ConnectionString")
     """
@@ -330,12 +346,15 @@ def query_codebase(
 
     # Call the indexserver /query-codebase endpoint
     payload = _json.dumps({
-        "mode":    m,
-        "pattern": pattern,
-        "sub":     sub or "",
-        "ext":     (ext or "cs").lstrip("."),
-        "root":    root or "",
-        "limit":   _QUERY_CODEBASE_LIMIT,
+        "mode":         m,
+        "pattern":      pattern,
+        "sub":          sub or "",
+        "ext":          (ext or "cs").lstrip("."),
+        "root":         root or "",
+        "limit":        _QUERY_CODEBASE_LIMIT,
+        "include_body": include_body,
+        "symbol_kind":  symbol_kind or "",
+        "uses_kind":    uses_kind or "",
     }).encode()
 
     req = _urlreq.Request(
@@ -456,6 +475,9 @@ def query_single_file(
     file:          str = "",
     context_lines: int = 0,
     root:          str = "",
+    include_body:  bool = False,
+    symbol_kind:   str = "",
+    uses_kind:     str = "",
 ) -> str:
     """
     Run a tree-sitter AST query on a single file. No Typesense search.
@@ -467,9 +489,11 @@ def query_single_file(
 
     Args:
         mode:    AST query mode.
-                 Pattern-required: uses, calls, implements, casts, field_type,
-                   param_type, ident, member_accesses, accesses_of, find,
-                   params, attrs, decorators (C# and/or Python)
+                 Pattern-required: uses, calls, implements, casts, declarations,
+                   attrs, accesses_of, accesses_on, all_refs, params,
+                   decorators (C# and/or Python)
+                   (aliases: field_type→uses(kind=field), param_type→uses(kind=param),
+                    sig→uses(kind=return), ident→all_refs, member_accesses→accesses_on)
                  Listing (no pattern needed): methods, fields, classes,
                    usings (C#), imports (Python)
         pattern: Type/method/name to search for. Required for pattern modes;
@@ -478,12 +502,17 @@ def query_single_file(
                  paths, WSL /mnt/ paths, and relative paths from src root.
         context_lines: Surrounding source lines per match (like grep -C N).
         root:    Named source root (empty = default).
+        include_body: For declarations mode — include the full method/type body instead
+                 of signature only. Default False.
+        symbol_kind: For declarations mode — restrict to a specific declaration kind:
+                 method, constructor, property, field, event, class,
+                 interface, struct, enum, record, delegate, type, member.
 
     Examples:
         query_single_file("methods", file="$SRC_ROOT/sts/stsom/AbsIntegration.cs")
         query_single_file("classes", file="$SRC_ROOT/sts/stsom/AbsIntegration.cs")
         query_single_file("casts", "BlobStore", file="$SRC_ROOT/sts/stsom/Foo.cs")
-        query_single_file("find", "WriteBlobs", file="$SRC_ROOT/spo/Bar.cs")
+        query_single_file("declarations", "WriteBlobs", file="$SRC_ROOT/spo/Bar.cs")
         query_single_file("uses", "IAbsBlobStore", file="$SRC_ROOT/sts/stsom/Foo.cs")
     """
     from query import process_file, process_py_file
@@ -513,13 +542,16 @@ def query_single_file(
     try:
         fn = process_py_file if _lang == "py" else process_file
         fn(
-            path       = abs_path,
-            mode       = m,
-            mode_arg   = pattern,
-            show_path  = True,
-            count_only = False,
-            context    = context_lines,
-            src_root   = _src_root,
+            path         = abs_path,
+            mode         = m,
+            mode_arg     = pattern,
+            show_path    = True,
+            count_only   = False,
+            context      = context_lines,
+            src_root     = _src_root,
+            include_body = include_body,
+            symbol_kind  = symbol_kind,
+            uses_kind    = uses_kind,
         )
     finally:
         sys.stdout = _old

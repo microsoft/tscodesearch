@@ -96,6 +96,9 @@ _SCHEMA_FIELDS = [
     {"name": "attributes",    "type": "string[]", "optional": True, "facet": True},
     {"name": "usings",        "type": "string[]", "optional": True},
     {"name": "priority",      "type": "int32"},
+    # Tier 1 expanded fields
+    {"name": "return_types",  "type": "string[]", "optional": True},
+    {"name": "param_types",   "type": "string[]", "optional": True},
 ]
 
 
@@ -155,6 +158,7 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
             "namespace": "", "class_names": [], "method_names": [],
             "base_types": [], "call_sites": [], "cast_sites": [], "method_sigs": [],
             "type_refs": [], "attributes": [], "usings": [],
+            "return_types": [], "param_types": [],
         }
 
     root = tree.root_node
@@ -168,6 +172,8 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
     type_refs = []
     attributes = []
     usings = []
+    return_types = []
+    param_types = []
 
     # Namespace
     ns_nodes = _find_all(root, lambda n: n.type in (
@@ -228,13 +234,17 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
             if name_node2 and params_node:
                 ret_txt = _node_text(ret_node, src_bytes).strip() if ret_node else ""
                 mname = _node_text(name_node2, src_bytes)
-                param_types = []
+                sig_param_types = []
                 for param in _find_all(params_node, lambda n: n.type == "parameter"):
                     ptype = param.child_by_field_name("type")
                     if ptype:
-                        param_types.append(_node_text(ptype, src_bytes).strip())
-                sig = f"{ret_txt} {mname}({', '.join(param_types)})".strip()
+                        ptype_txt = _node_text(ptype, src_bytes).strip()
+                        sig_param_types.append(ptype_txt)
+                        param_types.extend(_expand_type_refs(ptype_txt))
+                sig = f"{ret_txt} {mname}({', '.join(sig_param_types)})".strip()
                 method_sigs.append(sig)
+                if ret_txt:
+                    return_types.extend(_expand_type_refs(ret_txt))
 
         # T2: type_refs
         if node.type in ("field_declaration", "event_field_declaration"):
@@ -313,6 +323,8 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
         "type_refs":    _dedupe(type_refs),
         "attributes":   _dedupe(attributes),
         "usings":       _dedupe(usings),
+        "return_types": _dedupe(return_types),
+        "param_types":  _dedupe(param_types),
     }
 
 
@@ -322,6 +334,7 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
         "namespace": "", "class_names": [], "method_names": [],
         "base_types": [], "call_sites": [], "cast_sites": [], "method_sigs": [],
         "type_refs": [], "attributes": [], "usings": [],
+        "return_types": [], "param_types": [],
     }
     if not _PY_AVAILABLE or _py_parser is None:
         return _empty
@@ -339,6 +352,8 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
     type_refs = []
     attributes = []
     usings = []
+    py_return_types = []
+    py_param_types = []
 
     # Classes and base types
     for node in _find_all(root, lambda n: n.type == "class_definition"):
@@ -371,13 +386,17 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
                 sig += f" -> {ret_txt}"
             method_sigs.append(sig)
         if return_node:
-            type_refs.extend(_expand_type_refs(_node_text(return_node, src_bytes).strip()))
+            ret_type_txt = _node_text(return_node, src_bytes).strip()
+            type_refs.extend(_expand_type_refs(ret_type_txt))
+            py_return_types.extend(_expand_type_refs(ret_type_txt))
         if params_node:
             for param in params_node.named_children:
                 if param.type in ("typed_parameter", "typed_default_parameter"):
                     ptype = param.child_by_field_name("type")
                     if ptype:
-                        type_refs.extend(_expand_type_refs(_node_text(ptype, src_bytes).strip()))
+                        ptype_txt = _node_text(ptype, src_bytes).strip()
+                        type_refs.extend(_expand_type_refs(ptype_txt))
+                        py_param_types.extend(_expand_type_refs(ptype_txt))
 
     # Decorators (stored in "attributes" field for consistency)
     for node in _find_all(root, lambda n: n.type == "decorator"):
@@ -421,6 +440,8 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
         "type_refs":    _dedupe(type_refs),
         "attributes":   _dedupe(attributes),
         "usings":       _dedupe(usings),
+        "return_types": _dedupe(py_return_types),
+        "param_types":  _dedupe(py_param_types),
     }
 
 
@@ -469,6 +490,7 @@ def build_document(full_path: str, relative_path: str) -> dict:
             "namespace": "", "class_names": [], "method_names": [],
             "base_types": [], "call_sites": [], "cast_sites": [], "method_sigs": [],
             "type_refs": [], "attributes": [], "usings": [],
+            "return_types": [], "param_types": [],
         }
 
     symbols = list(dict.fromkeys(meta["class_names"] + meta["method_names"]))
@@ -498,6 +520,8 @@ def build_document(full_path: str, relative_path: str) -> dict:
         "type_refs":     meta["type_refs"],
         "attributes":    meta["attributes"],
         "usings":        meta["usings"],
+        "return_types":  meta["return_types"],
+        "param_types":   meta["param_types"],
     }
 
 

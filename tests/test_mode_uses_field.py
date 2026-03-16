@@ -21,17 +21,17 @@ from tests.fixtures import (
     FIELD_TYPED_GENERIC_BLOBSTORE, LISTING_TARGET,
 )
 from indexserver.indexer import extract_cs_metadata
-from query import q_field_type
+from query import q_uses
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# q_field_type AST function
+# q_uses(uses_kind="field") AST function
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestQFieldType(unittest.TestCase):
 
     def _ftype(self, src, type_name):
-        return q_field_type(*_parse(src), type_name=type_name)
+        return q_uses(*_parse(src), type_name, uses_kind="field")
 
     def test_finds_private_field(self):
         r = self._ftype(FIELD_TYPED_BLOBSTORE, "BlobStore")
@@ -120,8 +120,8 @@ class TestFieldTypeMetadataConsistency(unittest.TestCase):
         # BlobStore IS in type_refs (from param) — that's correct for uses mode
         assert "BlobStore" in meta["type_refs"]
         # But q_field_type must still return empty (it checks field/prop node types)
-        r = q_field_type(*_parse(PARAM_ONLY_BLOBSTORE), type_name="BlobStore")
-        assert r == [], "Param type must not appear in q_field_type results"
+        r = q_uses(*_parse(PARAM_ONLY_BLOBSTORE), "BlobStore", uses_kind="field")
+        assert r == [], "Param type must not appear in field results"
 
     def test_generic_type_expanded_in_type_refs(self):
         meta = extract_cs_metadata(FIELD_TYPED_GENERIC_BLOBSTORE.encode())

@@ -40,6 +40,7 @@ _root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _root)
 
 from config import HOST, PORT, API_KEY, COLLECTION
+from cs_ast import symbol_kind_query_by
 
 
 def _ts_search(collection: str, params: dict) -> dict:
@@ -53,7 +54,8 @@ def _ts_search(collection: str, params: dict) -> dict:
 
 def search(query, ext=None, sub=None, limit=10,
            symbols_only=False, implements=False, calls=False,
-           sig=False, uses=False, attrs=False, casts=False, collection=None):
+           sig=False, uses=False, attrs=False, casts=False, collection=None,
+           symbol_kind=None, uses_kind=""):
     from config import COLLECTION as _DEFAULT_COLLECTION
     coll_name = collection or _DEFAULT_COLLECTION
 
@@ -62,16 +64,30 @@ def search(query, ext=None, sub=None, limit=10,
         query_by = "base_types,class_names,filename"
     elif calls:
         query_by = "call_sites,filename"
-    elif sig:
-        query_by = "method_sigs,filename"
     elif uses:
-        query_by = "type_refs,symbols,class_names,filename"
+        k = (uses_kind or "all").lower().strip()
+        if k == "field":
+            query_by = "type_refs,filename"
+        elif k == "param":
+            query_by = "param_types,filename"
+        elif k == "return":
+            query_by = "return_types,filename"
+        elif k == "cast":
+            query_by = "cast_sites,filename"
+        elif k == "base":
+            query_by = "base_types,class_names,filename"
+        else:  # "all"
+            query_by = "type_refs,return_types,param_types,cast_sites,base_types,class_names,filename"
     elif attrs:
         query_by = "attributes,filename"
     elif casts:
         query_by = "cast_sites,filename"
     elif symbols_only:
-        query_by = "symbols,class_names,method_names,filename"
+        narrowed = symbol_kind_query_by(symbol_kind or "")
+        query_by = narrowed if narrowed else "symbols,class_names,method_names,filename"
+    elif sig:
+        # backward compat — map to uses(kind=all signature positions)
+        query_by = "return_types,param_types,method_sigs,filename"
     else:
         query_by = "filename,symbols,class_names,method_names,content"
 
@@ -86,7 +102,7 @@ def search(query, ext=None, sub=None, limit=10,
         "q": query,
         "query_by": query_by,
         "per_page": limit,
-        "highlight_full_fields": "symbols,class_names,method_names,filename,base_types,method_sigs",
+        "highlight_full_fields": "symbols,class_names,method_names,filename,base_types,method_sigs,return_types,param_types",
         "snippet_threshold": 30,
         "num_typos": "1",
         "prefix": "false",

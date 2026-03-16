@@ -208,15 +208,15 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.foo_path, "ident", "ZZZNonExistentXXX")
         self.assertEqual(n, 0)
 
-    # ── mode: find ────────────────────────────────────────────────────────────
+    # ── mode: declarations ────────────────────────────────────────────────────
 
     def test_find_returns_source(self):
-        n, out = self._run(self.foo_path, "find", "process")
+        n, out = self._run(self.foo_path, "declarations", "process")
         self.assertGreater(n, 0)
         self.assertIn("def process", out)
 
     def test_find_class_returns_full_body(self):
-        n, out = self._run(self.foo_path, "find", "Foo")
+        n, out = self._run(self.foo_path, "declarations", "Foo")
         self.assertGreater(n, 0)
         self.assertIn("class Foo", out)
 
