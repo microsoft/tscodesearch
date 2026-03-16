@@ -104,7 +104,7 @@ def get_root(name: str = "") -> tuple[str, str]:
         name = "default" if "default" in ROOTS else next(iter(ROOTS))
     if name not in ROOTS:
         raise ValueError(f"Unknown root {name!r}. Available: {sorted(ROOTS)}")
-    return collection_for_root(name), ROOTS[name]
+    return collection_for_root(name), to_native_path(ROOTS[name])
 
 
 # Backward-compat global: the default root's collection name
