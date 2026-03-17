@@ -236,8 +236,8 @@ Or directly from WSL:
 ~/.local/mcp-venv/bin/python search.py "Widget"
 ~/.local/mcp-venv/bin/python search.py "ProcessOrder" --ext cs --sub payments
 ~/.local/mcp-venv/bin/python search.py "IRepository"  --mode implements
-~/.local/mcp-venv/bin/python search.py "SaveChanges"  --mode callers
-~/.local/mcp-venv/bin/python search.py "Obsolete"     --mode attr
+~/.local/mcp-venv/bin/python search.py "SaveChanges"  --mode calls
+~/.local/mcp-venv/bin/python search.py "Obsolete"     --mode attrs
 ~/.local/mcp-venv/bin/python search.py "ConnectionString" --mode uses
 ```
 
@@ -254,8 +254,8 @@ Or directly from WSL:
 ~/.local/mcp-venv/bin/python query.py --calls     SaveChanges        "src/data/**/*.cs"
 ~/.local/mcp-venv/bin/python query.py --calls     Repository.Save    "src/data/**/*.cs"
 ~/.local/mcp-venv/bin/python query.py --casts     Widget             "src/**/*.cs"
-~/.local/mcp-venv/bin/python query.py --ident     ProcessOrder       "src/**/*.cs"
-~/.local/mcp-venv/bin/python query.py --member-accesses Widget       Order.cs
+~/.local/mcp-venv/bin/python query.py --all-refs  ProcessOrder       "src/**/*.cs"
+~/.local/mcp-venv/bin/python query.py --accesses-on Widget           Order.cs
 ~/.local/mcp-venv/bin/python query.py --accesses-of Status           "src/**/*.cs"
 ~/.local/mcp-venv/bin/python query.py --attrs     TestMethod         "src/**/*.cs"
 ~/.local/mcp-venv/bin/python query.py --declarations ProcessOrder    Order.cs
@@ -264,8 +264,8 @@ Or directly from WSL:
 # Pattern modes with --search (Typesense finds the files automatically)
 ~/.local/mcp-venv/bin/python query.py --implements IRepository       --search "IRepository"
 ~/.local/mcp-venv/bin/python query.py --uses       Order             --search "Order"
-~/.local/mcp-venv/bin/python query.py --field-type ConnectionString  --search "ConnectionString"
-~/.local/mcp-venv/bin/python query.py --param-type Widget            --search "Widget"
+~/.local/mcp-venv/bin/python query.py --uses       ConnectionString  --uses-kind field   --search "ConnectionString"
+~/.local/mcp-venv/bin/python query.py --uses       Widget            --uses-kind param   --search "Widget"
 ```
 
 ## Architecture

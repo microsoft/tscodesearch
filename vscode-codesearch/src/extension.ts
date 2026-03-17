@@ -666,17 +666,19 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
     private _reloadConfig(): boolean {
         try {
             // Docker mode: use settings-based roots when configured
-            const configuredRoots = this._docker.getRoots();
-            if (Object.keys(configuredRoots).length > 0) {
-                this._config = this._docker.getClientConfig();
-                const rootMap = getRoots(this._config);
-                this._roots = Object.keys(rootMap);
-                this._defaultRoot = this._roots[0] ?? 'default';
-                this._out.appendLine(`[config] Loaded from settings — roots: ${this._roots.join(', ')} | port: ${this._config.port}`);
-                return true;
+            if (this._docker.mode === 'docker') {
+                const configuredRoots = this._docker.getRoots();
+                if (Object.keys(configuredRoots).length > 0) {
+                    this._config = this._docker.getClientConfig();
+                    const rootMap = getRoots(this._config);
+                    this._roots = Object.keys(rootMap);
+                    this._defaultRoot = this._roots[0] ?? 'default';
+                    this._out.appendLine(`[config] Loaded from settings — roots: ${this._roots.join(', ')} | port: ${this._config.port}`);
+                    return true;
+                }
             }
 
-            // Legacy WSL mode: discover config.json on disk
+            // WSL mode (or docker without configured roots): discover config.json on disk
             const { found, searched } = findConfigPath();
             if (!found) {
                 const lines = [
@@ -745,14 +747,21 @@ export function activate(context: vscode.ExtensionContext): void {
         } catch { /* non-fatal */ }
     }
 
-    const configuredRoots = docker.getRoots();
-    if (Object.keys(configuredRoots).length > 0) {
-        _startWatcherAndStatus(docker.getClientConfig());
-    } else {
+    if (docker.mode === 'wsl') {
+        // WSL mode: config.json is the source of truth for API key, port, and roots.
         try {
             const { found } = findConfigPath();
-            if (found) { _startWatcherAndStatus(loadConfig(found)); }
+            if (found) {
+                docker.setDiskConfig(loadConfig(found));
+                _startWatcherAndStatus(docker.getClientConfig());
+            }
         } catch { /* non-fatal */ }
+    } else {
+        // Docker mode: VS Code settings own the config.
+        const configuredRoots = docker.getRoots();
+        if (Object.keys(configuredRoots).length > 0) {
+            _startWatcherAndStatus(docker.getClientConfig());
+        }
     }
 
     // ── Commands ─────────────────────────────────────────────────────────────

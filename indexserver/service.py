@@ -255,12 +255,29 @@ def cmd_status(args) -> None:
             prog  = verifier.get("progress", {})
             total = prog.get("total_to_update", 0)
             done  = prog.get("updated", 0)
-            pct   = f"{done * 100 // total}%" if total else "—"
-            print(f"  Verifier: [>>] running  ({pct} complete)")
+            if total:
+                pct = f"{done * 100 // total}%"
+                print(f"  Verifier: [>>] running  ({pct}  {done:,}/{total:,} updated)")
+            else:
+                phase = prog.get("phase", "starting")
+                print(f"  Verifier: [>>] running  ({phase})")
         else:
             prog = verifier.get("progress", {})
             if prog:
-                print(f"  Verifier: {prog.get('status', 'idle')}")
+                vstatus  = prog.get("status", "idle")
+                missing  = prog.get("missing", 0)
+                stale    = prog.get("stale", 0)
+                fs_files = prog.get("fs_files", 0)
+                indexed  = prog.get("index_docs", 0)
+                detail_parts = []
+                if fs_files:
+                    detail_parts.append(f"{indexed:,}/{fs_files:,} indexed")
+                if missing:
+                    detail_parts.append(f"{missing:,} missing")
+                if stale:
+                    detail_parts.append(f"{stale:,} stale")
+                detail = f"  ({', '.join(detail_parts)})" if detail_parts else ""
+                print(f"  Verifier: {vstatus}{detail}")
 
     if missing_collections:
         print(f"")

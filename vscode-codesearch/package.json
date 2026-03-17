@@ -79,57 +79,71 @@
         "icon": "$(refresh)"
       }
     ],
-    "configuration": {
-      "title": "TsCodeSearch",
-      "properties": {
-        "tscodesearch.mode": {
-          "type": "string",
-          "enum": ["docker", "wsl"],
-          "default": "docker",
-          "description": "Backend mode: 'docker' runs the indexserver in a Docker container managed by the extension; 'wsl' manages the WSL indexserver (ts.sh) directly.",
-          "enumDescriptions": [
-            "Docker mode — extension builds and manages a Docker container.",
-            "WSL mode — extension manages the WSL indexserver via ts.sh."
-          ]
-        },
-        "tscodesearch.configPath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to codesearch config.json (WSL/legacy mode). Leave blank when using Docker mode (codesearch.roots)."
-        },
-        "tscodesearch.roots": {
-          "type": "object",
-          "default": {},
-          "description": "Named source roots to index via Docker. Keys are root names (e.g. \"default\"), values are Windows paths (e.g. \"C:\\\\myproject\\\\src\").",
-          "additionalProperties": { "type": "string" }
-        },
-        "tscodesearch.repoPath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to the tscodesearch repository root (needed to build the Docker image)."
-        },
-        "tscodesearch.dockerImage": {
-          "type": "string",
-          "default": "codesearch-mcp",
-          "description": "Docker image name."
-        },
-        "tscodesearch.dockerContainer": {
-          "type": "string",
-          "default": "codesearch",
-          "description": "Docker container name."
-        },
-        "tscodesearch.mcpPort": {
-          "type": "number",
-          "default": 3000,
-          "description": "Port for the MCP SSE endpoint."
-        },
-        "tscodesearch.typesensePort": {
-          "type": "number",
-          "default": 8108,
-          "description": "Port for the Typesense server."
+    "configuration": [
+      {
+        "title": "TsCodeSearch",
+        "properties": {
+          "tscodesearch.mode": {
+            "type": "string",
+            "enum": ["docker", "wsl"],
+            "default": "docker",
+            "description": "Backend mode: 'docker' runs the indexserver in a Docker container managed by the extension; 'wsl' manages the WSL indexserver (ts.sh) directly.",
+            "enumDescriptions": [
+              "Docker mode — extension builds and manages a Docker container.",
+              "WSL mode — extension manages the WSL indexserver via ts.sh."
+            ]
+          },
+          "tscodesearch.repoPath": {
+            "type": "string",
+            "default": "",
+            "description": "Path to the tscodesearch repository root."
+          },
+          "tscodesearch.mcpPort": {
+            "type": "number",
+            "default": 3000,
+            "description": "Port for the MCP SSE endpoint."
+          },
+          "tscodesearch.typesensePort": {
+            "type": "number",
+            "default": 8108,
+            "description": "Port for the Typesense server."
+          }
+        }
+      },
+      {
+        "title": "TsCodeSearch — WSL Mode",
+        "when": "config.tscodesearch.mode == wsl",
+        "properties": {
+          "tscodesearch.configPath": {
+            "type": "string",
+            "default": "",
+            "description": "Path to codesearch config.json. Roots, API key, and port are read from this file."
+          }
+        }
+      },
+      {
+        "title": "TsCodeSearch — Docker Mode",
+        "when": "config.tscodesearch.mode == docker",
+        "properties": {
+          "tscodesearch.roots": {
+            "type": "object",
+            "default": {},
+            "description": "Named source roots to index. Keys are root names (e.g. \"default\"), values are Windows paths (e.g. \"C:\\\\myproject\\\\src\").",
+            "additionalProperties": { "type": "string" }
+          },
+          "tscodesearch.dockerImage": {
+            "type": "string",
+            "default": "codesearch-mcp",
+            "description": "Docker image name."
+          },
+          "tscodesearch.dockerContainer": {
+            "type": "string",
+            "default": "codesearch",
+            "description": "Docker container name."
+          }
         }
       }
-    },
+    ],
     "keybindings": [
       {
         "command": "tscodesearch.openPanel",

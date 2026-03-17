@@ -50,6 +50,9 @@ export class FileWatcher {
         }
     }
 
+    /** True when this watcher owns file-change delivery (VS Code native watchers are active). */
+    get isActive(): boolean { return this._roots.length > 0 && !this._disposed; }
+
     // ── Startup ────────────────────────────────────────────────────────────────
 
     private async _start(): Promise<void> {

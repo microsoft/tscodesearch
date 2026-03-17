@@ -18,7 +18,7 @@ import { FileWatcher } from './watcher';
 import { RootsTreeProvider, StatusDetail } from './treeview';
 
 interface StatusResponse {
-    watcher?:   { state?: string; queue_depth?: number };
+    watcher?:   { state?: string; queue_depth?: number; paused?: boolean };
     heartbeat?: { state?: string };
     verifier?:  { state?: string };
     collections?: Record<string, {
@@ -46,16 +46,45 @@ function fmtDocs(n: number): string {
     return String(n);
 }
 
+/**
+ * Pure helper — maps a raw /status response + VS Code watcher state to the
+ * StatusDetail that feeds the tree view.  Exported for unit testing.
+ */
+export function buildStatusDetail(
+    statusWatcher:    StatusResponse['watcher'],
+    statusVerifier:   StatusResponse['verifier'],
+    verifyStatus:     VerifyStatusResponse | null,
+    vsCodeWatcherActive: boolean,
+): import('./treeview').StatusDetail {
+    const rawWatcherState = statusWatcher?.state ?? 'unknown';
+    const watcherState = rawWatcherState === 'paused' && vsCodeWatcherActive
+        ? 'paused (windows fs watcher active)'
+        : rawWatcherState;
+    const queueDepth      = statusWatcher?.queue_depth ?? 0;
+    const verifierRunning = verifyStatus?.running === true || statusVerifier?.state === 'running';
+    return {
+        watcherState,
+        queueDepth,
+        verifierRunning,
+        verifierChecked: verifyStatus?.indexed ?? verifyStatus?.fs_files ?? 0,
+        verifierTotal:   verifyStatus?.fs_files ?? 0,
+        verifierMissing: verifyStatus?.missing  ?? 0,
+        verifierStale:   verifyStatus?.stale    ?? 0,
+    };
+}
+
 export class StatusBarManager {
     private readonly _item:         vscode.StatusBarItem;
     private readonly _watcher:      FileWatcher;
     private readonly _treeProvider: RootsTreeProvider | null;
+    private readonly _log:          vscode.OutputChannel;
     private _timer: ReturnType<typeof setInterval> | null = null;
     private _disposed = false;
 
     constructor(watcher: FileWatcher, treeProvider: RootsTreeProvider | null = null) {
         this._watcher      = watcher;
         this._treeProvider = treeProvider;
+        this._log = vscode.window.createOutputChannel('TsCodeSearch');
         this._item = vscode.window.createStatusBarItem(
             'tscodesearch.status',
             vscode.StatusBarAlignment.Right,
@@ -72,6 +101,16 @@ export class StatusBarManager {
 
     private async _poll(): Promise<void> {
         if (this._disposed) { return; }
+        try {
+            await this._doPoll();
+        } catch (e) {
+            this._log.appendLine(`[${new Date().toISOString()}] poll error: ${e}`);
+            console.error('[tscodesearch status] poll error:', e);
+        }
+    }
+
+    private async _doPoll(): Promise<void> {
+        if (this._disposed) { return; }
 
         const [status, verifyStatus] = await Promise.all([
             this._watcher.apiGet('/status') as Promise<StatusResponse | null>,
@@ -80,17 +119,31 @@ export class StatusBarManager {
 
         if (this._disposed) { return; }
 
-        if (!status) {
-            this._item.text    = '$(warning) TsCodeSearch: offline';
+        const statusError = (status as Record<string, unknown> | null)?.['error'] as string | undefined;
+        if (statusError) {
+            this._log.appendLine(`[${new Date().toISOString()}] server error: ${statusError} (wrong API key?)`);
+        }
+
+        if (!status || statusError) {
+            const isAuth = statusError?.toLowerCase().includes('unauthorized');
+            const label  = isAuth ? 'wrong API key' : statusError ? `error: ${statusError}` : 'offline';
+            this._item.text    = `$(warning) TsCodeSearch: ${label}`;
             this._item.tooltip = new vscode.MarkdownString(
-                '**TsCodeSearch** — server unreachable\n\nUse the Roots panel to set up or restart the server.',
+                isAuth
+                    ? '**TsCodeSearch** — API key mismatch\n\nThe extension API key does not match the running server.\n\nCheck `tscodesearch.configPath` or `tscodesearch.roots` settings.'
+                    : '**TsCodeSearch** — server unreachable\n\nUse the Roots panel to set up or restart the server.',
             );
             this._treeProvider?.updateFromStatus(false, {}, {
-                watcherState: 'offline', queueDepth: 0,
+                watcherState: label, queueDepth: 0,
                 verifierRunning: false, verifierChecked: 0, verifierTotal: 0,
                 verifierMissing: 0, verifierStale: 0,
             });
             return;
+        }
+
+        // ── Re-pause WSL watcher if VS Code watcher is active but server restarted ──
+        if (this._watcher.isActive && status.watcher?.paused === false) {
+            void this._watcher.apiPost('/watcher/pause');
         }
 
         // ── Compute aggregate doc count ──────────────────────────────────────
@@ -110,15 +163,9 @@ export class StatusBarManager {
             for (const [name, col] of Object.entries(collections)) {
                 docCounts[name] = col.num_documents ?? 0;
             }
-            const detail: StatusDetail = {
-                watcherState:    status.watcher?.state ?? 'unknown',
-                queueDepth,
-                verifierRunning,
-                verifierChecked: verifyStatus?.indexed ?? verifyStatus?.fs_files ?? 0,
-                verifierTotal:   verifyStatus?.fs_files ?? 0,
-                verifierMissing: verifyStatus?.missing ?? 0,
-                verifierStale:   verifyStatus?.stale   ?? 0,
-            };
+            const detail = buildStatusDetail(
+                status.watcher, status.verifier, verifyStatus, this._watcher.isActive,
+            );
             this._treeProvider.updateFromStatus(true, docCounts, detail);
         }
 
@@ -174,5 +221,6 @@ export class StatusBarManager {
         this._disposed = true;
         if (this._timer !== null) { clearInterval(this._timer); }
         this._item.dispose();
+        this._log.dispose();
     }
 }

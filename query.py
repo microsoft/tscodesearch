@@ -1221,7 +1221,7 @@ def process_py_file(path, mode, mode_arg, show_path, count_only, context=0, src_
         else:
             print(f"{line_num_str}: {text}")
 
-        if context > 0 and mode not in ("declarations", "find"):
+        if context > 0 and mode != "declarations":
             try:
                 row = int(line_num_str) - 1
                 start = max(0, row - context)
@@ -1300,7 +1300,7 @@ def process_file(path, mode, mode_arg, show_path, count_only, context=0, src_roo
             print(f"{line_num_str}: {text}")
 
         # Optional surrounding context lines (like grep -C)
-        if context > 0 and mode not in ("declarations", "find"):
+        if context > 0 and mode != "declarations":
             try:
                 row = int(line_num_str) - 1  # convert back to 0-based
                 start = max(0, row - context)
@@ -1363,16 +1363,10 @@ def main():
                     help="Find types inheriting/implementing TYPE")
     mg.add_argument("--uses",       metavar="TYPE",
                     help="Find all type references to TYPE (not comments/strings)")
-    mg.add_argument("--field-type", metavar="TYPE",
-                    help="Find fields/properties whose declared type is TYPE")
-    mg.add_argument("--param-type", metavar="TYPE",
-                    help="Find method/constructor parameters typed as TYPE")
     mg.add_argument("--casts",      metavar="TYPE",
                     help="Find every explicit cast expression (TYPE)expr")
-    mg.add_argument("--ident",            metavar="NAME",
+    mg.add_argument("--all-refs",         metavar="NAME",
                     help="Find every identifier occurrence (semantic grep, skips comments/strings)")
-    mg.add_argument("--member-accesses",  metavar="TYPE",
-                    help="Find all .Member accesses on locals/params declared as TYPE")
     mg.add_argument("--accesses-of",      metavar="MEMBER",
                     help="Find every access site of property/field MEMBER (optionally Class.MEMBER)")
     mg.add_argument("--attrs",            metavar="NAME", nargs="?", const="",
@@ -1396,6 +1390,8 @@ def main():
                     help="Filter Typesense search by extension (default: cs)")
     ap.add_argument("--search-limit", metavar="N", type=int, default=50,
                     help="Max files to fetch from Typesense (default: 50)")
+    ap.add_argument("--uses-kind", metavar="KIND", default="",
+                    help="For --uses: narrow to field, param, return, cast, or base")
     ap.add_argument("--no-path", action="store_true",
                     help="Omit file path prefix (auto-set for single files)")
     ap.add_argument("--count",   action="store_true",
@@ -1420,16 +1416,10 @@ def main():
         mode, mode_arg = "implements", args.implements
     elif args.uses:
         mode, mode_arg = "uses",       args.uses
-    elif args.field_type:
-        mode, mode_arg = "field_type", args.field_type
-    elif args.param_type:
-        mode, mode_arg = "param_type", args.param_type
     elif args.casts:
         mode, mode_arg = "casts",      args.casts
-    elif args.ident:
-        mode, mode_arg = "ident",            args.ident
-    elif args.member_accesses:
-        mode, mode_arg = "member_accesses",  args.member_accesses
+    elif args.all_refs:
+        mode, mode_arg = "all_refs",   args.all_refs
     elif args.accesses_of:
         mode, mode_arg = "accesses_of",      args.accesses_of
     elif args.attrs is not None:
@@ -1462,9 +1452,10 @@ def main():
     has_glob  = any(c in p for p in (args.files or []) for c in ("*", "?"))
     show_path = not args.no_path and (len(files) > 1 or has_glob or bool(args.search))
 
+    uses_kind = getattr(args, "uses_kind", "") or ""
     total = 0
     for f in files:
-        total += process_file(f, mode, mode_arg, show_path, args.count, context=args.context)
+        total += process_file(f, mode, mode_arg, show_path, args.count, context=args.context, uses_kind=uses_kind)
 
     if args.count:
         print(f"\nTotal: {total}")

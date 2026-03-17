@@ -16,7 +16,7 @@ import * as vscode from 'vscode';
 import * as fs    from 'fs';
 import * as path  from 'path';
 import * as cp    from 'child_process';
-import { CodesearchConfig } from './client';
+import { CodesearchConfig, getRoots as getRootsFromConfig } from './client';
 
 export type ServerMode = 'docker' | 'wsl';
 
@@ -79,12 +79,22 @@ export class ServerManager {
     private readonly _context:    vscode.ExtensionContext;
     private readonly _storageDir: string;
     private readonly _out:        vscode.OutputChannel;
+    private _diskConfig:          CodesearchConfig | null = null;
 
     constructor(context: vscode.ExtensionContext, out: vscode.OutputChannel) {
         this._context    = context;
         this._storageDir = context.globalStorageUri.fsPath;
         this._out        = out;
         fs.mkdirSync(this._storageDir, { recursive: true });
+    }
+
+    /**
+     * In WSL mode, config.json on disk is the source of truth.
+     * Call this once at startup after discovering the config file.
+     * Roots, port, and API key will all come from the file instead of VS Code settings.
+     */
+    setDiskConfig(config: CodesearchConfig): void {
+        this._diskConfig = config;
     }
 
     // ── Mode + settings ──────────────────────────────────────────────────────
@@ -109,6 +119,9 @@ export class ServerManager {
     // ── Root management ──────────────────────────────────────────────────────
 
     getRoots(): Record<string, string> {
+        if (this.mode === 'wsl' && this._diskConfig) {
+            return getRootsFromConfig(this._diskConfig);
+        }
         return cfg<Record<string, string>>('roots', {});
     }
 
@@ -176,6 +189,9 @@ export class ServerManager {
 
     /** Config for the VS Code extension (Windows paths for file resolution). */
     getClientConfig(): CodesearchConfig {
+        if (this.mode === 'wsl' && this._diskConfig) {
+            return this._diskConfig;
+        }
         return {
             api_key: this.apiKey,
             port:    this.typesensePort,

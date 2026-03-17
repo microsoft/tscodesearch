@@ -54,7 +54,7 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 |------|---------------|
 | `config.py` | Shared constants: `HOST`, `PORT`, `API_KEY`, `ROOTS`, `COLLECTION`, `INCLUDE_EXTENSIONS`. Reads `config.json`. Provides `get_root(name)` → `(collection, src_path)` and `collection_for_root(name)` → `"codesearch_{name}"`. |
 | `search.py` | HTTP search wrapper. `search(query, ...)` builds params and calls Typesense; `format_results()` prints human-readable output. Used by `mcp_server.py`. |
-| `query.py` | Tree-sitter AST query functions (`q_classes`, `q_methods`, `q_calls`, `q_implements`, `q_field_type`, `q_param_type`, `q_casts`, `q_ident`, `q_uses`, `q_attrs`, `q_usings`, `q_find`, `q_params`). `process_file(path, mode, mode_arg, ...)` dispatches to them and prints matches. `files_from_search()` resolves Typesense hits to local file paths. |
+| `query.py` | Tree-sitter AST query functions (`q_classes`, `q_methods`, `q_fields`, `q_calls`, `q_implements`, `q_uses`, `q_casts`, `q_all_refs`, `q_attrs`, `q_usings`, `q_declarations`, `q_params`, `q_accesses_on`, `q_accesses_of`, `q_text`). `process_file(path, mode, mode_arg, uses_kind, ...)` dispatches to them and prints matches. `files_from_search()` resolves Typesense hits to local file paths. |
 | `mcp_server.py` | FastMCP server. Exposes `search_code`, `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status` tools. Captures stdout with `StringIO`. Supports multi-root via `root=` parameter. |
 
 ### Server-side (`indexserver/`)
@@ -128,11 +128,12 @@ Default root → `codesearch_default`. Both `config.py` files compute this ident
 **`query_codebase`** is the default "just find it" tool:
 - Typesense pre-filter narrows to ≤50 files → tree-sitter gives exact lines
 - If >50 files match, returns error with subsystem breakdown — never partial results
-- Accepts pattern-based modes only (`uses`, `calls`, `implements`, `casts`,
-  `field_type`, `param_type`, `ident`, `member_accesses`, `find`, `params`, `attrs`,
-  `decorators`); rejects listing modes with a redirect to `query_single_file`
+- Accepts pattern-based modes only (`text`, `declarations`, `calls`, `implements`,
+  `uses`, `casts`, `attrs`, `all_refs`, `accesses_on`, `accesses_of`); rejects listing
+  modes with a redirect to `query_single_file`
+- `uses` accepts optional `uses_kind` to narrow: `field`, `param`, `return`, `cast`, `base`
 - Maps AST mode to the best Typesense `query_by` automatically:
-  - `uses`/`field_type`/`param_type`/`member_accesses` → `type_refs` field
+  - `uses`/`all_refs`/`accesses_on`/`accesses_of` → `type_refs` field
   - `calls` → `call_sites` field
   - `implements` → `base_types` field
   - `casts` → `cast_sites` field
@@ -149,38 +150,55 @@ Default root → `codesearch_default`. Both `config.py` files compute this ident
 | `search_code` mode | `query_by` field(s) | What it finds |
 |--------------------|---------------------|---------------|
 | `text` (default) | `filename`, `class/method_names`, `content` | Broad keyword search |
-| `symbols` | `filename`, `class/method_names` only | Faster, no content noise |
-| `implements` | `base_types` (T1) | Files where a type inherits/implements the query |
-| `calls` | `call_sites` (T1) | Files that call the query method |
-| `sig` | `method_sigs` (T1) | Methods whose signature contains the query |
-| `uses` | `type_refs` (T2) | Files that reference the query type in declarations |
-| `attrs` | `attributes` (T2) | Files decorated with the query attribute |
+| `declarations` | `method_sigs`, `method_names`, `filename` | Methods/types whose signature contains the query [T1] |
+| `implements` | `base_types`, `class_names`, `filename` | Files where a type inherits/implements the query [T1] |
+| `calls` | `call_sites`, `filename` | Files that call the query method [T1] |
+| `uses` | `type_refs`, `symbols`, `class_names`, `filename` | Files that reference the query type in declarations [T2] |
+| `attrs` | `attributes`, `filename` | Files decorated with the query attribute [T2] |
+| `all_refs` | `type_refs`, `call_sites`, `filename` | All references — broad, catches everything |
+| `accesses_on` | `type_refs`, `filename` | Member accesses on instances of a type |
+| `accesses_of` | `call_sites`, `filename` | Access sites of a specific property/field name |
 
 T1 fields (`base_types`, `call_sites`, `method_sigs`) are precise tree-sitter extractions.
 T2 fields (`type_refs`, `attributes`, `usings`) are broader and may have minor false positives.
 
-## tree-sitter query modes (query.py / query_cs MCP tool)
+## tree-sitter query modes (query.py / query_codebase MCP tool)
 
-`process_file(path, mode, mode_arg, show_path, count_only, context, src_root)` dispatches to:
+`process_file(path, mode, mode_arg, uses_kind, show_path, count_only, context, src_root)` dispatches to:
+
+### C# modes (`.cs` files)
+
+| Mode | mode_arg / uses_kind | Finds |
+|------|----------------------|-------|
+| `classes` | — | All type declarations with base types *(listing — `query_single_file` only)* |
+| `methods` | — | All method/ctor/property/field signatures *(listing — `query_single_file` only)* |
+| `fields` | — | All field and property declarations *(listing — `query_single_file` only)* |
+| `usings` | — | All using directives *(listing — `query_single_file` only)* |
+| `params` | METHOD | Parameter list of METHOD *(listing — `query_single_file` only)* |
+| `text` | NAME | Full source of method/type named NAME |
+| `declarations` | NAME | Declaration of method/type named NAME |
+| `calls` | METHOD | Every call site of METHOD. Accepts bare name (`"Save"`) or qualified name (`"Repo.Save"`) to restrict by receiver class. |
+| `implements` | TYPE | Types that inherit/implement TYPE |
+| `uses` | TYPE | Every line where TYPE appears as a type reference. Narrow with `uses_kind`: `field` (declared type), `param` (parameter type), `return` (return type), `cast` (cast target), `base` (base type). |
+| `casts` | TYPE | Every explicit `(TYPE)expr` cast |
+| `all_refs` | NAME | Every identifier occurrence — semantic grep, broader than `uses` |
+| `accesses_on` | TYPE | All `.Member` accesses on locals/params typed as TYPE. Handles `var`-inferred locals via `new T()`, array indexing, `as T`, and `(T)` casts. |
+| `accesses_of` | MEMBER | Every access site of a property or field named MEMBER. Accepts bare name (`"Status"`) or qualified name (`"Order.Status"`) to restrict by receiver class. |
+| `attrs` | NAME? | `[Attribute]` decorators, optionally filtered by name |
+
+### Python modes (`.py` files)
 
 | Mode | mode_arg | Finds |
 |------|----------|-------|
-| `classes` | — | All type declarations with base types |
-| `methods` | — | All method/ctor/property/field signatures |
-| `fields` | — | All field and property declarations |
-| `calls` | METHOD | Every call site of METHOD. Accepts bare name (`"Create"`) or qualified name (`"Factory.Create"`) to restrict matches to a specific receiver class. |
-| `implements` | TYPE | Types that inherit/implement TYPE |
-| `uses` | TYPE | Every line where TYPE appears as a type reference |
-| `field_type` | TYPE | Fields/properties whose declared type is TYPE |
-| `param_type` | TYPE | Method parameters typed as TYPE |
-| `casts` | TYPE | Every explicit `(TYPE)expr` cast |
-| `ident` | NAME | Every identifier occurrence (semantic grep) |
-| `member_accesses` | TYPE | All `.Member` accesses on locals/params typed as TYPE. Handles explicit type annotations and var-inferred locals: `var x = new T()`, `var arr = new T[n]` + `var x = arr[i]`, `var x = expr as T`, `var x = (T)expr`. |
-| `accesses_of` | MEMBER | Every access site of a property or field named MEMBER. Accepts bare name (`"Status"`) or qualified name (`"Order.Status"`) to restrict matches to a specific receiver class. |
-| `attrs` | NAME? | `[Attribute]` decorators, optionally filtered |
-| `usings` | — | All using directives |
-| `find` | NAME | Full source of method/type named NAME |
-| `params` | METHOD | Parameter list of METHOD |
+| `classes` | — | All class definitions *(listing)* |
+| `methods` | — | All function/method definitions *(listing)* |
+| `params` | FUNC | Parameters of function FUNC *(listing)* |
+| `imports` | — | All import statements *(listing)* |
+| `decorators` | NAME? | `@decorator` usages, optionally filtered |
+| `declarations` | NAME | Declaration of function/class named NAME |
+| `calls` | FUNC | Every call site of FUNC |
+| `implements` | CLASS | Classes that inherit from CLASS |
+| `ident` | NAME | Every identifier occurrence |
 
 ## Testing
 

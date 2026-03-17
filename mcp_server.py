@@ -292,10 +292,9 @@ def query_codebase(
     Args:
         mode:    Search + AST mode. All modes run Typesense pre-filter then
                  tree-sitter AST to return exact line numbers.
-                 C#: text, declarations, calls, implements, uses, casts, attrs,
-                     accesses_of, accesses_on, all_refs
-                 Python (ext="py"): calls, implements, ident, declarations,
-                     params, decorators
+                 C#:     text, declarations, calls, implements, uses, casts,
+                         attrs, accesses_of, accesses_on, all_refs
+                 Python: calls, implements, ident, declarations, params, decorators
         pattern: Type/method/name to search for. Used for both the
                  Typesense pre-filter and the AST query.
         sub:     Narrow to a subsystem — the FIRST path component only (the top-level
@@ -323,12 +322,13 @@ def query_codebase(
     Examples:
         query_codebase("casts", "Widget")
         query_codebase("uses", "IDataStore", sub="core")
+        query_codebase("uses", "BlobStore", uses_kind="param", sub="sts")
+        query_codebase("uses", "BlobStore", uses_kind="field", sub="sts")
         query_codebase("calls", "SaveChanges", sub="services")
         query_codebase("implements", "IRepository")
         query_codebase("attrs", "Obsolete", sub="api")
         query_codebase("declarations", "SaveChanges", sub="core")
         query_codebase("accesses_of", "ConnectionString")
-        query_codebase("accesses_of", "DataStore.ConnectionString")
     """
     import json as _json
     import urllib.request as _urlreq
@@ -489,13 +489,12 @@ def query_single_file(
 
     Args:
         mode:    AST query mode.
-                 Pattern-required: uses, calls, implements, casts, declarations,
-                   attrs, accesses_of, accesses_on, all_refs, params,
-                   decorators (C# and/or Python)
-                   (aliases: field_type→uses(kind=field), param_type→uses(kind=param),
-                    sig→uses(kind=return), ident→all_refs, member_accesses→accesses_on)
-                 Listing (no pattern needed): methods, fields, classes,
-                   usings (C#), imports (Python)
+                 C# pattern-required: uses, calls, implements, casts, declarations,
+                   attrs, accesses_of, accesses_on, all_refs, params
+                 C# listing (no pattern): methods, fields, classes, usings
+                 Python pattern-required: calls, implements, ident, declarations,
+                   decorators, params
+                 Python listing (no pattern): classes, methods, imports
         pattern: Type/method/name to search for. Required for pattern modes;
                  omit for listing modes.
         file:    Path to the file. $SRC_ROOT is substituted. Accepts Windows
@@ -522,6 +521,8 @@ def query_single_file(
         _collection, _src_root = get_root(root)
     except ValueError as e:
         return f"Error: {e}\nConfigured roots: {', '.join(sorted(ROOTS))}"
+
+    _src_root = to_native_path(_src_root)
 
     if not file:
         return "file= is required."

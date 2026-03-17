@@ -34,7 +34,7 @@ The split between `client.ts` and `extension.ts` is intentional: `client.ts` imp
 | `src/client.ts` | All VS Code-free logic. `MODES` constant, `CodesearchConfig` / `TypesenseHit` / `TypesenseResult` types, `loadConfig`, `getRoots`, `sanitizeName`, `collectionForRoot`, `buildSearchParams`, `tsSearch`, `doSearch`, `resolveFilePath`. Exported for tests. |
 | `src/extension.ts` | VS Code wiring only. `friendlyConfigError`, `findConfigPath` (uses `vscode.workspace`), `buildWebviewHtml` (large HTML template literal), `activate` / `deactivate`. Imports everything search-related from `client.ts`. |
 | `src/test/client.test.ts` | 60 unit tests. No server required. Covers config parsing, root/collection resolution, every search mode's `query_by`, filter combinations, typo tolerance, path resolution, HTTP client behaviour (mock server), and `doSearch` end-to-end with mock. |
-| `src/test/integration.test.ts` | 23 integration tests. Requires Typesense running (`ts start`). Creates an isolated `codesearch_tstest_{timestamp}` collection, upserts a realistic `WidgetService.cs` document, polls until indexed, then exercises all 7 modes plus extension/subsystem filters. Cleans up on completion. |
+| `src/test/integration.test.ts` | 23 integration tests. Requires Typesense running (`ts start`). Creates an isolated `codesearch_tstest_{timestamp}` collection, upserts a realistic `WidgetService.cs` document, polls until indexed, then exercises all modes plus extension/subsystem filters. Cleans up on completion. |
 | `package.json` | Extension manifest. Registers `codesearch.openPanel` command (Ctrl+Shift+F1), `codesearch.configPath` setting, build/test scripts. |
 | `tsconfig.json` | CommonJS target, `esModuleInterop: true`, strict. Output to `out/`. |
 | `.vscodeignore` | Excludes `src/`, `node_modules/`, maps from the packaged VSIX. |
@@ -48,12 +48,16 @@ Defined in `client.ts` `MODES` array. Each entry has `key`, `label`, `queryBy` (
 | Key | `query_by` fields | Intent |
 |-----|-------------------|--------|
 | `text` | filename, symbols, class_names, method_names, content | Broad full-text |
-| `symbols` | symbols, class_names, method_names, filename | Symbol names only |
+| `declarations` | method_sigs, method_names, filename | Method/type signature search [T1] |
 | `implements` | base_types, class_names, filename | Interface implementors [T1] |
-| `callers` | call_sites, filename | Call sites of a method [T1] |
-| `sig` | method_sigs, method_names, filename | Method signature search [T1] |
+| `calls` | call_sites, filename | Call sites of a method [T1] |
 | `uses` | type_refs, symbols, class_names, filename | Type reference search [T2] |
-| `attr` | attributes, filename | Attribute decoration [T2] |
+| `casts` | cast_sites, filename | Explicit cast sites [T2] |
+| `attrs` | attributes, filename | Attribute decoration [T2] |
+| `all_refs` | type_refs, call_sites, filename | All references — broad, catches everything |
+| `accesses_on` | type_refs, filename | Member accesses on instances of a type |
+| `uses_field` | type_refs, filename | Fields/properties declared as a given type |
+| `uses_param` | type_refs, filename | Method parameters typed as a given type |
 
 ## Config
 

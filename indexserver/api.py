@@ -26,10 +26,10 @@ Endpoints (all require X-TYPESENSE-API-KEY header):
   POST /query               → body {"mode": "calls", "pattern": "MethodName", "files": ["/abs/path.cs"]}
                               Run a tree-sitter C# AST query against the given files.
                               Returns {"results": [{"file": path, "matches": [{"line": N, "text": "..."}]}]}
-                              Modes: text, find, calls, implements, uses, casts, attrs, accesses_of,
-                                     accesses_on, all_refs, attrs, find, params, classes, methods, fields, usings
-                              Aliases: symbols→find, ident→all_refs, member_accesses→accesses_on,
-                                       field_type→uses(kind=field), param_type→uses(kind=param), sig→uses(kind=return)
+                              Modes: text, declarations, calls, implements, uses, casts, attrs,
+                                     accesses_of, accesses_on, all_refs, classes, methods, fields,
+                                     usings, params
+                              uses accepts uses_kind: field, param, return, cast, base (default: all)
 """
 
 from __future__ import annotations
@@ -411,9 +411,21 @@ class _Handler(BaseHTTPRequestHandler):
         # ── GET /status ───────────────────────────────────────────────────────
         if method == "GET" and path == "/status":
             result: dict = {}
+            _watcher_running = bool(_watcher_thread and _watcher_thread.is_alive())
+            _queue_depth     = _index_queue.depth
+            if not _watcher_running:
+                _watcher_state = "stopped"
+            elif _watcher_paused:
+                _watcher_state = "paused"
+            elif _queue_depth > 0:
+                _watcher_state = "processing"
+            else:
+                _watcher_state = "watching"
             result["watcher"] = {
-                "running": bool(_watcher_thread and _watcher_thread.is_alive()),
-                "paused":  _watcher_paused,
+                "running":     _watcher_running,
+                "paused":      _watcher_paused,
+                "state":       _watcher_state,
+                "queue_depth": _queue_depth,
             }
             result["queue"] = _index_queue.stats()
             result["indexer"] = {
@@ -602,14 +614,6 @@ class _Handler(BaseHTTPRequestHandler):
             include_body = bool(body.get("include_body", False))
             symbol_kind  = str(body.get("symbol_kind", "") or "")
             uses_kind    = str(body.get("uses_kind", "") or "")
-
-            # Backward-compat: map old modes to uses_kind
-            if mode == "sig" and not uses_kind:
-                uses_kind = "return"
-            elif mode == "field_type" and not uses_kind:
-                uses_kind = "field"
-            elif mode == "param_type" and not uses_kind:
-                uses_kind = "param"
 
             if mode not in _EXT_TO_TS_AND_AST:
                 self._send_json(400, {"error": f"unknown mode: {mode!r}"})
