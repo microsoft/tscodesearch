@@ -558,9 +558,13 @@ def verify_schema(client, collection: str) -> tuple[bool, list[str]]:
     warnings = []
 
     # ── field checks ──────────────────────────────────────────────────────────
+    # Typesense treats 'id' as a built-in field and never returns it in the
+    # collection's fields list — skip it to avoid a spurious warning.
     actual_fields = {f["name"]: f for f in info.get("fields", [])}
     for expected in _SCHEMA_FIELDS:
         name = expected["name"]
+        if name == "id":
+            continue
         if name not in actual_fields:
             warnings.append(f"field {name!r} missing from collection")
             continue
