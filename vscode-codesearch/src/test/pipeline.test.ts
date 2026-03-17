@@ -6,15 +6,20 @@
  * Run all tests:           npm test
  * Run just this file:      node --require tsx/cjs --test src/test/pipeline.test.ts
  *
- * Live pipeline tests require the server AND these environment variables:
+ * Live pipeline tests require the server AND the management API (port+1) AND:
  *
  *   CS_QUERY      Symbol/type to search for (required for live tests)
  *   CS_SUB        Subsystem filter, e.g. "myapp" (optional, default: '')
+ *   CS_CONFIG     Path to config.json (optional; defaults to ../../../config.json)
  *
  * Example:
- *   CS_QUERY=Repository CS_SUB=dataaccess npm run test:pipeline
+ *   CS_QUERY=IProcessor CS_SUB=root1 npm run test:pipeline
+ *   CS_CONFIG=/tmp/e2e-config.json CS_QUERY=IProcessor npm run test:pipeline
  *
- * If CS_QUERY is not set the live tests are skipped automatically.
+ * All live tests call the management API (/query-codebase on port+1) and skip
+ * automatically when it is not reachable — whether CS_QUERY is unset or the
+ * AST API is down.  In Docker E2E mode (run_tests.sh --docker), the management
+ * API port is not exposed, so live tests skip gracefully (unit tests still run).
  */
 
 import { describe, it, before } from 'node:test';
@@ -38,7 +43,10 @@ import {
 
 function readConfig(): { config: CodesearchConfig; rootPath: string } | null {
     try {
-        const p = path.resolve(__dirname, '../../../config.json');
+        const envPath = process.env['CS_CONFIG'];
+        const p = envPath
+            ? path.resolve(envPath)
+            : path.resolve(__dirname, '../../../config.json');
         if (!fs.existsSync(p)) { return null; }
         const config = loadConfig(p);
         const rootPath = Object.values(getRoots(config))[0] ?? '';

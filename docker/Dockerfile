@@ -41,6 +41,7 @@ RUN pip install --no-cache-dir \
     mcp \
     tree-sitter \
     tree-sitter-c-sharp \
+    tree-sitter-python \
     typesense \
     watchdog \
     pathspec \
@@ -66,7 +67,8 @@ ENV MCP_PORT=3000
 # Volume mount points
 VOLUME ["/source", "/typesensedata"]
 
-# Expose MCP SSE port
+# Expose MCP SSE port and management API port
 EXPOSE 3000
+EXPOSE 8109
 
 ENTRYPOINT ["/entrypoint.sh"]

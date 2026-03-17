@@ -12,6 +12,10 @@ import {
     resolveFilePath,
 } from './client';
 import { BUILD_DATE } from './buildInfo';
+import { FileWatcher } from './watcher';
+import { StatusBarManager } from './status';
+import { ServerManager } from './server';
+import { RootsTreeProvider, CodesearchTreeItem } from './treeview';
 
 // ---------------------------------------------------------------------------
 // Config discovery (needs vscode API)
@@ -19,10 +23,10 @@ import { BUILD_DATE } from './buildInfo';
 
 function friendlyConfigError(raw: string): string {
     if (raw.includes('directory, not a file') || raw.includes('EISDIR')) {
-        return `codesearch.configPath points to a directory — set it to the config.json file itself (e.g. C:\\myproject\\codesearch\\config.json)`;
+        return `tscodesearch.configPath points to a directory — set it to the config.json file itself (e.g. C:\\myproject\\codesearch\\config.json)`;
     }
     if (raw.includes('not found') || raw.includes('ENOENT')) {
-        return `config.json not found at the configured path — check the codesearch.configPath setting`;
+        return `config.json not found at the configured path — check the tscodesearch.configPath setting`;
     }
     if (raw.includes('JSON') || raw.includes('Unexpected token') || raw.includes('SyntaxError')) {
         return `config.json contains invalid JSON — check the file for syntax errors`;
@@ -31,16 +35,16 @@ function friendlyConfigError(raw: string): string {
 }
 
 function findConfigPath(): { found: string | null; searched: string[] } {
-    const setting = vscode.workspace.getConfiguration('codesearch').get<string>('configPath');
+    const setting = vscode.workspace.getConfiguration('tscodesearch').get<string>('configPath');
     if (setting) {
         try {
             const stat = fs.statSync(setting);
             if (!stat.isFile()) {
-                throw new Error(`codesearch.configPath points to a directory, not a file.\nExpected a path like: ${path.join(setting, 'config.json')}`);
+                throw new Error(`tscodesearch.configPath points to a directory, not a file.\nExpected a path like: ${path.join(setting, 'config.json')}`);
             }
         } catch (e: unknown) {
             if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-                throw new Error(`codesearch.configPath not found: ${setting}`);
+                throw new Error(`tscodesearch.configPath not found: ${setting}`);
             }
             throw e;
         }
@@ -48,9 +52,18 @@ function findConfigPath(): { found: string | null; searched: string[] } {
     }
 
     const searched: string[] = [];
+
+    // Build search roots: repoPath first (most likely location), then workspace folders
+    const repoPath = vscode.workspace.getConfiguration('tscodesearch').get<string>('repoPath');
+    const searchRoots: string[] = [];
+    if (repoPath) { searchRoots.push(repoPath); }
     for (const folder of vscode.workspace.workspaceFolders || []) {
-        for (const rel of ['codesearch/config.json', 'config.json']) {
-            const candidate = path.join(folder.uri.fsPath, rel);
+        searchRoots.push(folder.uri.fsPath);
+    }
+
+    for (const root of searchRoots) {
+        for (const rel of ['config.json', 'codesearch/config.json']) {
+            const candidate = path.join(root, rel);
             searched.push(candidate);
             if (!fs.existsSync(candidate)) { continue; }
             try {
@@ -89,7 +102,7 @@ function buildWebviewHtml(nonce: string, roots: string[], defaultRoot: string): 
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<title>Code Search</title>
+<title>TsCodeSearch</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);background:var(--vscode-editor-background);height:100vh;display:flex;flex-direction:column;overflow:hidden}
@@ -537,12 +550,17 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 // ---------------------------------------------------------------------------
 
 class CodesearchViewProvider implements vscode.WebviewViewProvider {
-    public static readonly viewType = 'codesearch.panel';
+    public static readonly viewType = 'tscodesearch.panel';
 
     private _view?: vscode.WebviewView;
     private _config: CodesearchConfig | null = null;
     private _roots: string[] = ['default'];
     private _defaultRoot = 'default';
+
+    constructor(
+        private readonly _docker: ServerManager,
+        private readonly _out:   vscode.OutputChannel,
+    ) {}
 
     resolveWebviewView(
         webviewView: vscode.WebviewView,
@@ -556,12 +574,12 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
         webviewView.webview.html = buildWebviewHtml(getNonce(), this._roots, this._defaultRoot);
 
         if (!configOk) {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'codesearch.configPath');
+            vscode.commands.executeCommand('workbench.action.openSettings', 'tscodesearch.configPath');
         }
 
         webviewView.webview.onDidReceiveMessage(async (msg) => {
             if (msg.type === 'openSettings') {
-                vscode.commands.executeCommand('workbench.action.openSettings', 'codesearch.configPath');
+                vscode.commands.executeCommand('workbench.action.openSettings', 'tscodesearch.configPath');
 
             } else if (msg.type === 'search') {
                 if (!this._config) {
@@ -586,7 +604,9 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
                         facet_counts: pr.facet_counts ?? [],
                     });
                 } catch (e: unknown) {
-                    webviewView.webview.postMessage({ type: 'error', message: e instanceof Error ? e.message : String(e) });
+                    const msg = e instanceof Error ? e.message : String(e);
+                    this._out.appendLine(`[search] Error: ${msg}`);
+                    webviewView.webview.postMessage({ type: 'error', message: msg });
                 }
 
             } else if (msg.type === 'expandSub') {
@@ -616,7 +636,7 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
                 if (!this._config && !this._reloadConfig()) { return; }
                 const rootMap = getRoots(this._config!);
                 const rootPath = rootMap[msg.root as string] ?? Object.values(rootMap)[0];
-                if (!rootPath) { vscode.window.showErrorMessage('Code Search: no source root configured.'); return; }
+                if (!rootPath) { vscode.window.showErrorMessage('TsCodeSearch: no source root configured.'); return; }
                 try {
                     const fullPath = resolveFilePath(rootPath, msg.relativePath as string);
                     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(fullPath));
@@ -637,7 +657,7 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
                         selection: new vscode.Range(position, position),
                     });
                 } catch (e: unknown) {
-                    vscode.window.showErrorMessage(`Code Search: cannot open file — ${e instanceof Error ? e.message : e}`);
+                    vscode.window.showErrorMessage(`TsCodeSearch: cannot open file — ${e instanceof Error ? e.message : e}`);
                 }
             }
         });
@@ -645,18 +665,32 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
 
     private _reloadConfig(): boolean {
         try {
+            // Docker mode: use settings-based roots when configured
+            const configuredRoots = this._docker.getRoots();
+            if (Object.keys(configuredRoots).length > 0) {
+                this._config = this._docker.getClientConfig();
+                const rootMap = getRoots(this._config);
+                this._roots = Object.keys(rootMap);
+                this._defaultRoot = this._roots[0] ?? 'default';
+                this._out.appendLine(`[config] Loaded from settings — roots: ${this._roots.join(', ')} | port: ${this._config.port}`);
+                return true;
+            }
+
+            // Legacy WSL mode: discover config.json on disk
             const { found, searched } = findConfigPath();
             if (!found) {
                 const lines = [
                     'config.json not found.',
                     '',
-                    'Set codesearch.configPath to the full path of the file, including the filename.',
+                    'Run "TsCodeSearch: Set Up" to configure the server,',
+                    'or set tscodesearch.configPath to the full path of config.json.',
                     'Example: C:\\myproject\\codesearch\\config.json',
                 ];
                 if (searched.length > 0) {
                     lines.push('', 'Locations searched:');
                     searched.forEach((p) => lines.push(`  • ${p}`));
                 }
+                this._out.appendLine(`[config] Not found. Searched: ${searched.join(', ')}`);
                 this._view?.webview.postMessage({ type: 'configError', message: lines.join('\n') });
                 return false;
             }
@@ -664,9 +698,11 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
             const rootMap = getRoots(this._config);
             this._roots = Object.keys(rootMap);
             this._defaultRoot = this._roots[0] ?? 'default';
+            this._out.appendLine(`[config] Loaded ${found} — roots: ${this._roots.join(', ')} | port: ${this._config.port}`);
             return true;
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
+            this._out.appendLine(`[config] Error: ${msg}`);
             this._view?.webview.postMessage({ type: 'configError', message: friendlyConfigError(msg) });
             return false;
         }
@@ -678,17 +714,178 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
 // ---------------------------------------------------------------------------
 
 export function activate(context: vscode.ExtensionContext): void {
-    const provider = new CodesearchViewProvider();
+    const out          = vscode.window.createOutputChannel('TsCodeSearch');
+    context.subscriptions.push(out);
 
+    const docker       = new ServerManager(context, out);
+    const treeProvider = new RootsTreeProvider(docker);
+
+    // ── Webview search panel ─────────────────────────────────────────────────
+    const provider = new CodesearchViewProvider(docker, out);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(CodesearchViewProvider.viewType, provider, {
             webviewOptions: { retainContextWhenHidden: true },
         }),
     );
 
+    // ── Roots tree view ──────────────────────────────────────────────────────
     context.subscriptions.push(
-        vscode.commands.registerCommand('codesearch.openPanel', () => {
-            vscode.commands.executeCommand('codesearch.panel.focus');
+        vscode.window.registerTreeDataProvider('tscodesearch.roots', treeProvider),
+    );
+
+    // ── File watcher + status bar ────────────────────────────────────────────
+    // In Docker mode use the Docker config; fall back to legacy WSL config.json.
+    let watcher: FileWatcher | null = null;
+
+    function _startWatcherAndStatus(config: CodesearchConfig): void {
+        try {
+            watcher = new FileWatcher(config);
+            context.subscriptions.push(watcher);
+            context.subscriptions.push(new StatusBarManager(watcher, treeProvider));
+        } catch { /* non-fatal */ }
+    }
+
+    const configuredRoots = docker.getRoots();
+    if (Object.keys(configuredRoots).length > 0) {
+        _startWatcherAndStatus(docker.getClientConfig());
+    } else {
+        try {
+            const { found } = findConfigPath();
+            if (found) { _startWatcherAndStatus(loadConfig(found)); }
+        } catch { /* non-fatal */ }
+    }
+
+    // ── Commands ─────────────────────────────────────────────────────────────
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('tscodesearch.openPanel', () => {
+            void vscode.commands.executeCommand('tscodesearch.panel.focus');
+        }),
+    );
+
+    // Setup wizard
+    context.subscriptions.push(
+        vscode.commands.registerCommand('tscodesearch.setup', () => {
+            out.show(true);
+            void vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: 'TsCodeSearch Setup', cancellable: false },
+                async (progress) => {
+                    try {
+                        await docker.setup(progress);
+                        // Start watcher/status now that the server is up
+                        if (!watcher) { _startWatcherAndStatus(docker.getClientConfig()); }
+                        treeProvider.refresh();
+                        void vscode.window.showInformationMessage('TsCodeSearch: Setup complete!');
+                    } catch (e: unknown) {
+                        void vscode.window.showErrorMessage(
+                            `TsCodeSearch: Setup failed — ${e instanceof Error ? e.message : String(e)}`,
+                        );
+                    }
+                },
+            );
+        }),
+    );
+
+    // Add a new source root
+    context.subscriptions.push(
+        vscode.commands.registerCommand('tscodesearch.addRoot', async () => {
+            const name = await vscode.window.showInputBox({
+                prompt: 'Name for this source root',
+                placeHolder: 'default',
+                validateInput: (v) => v.trim() ? null : 'Name cannot be empty',
+            });
+            if (!name) { return; }
+            const picks = await vscode.window.showOpenDialog({
+                canSelectFiles: false, canSelectFolders: true, canSelectMany: false,
+                openLabel: 'Select source root folder',
+            });
+            if (!picks || picks.length === 0) { return; }
+            await docker.addRoot(name.trim(), picks[0].fsPath);
+            treeProvider.refresh();
+            const choice = await vscode.window.showInformationMessage(
+                `TsCodeSearch: Added root "${name.trim()}". Restart the server to apply.`,
+                'Restart Now',
+            );
+            if (choice === 'Restart Now') {
+                void vscode.commands.executeCommand('tscodesearch.restartContainer');
+            }
+        }),
+    );
+
+    // Remove a source root (called from tree item context menu)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('tscodesearch.removeRoot', async (item?: CodesearchTreeItem) => {
+            const name = item?.rootName;
+            if (!name) { return; }
+            const confirm = await vscode.window.showWarningMessage(
+                `Remove root "${name}"? The server will need to be restarted.`,
+                { modal: true }, 'Remove',
+            );
+            if (confirm !== 'Remove') { return; }
+            await docker.removeRoot(name);
+            treeProvider.refresh();
+        }),
+    );
+
+    // Restart the server
+    context.subscriptions.push(
+        vscode.commands.registerCommand('tscodesearch.restartContainer', () => {
+            out.show(true);
+            void vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: 'TsCodeSearch: Restarting…', cancellable: false },
+                async (progress) => {
+                    try {
+                        out.appendLine('[server] Restarting…');
+                        await docker.restart((line) => progress.report({ message: line }));
+                        treeProvider.refresh();
+                        void vscode.window.showInformationMessage('TsCodeSearch: Restarted.');
+                    } catch (e: unknown) {
+                        void vscode.window.showErrorMessage(
+                            `TsCodeSearch: Restart failed — ${e instanceof Error ? e.message : String(e)}`,
+                        );
+                    }
+                },
+            );
+        }),
+    );
+
+    // Stop the server
+    context.subscriptions.push(
+        vscode.commands.registerCommand('tscodesearch.stopContainer', () => {
+            void docker.stop()
+                .then(() => {
+                    treeProvider.refresh();
+                    void vscode.window.showInformationMessage('TsCodeSearch: Stopped.');
+                })
+                .catch((e: unknown) => {
+                    void vscode.window.showErrorMessage(
+                        `TsCodeSearch: Stop failed — ${e instanceof Error ? e.message : String(e)}`,
+                    );
+                });
+        }),
+    );
+
+    // Trigger verify/repair for a root (called from tree item context menu)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('tscodesearch.reindex', (item?: CodesearchTreeItem) => {
+            const name = item?.rootName;
+            if (!name) { return; }
+            void (watcher ?? new FileWatcher(docker.getClientConfig()))
+                .apiPost('/verify/start', { root: name, delete_orphans: true })
+                .then((r) => {
+                    if (r) {
+                        void vscode.window.showInformationMessage(`TsCodeSearch: Re-indexing "${name}" in background.`);
+                    } else {
+                        void vscode.window.showWarningMessage('TsCodeSearch: Could not start re-index — is the server running?');
+                    }
+                });
+        }),
+    );
+
+    // Refresh the roots tree view
+    context.subscriptions.push(
+        vscode.commands.registerCommand('tscodesearch.refreshRoots', () => {
+            treeProvider.refresh();
         }),
     );
 }

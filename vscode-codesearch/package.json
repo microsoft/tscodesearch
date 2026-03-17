@@ -1,7 +1,7 @@
 {
   "name": "codesearch",
   "publisher": "local",
-  "displayName": "Code Search",
+  "displayName": "TsCodeSearch",
   "description": "Real-time Typesense code search panel for C# monorepos",
   "version": "0.1.0",
   "license": "MIT",
@@ -17,49 +17,163 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "codesearch",
-          "title": "Code Search",
+          "id": "tscodesearch",
+          "title": "TsCodeSearch",
           "icon": "icons/codesearch.svg"
         }
       ]
     },
     "views": {
-      "codesearch": [
+      "tscodesearch": [
         {
           "type": "webview",
-          "id": "codesearch.panel",
-          "name": "Code Search"
+          "id": "tscodesearch.panel",
+          "name": "Search"
+        },
+        {
+          "id": "tscodesearch.roots",
+          "name": "Roots",
+          "when": "true"
         }
       ]
     },
     "commands": [
       {
-        "command": "codesearch.openPanel",
-        "title": "Code Search: Open Panel",
+        "command": "tscodesearch.openPanel",
+        "title": "TsCodeSearch: Open Panel",
         "icon": "$(search)"
+      },
+      {
+        "command": "tscodesearch.setup",
+        "title": "TsCodeSearch: Set Up",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "tscodesearch.addRoot",
+        "title": "TsCodeSearch: Add Root",
+        "icon": "$(add)"
+      },
+      {
+        "command": "tscodesearch.removeRoot",
+        "title": "TsCodeSearch: Remove Root",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "tscodesearch.restartContainer",
+        "title": "TsCodeSearch: Restart",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "tscodesearch.stopContainer",
+        "title": "TsCodeSearch: Stop",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "tscodesearch.reindex",
+        "title": "TsCodeSearch: Re-index Root",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "tscodesearch.refreshRoots",
+        "title": "TsCodeSearch: Refresh",
+        "icon": "$(refresh)"
       }
     ],
     "configuration": {
-      "title": "Code Search",
+      "title": "TsCodeSearch",
       "properties": {
-        "codesearch.configPath": {
+        "tscodesearch.mode": {
+          "type": "string",
+          "enum": ["docker", "wsl"],
+          "default": "docker",
+          "description": "Backend mode: 'docker' runs the indexserver in a Docker container managed by the extension; 'wsl' manages the WSL indexserver (ts.sh) directly.",
+          "enumDescriptions": [
+            "Docker mode — extension builds and manages a Docker container.",
+            "WSL mode — extension manages the WSL indexserver via ts.sh."
+          ]
+        },
+        "tscodesearch.configPath": {
           "type": "string",
           "default": "",
-          "description": "Absolute path to codesearch config.json. Leave blank to auto-detect in workspace."
+          "description": "Path to codesearch config.json (WSL/legacy mode). Leave blank when using Docker mode (codesearch.roots)."
+        },
+        "tscodesearch.roots": {
+          "type": "object",
+          "default": {},
+          "description": "Named source roots to index via Docker. Keys are root names (e.g. \"default\"), values are Windows paths (e.g. \"C:\\\\myproject\\\\src\").",
+          "additionalProperties": { "type": "string" }
+        },
+        "tscodesearch.repoPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the tscodesearch repository root (needed to build the Docker image)."
+        },
+        "tscodesearch.dockerImage": {
+          "type": "string",
+          "default": "codesearch-mcp",
+          "description": "Docker image name."
+        },
+        "tscodesearch.dockerContainer": {
+          "type": "string",
+          "default": "codesearch",
+          "description": "Docker container name."
+        },
+        "tscodesearch.mcpPort": {
+          "type": "number",
+          "default": 3000,
+          "description": "Port for the MCP SSE endpoint."
+        },
+        "tscodesearch.typesensePort": {
+          "type": "number",
+          "default": 8108,
+          "description": "Port for the Typesense server."
         }
       }
     },
     "keybindings": [
       {
-        "command": "codesearch.openPanel",
+        "command": "tscodesearch.openPanel",
         "key": "ctrl+shift+f1",
         "mac": "cmd+shift+f1"
       }
     ],
     "menus": {
       "commandPalette": [
+        { "command": "tscodesearch.openPanel" },
+        { "command": "tscodesearch.setup" },
+        { "command": "tscodesearch.addRoot" },
+        { "command": "tscodesearch.removeRoot" },
+        { "command": "tscodesearch.restartContainer" },
+        { "command": "tscodesearch.stopContainer" },
+        { "command": "tscodesearch.refreshRoots" }
+      ],
+      "view/title": [
         {
-          "command": "codesearch.openPanel"
+          "command": "tscodesearch.addRoot",
+          "when": "view == tscodesearch.roots",
+          "group": "navigation"
+        },
+        {
+          "command": "tscodesearch.refreshRoots",
+          "when": "view == tscodesearch.roots",
+          "group": "navigation"
+        },
+        {
+          "command": "tscodesearch.restartContainer",
+          "when": "view == tscodesearch.roots",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "tscodesearch.removeRoot",
+          "when": "view == tscodesearch.roots && viewItem == root",
+          "group": "inline"
+        },
+        {
+          "command": "tscodesearch.reindex",
+          "when": "view == tscodesearch.roots && viewItem == root",
+          "group": "inline"
         }
       ]
     }

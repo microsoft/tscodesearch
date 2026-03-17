@@ -19,7 +19,10 @@ services:
     ports:
       # MCP SSE endpoint
       - "${MCP_PORT:-3000}:3000"
+      # Typesense search API
       - "8108:8108"
+      # Management API (status, verify, file-events)
+      - "8109:8109"
 
     volumes:
       # Source code to index (read-only)

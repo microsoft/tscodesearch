@@ -16,9 +16,9 @@ for /f "usebackq tokens=*" %%W in (`wsl wslpath -u "%_WIN:~0,-1%"`) do set "_WSL
 wsl bash -l "%_WSLDIR%ts.sh" %*
 if errorlevel 1 goto :eof
 
-:: After a successful start/restart, launch the Windows filesystem watcher in a
-:: new console window. It watches Windows-path roots (e.g. Q:/...) using native
-:: ReadDirectoryChangesW events and forwards changes to the indexserver in real time.
-:: watcher.mjs exits immediately if no Windows-path roots are configured.
-if /i "%~1"=="start"   start "codesearch win-watcher" "%_WIN%win-watcher.cmd"
-if /i "%~1"=="restart" start "codesearch win-watcher" "%_WIN%win-watcher.cmd"
+:: The Windows filesystem watcher is now built into the VS Code extension
+:: (vscode-codesearch). It starts automatically when VS Code opens and sends
+:: real-time file events to the indexserver via POST /file-events.
+::
+:: If you need the standalone watcher without VS Code (e.g. in CI or headless
+:: setups), run win-watcher.cmd directly.

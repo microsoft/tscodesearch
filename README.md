@@ -24,9 +24,10 @@ setup_mcp.cmd C:\myrepo\src
 
 This will:
 - Write `config.json` with your source root path and API key
-- Create the Windows MCP venv at `.venv\`
+- Create the WSL MCP venv at `~/.local/mcp-venv/`
 - Create the WSL indexserver venv at `~/.local/indexserver-venv/`
-- Register `mcp.cmd` with Claude Code
+- Download the Typesense binary to `~/.local/typesense/`
+- Register `mcp.sh` (WSL) with Claude Code
 
 Reload VS Code after running (`Ctrl+Shift+P` → Developer: Reload Window).
 
@@ -231,28 +232,40 @@ Or directly from WSL:
 ### Full-text search (`search.py`)
 
 ```bash
-# Using the Windows venv:
-.venv\Scripts\python.exe search.py "MyInterface"
-.venv\Scripts\python.exe search.py "MyMethod" --ext cs --sub mysubsystem
-.venv\Scripts\python.exe search.py "MyInterface" --mode implements
-.venv\Scripts\python.exe search.py "MyMethod"   --mode callers
-.venv\Scripts\python.exe search.py "Obsolete"   --mode attr
-.venv\Scripts\python.exe search.py "MyType"     --mode uses
+# From WSL (or Git Bash with MSYS_NO_PATHCONV=1):
+~/.local/mcp-venv/bin/python search.py "Widget"
+~/.local/mcp-venv/bin/python search.py "ProcessOrder" --ext cs --sub payments
+~/.local/mcp-venv/bin/python search.py "IRepository"  --mode implements
+~/.local/mcp-venv/bin/python search.py "SaveChanges"  --mode callers
+~/.local/mcp-venv/bin/python search.py "Obsolete"     --mode attr
+~/.local/mcp-venv/bin/python search.py "ConnectionString" --mode uses
 ```
 
 ### Structural C# AST queries (`query.py`)
 
 ```bash
-.venv\Scripts\python.exe query.py --methods   MyClass.cs
-.venv\Scripts\python.exe query.py --calls     MyMethod         "src/mysubsystem/**/*.cs"
-.venv\Scripts\python.exe query.py --calls     MyClass.MyMethod "src/mysubsystem/**/*.cs"
-.venv\Scripts\python.exe query.py --implements IMyInterface    --search "IMyInterface"
-.venv\Scripts\python.exe query.py --field-type MyType          --search "MyType"
-.venv\Scripts\python.exe query.py --param-type MyType          --search "MyType"
-.venv\Scripts\python.exe query.py --uses      MyType           --search "MyType"
-.venv\Scripts\python.exe query.py --find      MyMethod         MyClass.cs
-.venv\Scripts\python.exe query.py --attrs     TestMethod       "src/**/*.cs"
-.venv\Scripts\python.exe query.py --member-accesses MyType     MyClass.cs
+# Listing modes (no pattern needed)
+~/.local/mcp-venv/bin/python query.py --methods  Order.cs
+~/.local/mcp-venv/bin/python query.py --classes  Order.cs
+~/.local/mcp-venv/bin/python query.py --fields   Order.cs
+~/.local/mcp-venv/bin/python query.py --usings   Order.cs
+
+# Pattern modes with explicit file(s) or glob
+~/.local/mcp-venv/bin/python query.py --calls     SaveChanges        "src/data/**/*.cs"
+~/.local/mcp-venv/bin/python query.py --calls     Repository.Save    "src/data/**/*.cs"
+~/.local/mcp-venv/bin/python query.py --casts     Widget             "src/**/*.cs"
+~/.local/mcp-venv/bin/python query.py --ident     ProcessOrder       "src/**/*.cs"
+~/.local/mcp-venv/bin/python query.py --member-accesses Widget       Order.cs
+~/.local/mcp-venv/bin/python query.py --accesses-of Status           "src/**/*.cs"
+~/.local/mcp-venv/bin/python query.py --attrs     TestMethod         "src/**/*.cs"
+~/.local/mcp-venv/bin/python query.py --declarations ProcessOrder    Order.cs
+~/.local/mcp-venv/bin/python query.py --params    SaveChanges        Order.cs
+
+# Pattern modes with --search (Typesense finds the files automatically)
+~/.local/mcp-venv/bin/python query.py --implements IRepository       --search "IRepository"
+~/.local/mcp-venv/bin/python query.py --uses       Order             --search "Order"
+~/.local/mcp-venv/bin/python query.py --field-type ConnectionString  --search "ConnectionString"
+~/.local/mcp-venv/bin/python query.py --param-type Widget            --search "Widget"
 ```
 
 ## Architecture
@@ -274,7 +287,6 @@ Typical flow: Typesense narrows the haystack to ~50 candidate files → tree-sit
 │  Claude Code VSCode ext → mcp.sh  (WSL)  ← actual
 │  Manual/CI alternative  → mcp.cmd (Windows)     │
 │  Venv (WSL):     ~/.local/mcp-venv/             │
-│  Venv (Windows): .venv/                         │
 └───────────────────┬─────────────────────────────┘
                     │ HTTP localhost:8108
 ┌───────────────────▼─────────────────────────────┐
@@ -322,7 +334,7 @@ The MCP server uses SSE (Server-Sent Events) transport instead of stdio, allowin
 | `search.py` | Typesense HTTP search; `search()` + `format_results()` |
 | `query.py` | tree-sitter AST query functions + `process_file()` + `files_from_search()` |
 | `mcp_server.py` | FastMCP server: `search_code`, `query_cs`, `query_py`, `ready`, `verify_index`, `service_status` tools |
-| `mcp.cmd` | Windows launcher: `.venv\Scripts\python.exe mcp_server.py` |
+| `mcp.cmd` | Windows launcher: requires a manually-created `.venv\` (not set up by `setup_mcp.cmd`; use `mcp.sh` instead) |
 | `mcp.sh` | WSL launcher: `~/.local/mcp-venv/bin/python mcp_server.py` |
 | `setup_mcp.cmd` | One-time setup: writes config.json, creates venvs, registers MCP |
 

@@ -39,6 +39,15 @@ fi
 # ensurepip is missing when the version-specific python3.X-venv package is absent
 # (separate package on Debian/Ubuntu, e.g. python3.12-venv)
 PY=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+PY_MAJOR=$(python3 -c "import sys; print(sys.version_info.major)")
+PY_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
+    echo "ERROR: Python 3.10 or later is required (found $PY)."
+    echo "       Fix:"
+    echo "         sudo apt-get update"
+    echo "         sudo apt-get install -y python3.10 python3.10-venv"
+    exit 1
+fi
 if ! python3 -c "import ensurepip" &>/dev/null 2>&1; then
     echo "ERROR: python3-venv not available (ensurepip missing for Python $PY)."
     echo "       Fix:"
@@ -60,6 +69,12 @@ echo "  Python $PY  |  Typesense $TYPESENSE_VERSION"
 # ── Write config.json (first-time only; only when called with src-dir) ────────
 _CONFIG_FILE="$SCRIPT_DIR/config.json"
 if [ -n "$_SRC_WIN" ]; then
+    _SRC_WSL=$(wslpath -u "$_SRC_WIN" 2>/dev/null || true)
+    if [ -z "$_SRC_WSL" ] || [ ! -d "$_SRC_WSL" ]; then
+        echo "ERROR: Source directory does not exist: $_SRC_WIN"
+        echo "       Provide a valid path to a directory that exists, e.g. C:/myrepo/src"
+        exit 1
+    fi
     echo ""
     echo "[1/4] Writing codesearch/config.json ..."
     if [ -f "$_CONFIG_FILE" ]; then
