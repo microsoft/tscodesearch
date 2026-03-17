@@ -223,7 +223,7 @@ def cmd_status(args) -> None:
         if watcher.get("running"):
             print(f"  Watcher : [OK]  running (thread)")
         elif paused:
-            print(f"  Watcher : [--] paused (Windows watcher active)")
+            print(f"  Watcher : [OK]  paused (Windows watcher active)")
         else:
             print(f"  Watcher : [--] not running")
 

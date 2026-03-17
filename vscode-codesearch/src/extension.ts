@@ -741,10 +741,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
     function _startWatcherAndStatus(config: CodesearchConfig): void {
         try {
-            watcher = new FileWatcher(config);
+            watcher = new FileWatcher(config, out);
             context.subscriptions.push(watcher);
-            context.subscriptions.push(new StatusBarManager(watcher, treeProvider));
-        } catch { /* non-fatal */ }
+            context.subscriptions.push(new StatusBarManager(watcher, out, treeProvider));
+        } catch (e) {
+            out.appendLine(`[activate] watcher/status setup error: ${e}`);
+        }
     }
 
     if (docker.mode === 'wsl') {
@@ -755,7 +757,9 @@ export function activate(context: vscode.ExtensionContext): void {
                 docker.setDiskConfig(loadConfig(found));
                 _startWatcherAndStatus(docker.getClientConfig());
             }
-        } catch { /* non-fatal */ }
+        } catch (e) {
+            out.appendLine(`[activate] WSL config load error: ${e}`);
+        }
     } else {
         // Docker mode: VS Code settings own the config.
         const configuredRoots = docker.getRoots();
@@ -879,7 +883,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('tscodesearch.reindex', (item?: CodesearchTreeItem) => {
             const name = item?.rootName;
             if (!name) { return; }
-            void (watcher ?? new FileWatcher(docker.getClientConfig()))
+            void (watcher ?? new FileWatcher(docker.getClientConfig(), out))
                 .apiPost('/verify/start', { root: name, delete_orphans: true })
                 .then((r) => {
                     if (r) {

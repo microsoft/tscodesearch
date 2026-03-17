@@ -297,6 +297,14 @@ def query_codebase(
                  Python: calls, implements, ident, declarations, params, decorators
         pattern: Type/method/name to search for. Used for both the
                  Typesense pre-filter and the AST query.
+                 accesses_on  — pattern must be a TYPE name (e.g. "IDataStore"),
+                                not a variable name. Finds .Member accesses on
+                                locals/params declared as that type.
+                                IMPORTANT: returns no results if the variable is only
+                                assigned or forwarded as an argument — in those cases
+                                use query_single_file with all_refs on the variable name.
+                 accesses_of  — pattern must be a MEMBER name (e.g. "Timeout").
+                                Finds every read/write of that property or field.
         sub:     Narrow to a subsystem — the FIRST path component only (the top-level
                  directory name). Sub-directories are NOT valid sub= values; always
                  use the immediate child of the source root.
@@ -322,13 +330,14 @@ def query_codebase(
     Examples:
         query_codebase("casts", "Widget")
         query_codebase("uses", "IDataStore", sub="core")
-        query_codebase("uses", "BlobStore", uses_kind="param", sub="sts")
-        query_codebase("uses", "BlobStore", uses_kind="field", sub="sts")
+        query_codebase("uses", "IDataStore", uses_kind="param", sub="services")
+        query_codebase("uses", "IDataStore", uses_kind="field", sub="services")
         query_codebase("calls", "SaveChanges", sub="services")
         query_codebase("implements", "IRepository")
         query_codebase("attrs", "Obsolete", sub="api")
         query_codebase("declarations", "SaveChanges", sub="core")
         query_codebase("accesses_of", "ConnectionString")
+        query_codebase("accesses_on", "IDataStore", sub="services")
     """
     import json as _json
     import urllib.request as _urlreq
@@ -497,6 +506,18 @@ def query_single_file(
                  Python listing (no pattern): classes, methods, imports
         pattern: Type/method/name to search for. Required for pattern modes;
                  omit for listing modes.
+                 accesses_on  — pattern must be a TYPE name (e.g. "IDataStore"),
+                                not a variable name. Finds .Member accesses on
+                                locals/params declared as that type.
+                                IMPORTANT: returns nothing if the variable is only
+                                assigned or forwarded — use all_refs instead when
+                                you want to see pass-through / constructor-arg uses.
+                 accesses_of  — pattern must be a MEMBER name (e.g. "Timeout").
+                                Finds every read/write of that property or field.
+                 all_refs     — pattern is a variable/parameter NAME. Finds every
+                                reference to that identifier: assignments, pass-throughs,
+                                member accesses, and argument positions. Use this when
+                                accesses_on returns empty but you know the variable exists.
         file:    Path to the file. Must be an absolute path. Accepts Windows
                  paths (e.g. q:/spocore/src/sts/foo.cs), WSL /mnt/ paths,
                  or $SRC_ROOT-prefixed paths (e.g. $SRC_ROOT/sts/foo.cs).
@@ -516,6 +537,8 @@ def query_single_file(
         query_single_file("casts", "Repository", file="$SRC_ROOT/services/OrderService.cs")
         query_single_file("declarations", "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
         query_single_file("uses", "IRepository", file="$SRC_ROOT/services/OrderService.cs")
+        query_single_file("accesses_on", "IDataStore", file="$SRC_ROOT/services/DataManager.cs")
+        query_single_file("accesses_of", "Timeout", file="$SRC_ROOT/services/DataManager.cs")
     """
     from query import process_file, process_py_file
     from config import get_root, ROOTS, to_native_path

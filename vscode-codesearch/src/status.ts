@@ -81,10 +81,10 @@ export class StatusBarManager {
     private _timer: ReturnType<typeof setInterval> | null = null;
     private _disposed = false;
 
-    constructor(watcher: FileWatcher, treeProvider: RootsTreeProvider | null = null) {
+    constructor(watcher: FileWatcher, out: vscode.OutputChannel, treeProvider: RootsTreeProvider | null = null) {
         this._watcher      = watcher;
         this._treeProvider = treeProvider;
-        this._log = vscode.window.createOutputChannel('TsCodeSearch');
+        this._log = out;
         this._item = vscode.window.createStatusBarItem(
             'tscodesearch.status',
             vscode.StatusBarAlignment.Right,
@@ -105,7 +105,6 @@ export class StatusBarManager {
             await this._doPoll();
         } catch (e) {
             this._log.appendLine(`[${new Date().toISOString()}] poll error: ${e}`);
-            console.error('[tscodesearch status] poll error:', e);
         }
     }
 
@@ -221,6 +220,5 @@ export class StatusBarManager {
         this._disposed = true;
         if (this._timer !== null) { clearInterval(this._timer); }
         this._item.dispose();
-        this._log.dispose();
     }
 }
