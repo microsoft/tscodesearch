@@ -497,8 +497,11 @@ def query_single_file(
                  Python listing (no pattern): classes, methods, imports
         pattern: Type/method/name to search for. Required for pattern modes;
                  omit for listing modes.
-        file:    Path to the file. $SRC_ROOT is substituted. Accepts Windows
-                 paths, WSL /mnt/ paths, and relative paths from src root.
+        file:    Path to the file. Must be an absolute path. Accepts Windows
+                 paths (e.g. q:/spocore/src/sts/foo.cs), WSL /mnt/ paths,
+                 or $SRC_ROOT-prefixed paths (e.g. $SRC_ROOT/sts/foo.cs).
+                 Relative paths (e.g. sts/foo.cs) are NOT supported and will
+                 return "File not found".
         context_lines: Surrounding source lines per match (like grep -C N).
         root:    Named source root (empty = default).
         include_body: For declarations mode — include the full method/type body instead
@@ -509,7 +512,7 @@ def query_single_file(
 
     Examples:
         query_single_file("methods", file="$SRC_ROOT/services/OrderService.cs")
-        query_single_file("classes", file="$SRC_ROOT/services/OrderService.cs")
+        query_single_file("classes", file="c:/myproject/src/services/OrderService.cs")
         query_single_file("casts", "Repository", file="$SRC_ROOT/services/OrderService.cs")
         query_single_file("declarations", "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
         query_single_file("uses", "IRepository", file="$SRC_ROOT/services/OrderService.cs")

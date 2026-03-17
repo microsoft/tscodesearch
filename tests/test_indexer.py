@@ -541,6 +541,7 @@ class TestIndexQueue(unittest.TestCase):
 
     def test_enqueue_duplicate_returns_false(self):
         full, rel = self._file("Foo.cs")
+        self.queue._stop.set()  # freeze worker so the item stays in the queue
         self.queue.enqueue(full, rel, self.COLL)
         self.assertFalse(self.queue.enqueue(full, rel, self.COLL))
 

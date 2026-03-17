@@ -24,7 +24,7 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-from indexserver.config import API_KEY, PORT
+from indexserver.config import API_KEY, PORT, TYPESENSE_VERSION
 
 _HOME    = Path.home()
 
@@ -200,6 +200,53 @@ def stop():
     print(f"Typesense (pid={pid_str}) stopped.")
 
 
+def install_binary() -> None:
+    """Download and install the Typesense binary to BIN_PATH if not already present."""
+    if _DOCKER_BIN and os.path.isfile(_DOCKER_BIN):
+        print(f"Typesense binary provided by Docker at {_DOCKER_BIN} — skipping download.")
+        return
+
+    if os.path.isfile(BIN_PATH) and os.access(BIN_PATH, os.X_OK):
+        print(f"Typesense binary already installed at {BIN_PATH}.")
+        return
+
+    import tarfile
+    import io
+
+    tar_url = (
+        f"https://dl.typesense.org/releases/{TYPESENSE_VERSION}/"
+        f"typesense-server-{TYPESENSE_VERSION}-linux-amd64.tar.gz"
+    )
+    print(f"Downloading Typesense v{TYPESENSE_VERSION} from dl.typesense.org ...")
+    _RUN_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with urllib.request.urlopen(tar_url, timeout=120) as resp:
+            data = resp.read()
+    except Exception as e:
+        print(f"ERROR: Failed to download Typesense binary: {e}")
+        print(f"       URL: {tar_url}")
+        sys.exit(1)
+
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+            member = next(
+                (m for m in tf.getmembers() if m.name.endswith("typesense-server")),
+                None,
+            )
+            if member is None:
+                print("ERROR: typesense-server not found in downloaded archive.")
+                sys.exit(1)
+            member.name = "typesense-server"  # flatten to bare filename
+            tf.extract(member, path=str(_RUN_DIR))
+    except Exception as e:
+        print(f"ERROR: Failed to extract Typesense binary: {e}")
+        sys.exit(1)
+
+    os.chmod(BIN_PATH, 0o755)
+    print(f"Typesense v{TYPESENSE_VERSION} installed at {BIN_PATH}.")
+
+
 def show_log():
     subprocess.run(["cat", LOG_PATH])
 
@@ -212,6 +259,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stop",    action="store_true", help="Stop the server")
+    ap.add_argument("--install", action="store_true", help="Download and install the Typesense binary")
     ap.add_argument("--log",     action="store_true", help="Print the info log")
     ap.add_argument("--errlog",  action="store_true", help="Print the error log")
     args = ap.parse_args()
@@ -221,5 +269,7 @@ if __name__ == "__main__":
         show_error_log()
     elif args.stop:
         stop()
+    elif args.install:
+        install_binary()
     else:
         start()

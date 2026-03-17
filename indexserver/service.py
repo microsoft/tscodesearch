@@ -446,21 +446,61 @@ def cmd_index(args) -> None:
         sys.exit(1)
 
     if args.resethard:
-        data_dir = _RUN_DIR / "data"
-        print("Hard reset: stopping server and wiping data directory...")
-        subprocess.run([_VENV_PY, _SERVER_PY, "--stop"])
-        for pid_file in (_SERVER_PID,):
-            if os.path.exists(pid_file):
-                os.remove(pid_file)
-        time.sleep(1)
-        if data_dir.exists():
-            shutil.rmtree(str(data_dir))
-            print(f"  Wiped {data_dir}")
-        print("Restarting Typesense server...")
+        print("Hard reset: stopping all services...")
+
+        # Stop any standalone indexer subprocess
+        indexer_alive2, indexer_pid2 = _pid_alive(_INDEXER_PID)
+        if indexer_alive2:
+            try:
+                os.kill(int(indexer_pid2), signal.SIGTERM)
+                print(f"  Stopped indexer (PID {indexer_pid2})")
+            except OSError:
+                pass
+        if os.path.exists(_INDEXER_PID):
+            os.remove(_INDEXER_PID)
+
+        # Stop indexserver (watcher + heartbeat + in-process indexer thread)
+        _kill_pid(_API_PID, "indexserver")
+
+        # Stop Typesense
+        print("  Stopping Typesense server...")
+        try:
+            subprocess.run([_VENV_PY, _SERVER_PY, "--stop"], timeout=20)
+        except subprocess.TimeoutExpired:
+            print("  WARNING: Typesense stop timed out — force-killing")
+            subprocess.run(["pkill", "-9", "-f", "typesense-server"], capture_output=True)
+        if os.path.exists(_SERVER_PID):
+            os.remove(_SERVER_PID)
+
+        # Full wipe
+        if _RUN_DIR.exists():
+            shutil.rmtree(str(_RUN_DIR))
+            print(f"  Wiped {_RUN_DIR}")
+        _RUN_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Reinstall Typesense binary
+        result = subprocess.run([_VENV_PY, _SERVER_PY, "--install"])
+        if result.returncode != 0:
+            print("ERROR: failed to reinstall Typesense binary")
+            sys.exit(1)
+
+        # Start Typesense fresh
+        print("Starting Typesense server...")
         result = subprocess.run([_VENV_PY, _SERVER_PY])
         if result.returncode != 0:
             print("ERROR: server failed to start after resethard")
             sys.exit(1)
+
+        # Restart indexserver
+        print("Restarting indexserver...")
+        subprocess.Popen(
+            [_VENV_PY, _API_PY],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1)  # give api.py a moment to write api.pid and become ready
+
     elif not _typesense_health()["ok"]:
         print("ERROR: Typesense server is not running. Start it first with: ts start")
         sys.exit(1)

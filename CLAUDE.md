@@ -1,5 +1,21 @@
 # codesearch — developer notes for Claude
 
+## CRITICAL: running Python scripts from the Bash tool
+
+**Always use the indexserver WSL venv** when running any tscodesearch Python script
+(e.g. `inspect_doc.py`, `smoke_test.py`, utility scripts) via the Bash tool:
+
+```bash
+MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/python3 /mnt/q/spocore/tscodesearch/inspect_doc.py <args>"
+```
+
+- `.venv/Scripts/python.exe` is Windows-only and not accessible from Git Bash / Bash tool
+- `~/.local/mcp-venv/` is the MCP client venv — it lacks `typesense` and `pathspec`
+- `~/.local/indexserver-venv/` has everything: `typesense`, `tree_sitter_c_sharp`, `tree_sitter`, `watchdog`, `pathspec`, `pytest`
+- For tests: `MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/pytest /mnt/q/spocore/tscodesearch/tests/ [args]"`
+
+---
+
 ## CRITICAL: fictional names in examples and documentation
 
 When writing or fixing code in this repo — including docstrings, comments, CLI
