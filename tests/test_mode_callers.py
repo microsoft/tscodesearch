@@ -193,7 +193,7 @@ class TestCallersModeLive(LiveTestBase):
             "synth/WidgetService.cs": DEFINES_FETCHWIDGET,
             "synth/Reporter.cs":      CALLS_IBLOBSERVICE,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

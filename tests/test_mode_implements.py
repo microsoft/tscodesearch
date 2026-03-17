@@ -171,7 +171,7 @@ class TestImplementsModeLive(LiveTestBase):
             "synth/DataTransfer.cs": USES_IDATASTORE_PARAM,
             "synth/CachingProxy.cs": DECLARES_FIELD_IDATASTORE,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

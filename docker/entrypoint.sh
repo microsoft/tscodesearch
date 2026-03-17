@@ -112,7 +112,7 @@ else
     PYTHONPATH=/app python -u codesearch/indexserver/indexer.py \
         --src /source \
         --collection "$COLLECTION_NAME" \
-        --reset 2>&1 | tee "${TYPESENSE_DATA}/indexer.log" | head -100
+        --resethard 2>&1 | tee "${TYPESENSE_DATA}/indexer.log" | head -100
 
     echo "[entrypoint] Initial indexing complete"
 fi

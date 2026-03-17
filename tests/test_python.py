@@ -330,7 +330,7 @@ class TestPySemanticFields(unittest.TestCase):
             "myapp/foo.py": _FOO_PY,
             "myapp/bar.py": _BAR_PY,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod

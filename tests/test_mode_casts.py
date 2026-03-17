@@ -44,10 +44,10 @@ class TestQCasts(unittest.TestCase):
 
     def test_finds_explicit_cast(self):
         r = self._casts(CASTS_TO_BLOBSTORE, "BlobStore")
-        assert r, "Explicit (BlobStore)abs cast must be found"
+        assert r, "Explicit (BlobStore)store cast must be found"
 
     def test_as_cast_not_found(self):
-        """'abs as BlobStore' is not an explicit cast — must not appear."""
+        """'store as BlobStore' is not an explicit cast — must not appear."""
         r = self._casts(CASTS_TO_BLOBSTORE, "BlobStore")
         texts = [t for _, t in r]
         # The 'as BlobStore' line only has an as-expression, not a cast_expression
@@ -75,7 +75,7 @@ class TestQCasts(unittest.TestCase):
         src = """\
 namespace Synth {
     public class C {
-        // do a (BlobStore)abs cast here
+        // do a (BlobStore)store cast here
         public void Run() { }
     }
 }
@@ -208,7 +208,7 @@ class TestCastSitesLive(LiveTestBase):
             "synth/AsCastOnly.cs":  AS_CAST_ONLY_BLOBSTORE,
             "synth/CondCast.cs":    CAST_IN_CONDITIONAL,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

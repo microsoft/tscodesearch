@@ -411,12 +411,12 @@ namespace Synth {
 CASTS_TO_BLOBSTORE = """\
 namespace Synth {
     public class CastDemo {
-        public BlobStore Downcast(IAbsStore abs) {
-            var bs = (BlobStore)abs;          // explicit cast
-            var ok = abs as BlobStore;        // as-cast (not an explicit cast)
+        public BlobStore Downcast(IDataStore store) {
+            var bs = (BlobStore)store;          // explicit cast
+            var ok = store as BlobStore;        // as-cast (not an explicit cast)
             return bs;
         }
-        public void HandleArray(IAbsStore[] arr) {
+        public void HandleArray(IDataStore[] arr) {
             var first = (BlobStore)arr[0];    // cast of element access
         }
     }

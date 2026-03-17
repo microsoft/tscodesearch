@@ -47,7 +47,7 @@ class TestIndexer(unittest.TestCase):
             "scripts/deploy.py":     "# deployment script\ndef run(): pass\n",
             "README.md":             "# My project\n",
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod
@@ -112,10 +112,10 @@ class TestIndexer(unittest.TestCase):
         self.assertEqual(py["priority"], 1)
 
     def test_reset_recreates_collection(self):
-        """reset=True drops and recreates the collection."""
+        """resethard=True drops and recreates the collection."""
         old_info = _collection_info(self.coll)
         time.sleep(1.1)
-        run_index(src_root=self.tmpdir, collection=self.coll, reset=True, verbose=False)
+        run_index(src_root=self.tmpdir, collection=self.coll, resethard=True, verbose=False)
         time.sleep(0.3)
         new_info = _collection_info(self.coll)
         self.assertIsNotNone(new_info)
@@ -137,7 +137,7 @@ class TestSemanticFields(unittest.TestCase):
             "core/Foo.cs": _FOO_CS,
             "core/Bar.cs": _BAR_CS,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod
@@ -235,8 +235,8 @@ class TestMultiRoot(unittest.TestCase):
             "Foo.cs": _FOO_CS,
             "Bar.cs": _BAR_CS,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll_a, reset=True, verbose=False)
-        run_index(src_root=cls.tmpdir, collection=cls.coll_b, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll_a, resethard=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll_b, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod
@@ -345,7 +345,7 @@ class TestSearchFieldModes(unittest.TestCase):
             "core/Foo.cs": _FOO_CS,
             "core/Bar.cs": _BAR_CS,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod

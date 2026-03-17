@@ -273,7 +273,7 @@ class TestSigSearchLive(LiveTestBase):
             "synth/ListingTarget.cs":     LISTING_TARGET,
             "synth/StaticCallOnly.cs":    CONTENT_ONLY_BLOBSTORE,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

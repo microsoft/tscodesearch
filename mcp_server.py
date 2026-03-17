@@ -509,11 +509,11 @@ def query_single_file(
                  interface, struct, enum, record, delegate, type, member.
 
     Examples:
-        query_single_file("methods", file="$SRC_ROOT/sts/stsom/AbsIntegration.cs")
-        query_single_file("classes", file="$SRC_ROOT/sts/stsom/AbsIntegration.cs")
-        query_single_file("casts", "BlobStore", file="$SRC_ROOT/sts/stsom/Foo.cs")
-        query_single_file("declarations", "WriteBlobs", file="$SRC_ROOT/spo/Bar.cs")
-        query_single_file("uses", "IAbsBlobStore", file="$SRC_ROOT/sts/stsom/Foo.cs")
+        query_single_file("methods", file="$SRC_ROOT/services/OrderService.cs")
+        query_single_file("classes", file="$SRC_ROOT/services/OrderService.cs")
+        query_single_file("casts", "Repository", file="$SRC_ROOT/services/OrderService.cs")
+        query_single_file("declarations", "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
+        query_single_file("uses", "IRepository", file="$SRC_ROOT/services/OrderService.cs")
     """
     from query import process_file, process_py_file
     from config import get_root, ROOTS, to_native_path

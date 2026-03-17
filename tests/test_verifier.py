@@ -200,7 +200,7 @@ class TestVerifier(unittest.TestCase):
             "src/bar.cs": _BAR_CS,
         })
         # Initial index
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod
@@ -274,7 +274,7 @@ class TestVerifier(unittest.TestCase):
             f.write("namespace Test { public class Orphan {} }\n")
 
         # Index the orphan file first
-        run_index(src_root=self.tmpdir, collection=self.coll, reset=False, verbose=False)
+        run_index(src_root=self.tmpdir, collection=self.coll, resethard=False, verbose=False)
         time.sleep(0.3)
 
         # Confirm it's in the index
@@ -295,7 +295,7 @@ class TestVerifier(unittest.TestCase):
         with open(orphan_path, "w", encoding="utf-8") as f:
             f.write("namespace Test { public class KeptOrphan {} }\n")
 
-        run_index(src_root=self.tmpdir, collection=self.coll, reset=False, verbose=False)
+        run_index(src_root=self.tmpdir, collection=self.coll, resethard=False, verbose=False)
         time.sleep(0.3)
 
         hit_before = self._get("kept_orphan.cs")

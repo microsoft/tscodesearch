@@ -242,7 +242,7 @@ class TestAttrModeLive(LiveTestBase):
             "synth/LegacyRepository.cs":  HAS_OBSOLETE_NOT_CACHEABLE,
             "synth/PlainRepository.cs":   NO_ATTRS,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

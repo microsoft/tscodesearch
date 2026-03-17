@@ -205,19 +205,19 @@ Tests are split into thematic files. Some require Typesense running (`ts start`)
 **From the Claude Code Bash tool** (the correct way — avoids path-conversion problems):
 ```bash
 # All tests
-MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/q/spocore/tscodesearch/run_tests.sh
+MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/<drive>/path/to/tscodesearch/run_tests.sh
 
 # Filter by test name or class
-MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/q/spocore/tscodesearch/run_tests.sh -k TestQCasts
+MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/<drive>/path/to/tscodesearch/run_tests.sh -k TestQCasts
 
 # Single file
-MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/q/spocore/tscodesearch/run_tests.sh tests/test_mode_casts.py
+MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/<drive>/path/to/tscodesearch/run_tests.sh tests/test_mode_casts.py
 ```
 
 From WSL directly:
 ```bash
-bash /mnt/q/spocore/tscodesearch/run_tests.sh
-bash /mnt/q/spocore/tscodesearch/run_tests.sh -k TestVerifier
+bash /mnt/<drive>/path/to/tscodesearch/run_tests.sh
+bash /mnt/<drive>/path/to/tscodesearch/run_tests.sh -k TestVerifier
 ```
 
 From Windows CMD/PowerShell:

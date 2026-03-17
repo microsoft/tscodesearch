@@ -218,7 +218,7 @@ class TestUsesModeLive(LiveTestBase):
             "synth/LocalVarUser.cs":  LOCAL_VAR_IDATASTORE,
             "synth/StaticUser.cs":    STATIC_RECEIVER_IDATASTORE,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

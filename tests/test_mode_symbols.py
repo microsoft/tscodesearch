@@ -169,7 +169,7 @@ class TestSymbolsAndTextModeLive(LiveTestBase):
             "synth/WarehouseService.cs": METHOD_NAMED_PROCESSINVENTORY,
             "synth/Config.cs":           LITERAL_ONLY,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, reset=True, verbose=False)
+        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

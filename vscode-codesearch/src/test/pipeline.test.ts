@@ -12,7 +12,7 @@
  *   CS_SUB        Subsystem filter, e.g. "myapp" (optional, default: '')
  *
  * Example:
- *   CS_QUERY=BlobStore CS_SUB=absblobstore npm run test:pipeline
+ *   CS_QUERY=Repository CS_SUB=dataaccess npm run test:pipeline
  *
  * If CS_QUERY is not set the live tests are skipped automatically.
  */
