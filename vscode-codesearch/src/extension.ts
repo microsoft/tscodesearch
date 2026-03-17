@@ -119,7 +119,7 @@ input.filter-input{width:90px;cursor:text}
 input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);font-style:italic}
 .status-bar{padding:3px 10px;font-size:11px;color:var(--vscode-descriptionForeground);min-height:20px;flex-shrink:0;border-bottom:1px solid var(--vscode-panel-border,#333)}
 .status-bar.error{color:var(--vscode-errorForeground)}
-.results{flex:1;overflow-y:auto;padding-bottom:8px}
+.results{flex:1;overflow-y:auto;padding-bottom:8px;position:relative}
 .empty{padding:32px 20px;text-align:center;color:var(--vscode-descriptionForeground);font-size:13px}
 .badge{display:inline-block;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);border-radius:8px;padding:0 6px;font-size:10px;font-weight:600;vertical-align:middle;margin-left:5px}
 /* --- tree --- */
@@ -132,6 +132,8 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 .chev{font-size:9px;opacity:.6;flex-shrink:0;width:10px;display:inline-block;transition:transform .12s}
 .sub-node.collapsed>.sub-body,.dir-node.collapsed>.dir-body{display:none}
 .sub-node.collapsed>.sub-hdr>.chev,.dir-node.collapsed>.dir-hdr>.chev{transform:rotate(-90deg)}
+/* virtual-scroll row collapse chevron */
+.sub-hdr.chev-collapsed>.chev,.dir-hdr.chev-collapsed>.chev{transform:rotate(-90deg)}
 .sub-name{flex:1}
 .dir-name{flex:1;font-family:var(--vscode-editor-font-family,monospace);font-size:10.5px}
 .file-hdr{display:flex;align-items:center;gap:5px;padding:3px 8px 3px 34px;cursor:pointer;outline:none}
@@ -139,6 +141,8 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 .file-name{font-weight:600}
 .match-item{display:flex;align-items:baseline;gap:3px;padding:2px 8px 2px 50px;cursor:pointer;font-size:11px;outline:none}
 .match-item:hover,.match-item:focus{background:var(--vscode-list-hoverBackground)}
+.file-hdr.ast-pending{opacity:.55;font-style:italic}
+.file-hdr.ast-pending::after{content:" (not expanded)";font-size:10px;opacity:.7;margin-left:4px}
 .tree-branch{color:var(--vscode-descriptionForeground);opacity:.4;flex-shrink:0;font-family:monospace;font-size:11px}
 .match-text{font-family:var(--vscode-editor-font-family,monospace);opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .match-line{color:var(--vscode-descriptionForeground);opacity:.55;font-size:10px;flex-shrink:0;margin-left:2px}
@@ -197,6 +201,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
   const DEFAULT_ROOT = ${defaultRootJson};
   const BUILD_DATE = ${buildDateJson};
 
+  // ── Dropdowns ─────────────────────────────────────────────────────────────
   const modeEl = document.getElementById('mode');
   MODES.forEach(function(m) {
     var o = document.createElement('option');
@@ -204,7 +209,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     modeEl.appendChild(o);
   });
 
-  const rootEl = document.getElementById('root');
+  const rootEl   = document.getElementById('root');
   const rootWrap = document.getElementById('rootWrap');
   ROOTS.forEach(function(r) {
     var o = document.createElement('option');
@@ -214,13 +219,12 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
   });
   if (ROOTS.length > 1) { rootEl.style.display = ''; rootWrap.style.display = ''; }
 
-  var timer = null;
-  const qEl = document.getElementById('q');
-  const extEl = document.getElementById('ext');
-  const subEl = document.getElementById('sub');
-  const statusEl = document.getElementById('status');
-  const resultsEl = document.getElementById('results');
-  const configErrorEl = document.getElementById('configError');
+  const qEl          = document.getElementById('q');
+  const extEl        = document.getElementById('ext');
+  const subEl        = document.getElementById('sub');
+  const statusEl     = document.getElementById('status');
+  const resultsEl    = document.getElementById('results');
+  const configErrorEl    = document.getElementById('configError');
   const configErrorMsgEl = document.getElementById('configErrorMsg');
 
   document.getElementById('configErrorBtn').addEventListener('click', function() {
@@ -234,47 +238,254 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
   }
   function hideConfigError() { configErrorEl.style.display = 'none'; resultsEl.style.display = ''; }
 
-  // Current search params — needed when expanding capped subsystems
-  var currentSearch = { query: '', mode: '', ext: '', sub: '', root: '' };
-  // Cached facets and expansion state for capped results
-  var currentFacets = [];
-  var subExpansions = {}; // sub → { state: 'loading'|'loaded'|'capped', hits, found }
-
-  function triggerSearch() {
-    clearTimeout(timer);
-    timer = setTimeout(function() {
-      var query = qEl.value.trim();
-      if (!query) {
-        resultsEl.innerHTML = '<div class="empty">Type to search across your codebase</div>';
-        statusEl.textContent = 'Built: ' + BUILD_DATE; statusEl.className = 'status-bar';
-        return;
-      }
-      subExpansions = {};
-      statusEl.innerHTML = 'Searching<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>';
-      statusEl.className = 'status-bar';
-      var params = { type: 'search', query: query, mode: modeEl.value,
-        ext: extEl.value.trim(), sub: subEl.value.trim(), root: rootEl.value, limit: 20 };
-      currentSearch = { query: params.query, mode: params.mode, ext: params.ext,
-                        sub: params.sub, root: params.root };
-      vscode.postMessage(params);
-    }, 180);
-  }
-
-  qEl.addEventListener('input', triggerSearch);
-  modeEl.addEventListener('change', triggerSearch);
-  extEl.addEventListener('input', triggerSearch);
-  subEl.addEventListener('input', triggerSearch);
-  rootEl.addEventListener('change', triggerSearch);
-
   function esc(s) {
     if (!s) { return ''; }
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  // ── Tree rendering helpers ────────────────────────────────────────────────
+  // ── Persistent children of resultsEl ─────────────────────────────────────
+  // _spacer sets the virtual scroll height; _msgEl shows empty/error text;
+  // _cappedEl holds the capped-subsystem tree (rendered via innerHTML).
+  var _spacer = document.createElement('div');
+  _spacer.style.cssText = 'pointer-events:none;flex-shrink:0';
+  resultsEl.appendChild(_spacer);
+
+  var _msgEl = document.createElement('div');
+  _msgEl.className = 'empty';
+  _msgEl.textContent = 'Type to search across your codebase';
+  resultsEl.appendChild(_msgEl);
+
+  var _cappedEl = document.createElement('div');
+  _cappedEl.style.display = 'none';
+  resultsEl.appendChild(_cappedEl);
+
+  // Switch the results area between modes without touching the spacer.
+  function _setMode(mode) { // 'empty' | 'virtual' | 'capped'
+    _msgEl.style.display    = mode === 'empty'   ? '' : 'none';
+    _cappedEl.style.display = mode === 'capped'  ? '' : 'none';
+    if (mode !== 'virtual') {
+      _rendered.forEach(function(el) { el.remove(); });
+      _rendered.clear();
+      _rows = []; _visRows = []; _offsets = null;
+      _spacer.style.height = '0';
+    }
+  }
+
+  // ── Virtual scroll state ──────────────────────────────────────────────────
+  // Row heights (px) per type — must match CSS padding/font-size values.
+  var ROW_H = { sub: 36, dir: 27, file: 28, match: 20 };
+  var OVERSCAN = 250; // px above/below visible area to keep rendered
+
+  var _rows    = [];        // all row descriptors built from current hits
+  var _visRows = [];        // rows visible given current collapse state
+  var _offsets = null;      // Int32Array of cumulative top offsets, length = _visRows.length+1
+  var _rendered = new Map();// visIndex → DOM element currently in resultsEl
+  var _collapsedSubs  = Object.create(null); // sub  → true
+  var _collapsedDirIds = Object.create(null); // numeric dirId → true
+  var _rafPending = false;
+
+  // Build a flat list of typed row descriptors from a hit array.
+  // Dir rows carry a numeric _dirId used as a stable collapse key.
+  function _buildRows(hits) {
+    var rows = [];
+    var nextDirId = 0;
+    var subs = Object.create(null);
+    hits.forEach(function(h) {
+      var s = h.document.subsystem || '';
+      (subs[s] || (subs[s] = [])).push(h);
+    });
+    Object.keys(subs).sort().forEach(function(sub) {
+      rows.push({ type: 'sub', sub: sub, count: subs[sub].length });
+      var dirs = Object.create(null);
+      subs[sub].forEach(function(h) {
+        var rel = h.document.relative_path || '';
+        var idx = rel.lastIndexOf('/');
+        var dir = idx >= 0 ? rel.slice(0, idx) : '';
+        var key = sub + '\x01' + dir;
+        if (!dirs[key]) { dirs[key] = { dir: dir, sub: sub, hits: [], id: nextDirId++ }; }
+        dirs[key].hits.push(h);
+      });
+      Object.keys(dirs).sort().forEach(function(key) {
+        var d = dirs[key];
+        rows.push({ type: 'dir', dir: d.dir, sub: d.sub, dirId: d.id });
+        d.hits.forEach(function(h) {
+          var expanded = h.ast_expanded !== false;
+          rows.push({ type: 'file', hit: h, sub: d.sub, dirId: d.id, astExpanded: expanded });
+          var nm = h._matches.length;
+          h._matches.forEach(function(m, mi) {
+            rows.push({ type: 'match', match: m, hit: h, sub: d.sub, dirId: d.id, last: mi === nm - 1 });
+          });
+        });
+      });
+    });
+    return rows;
+  }
+
+  // Recompute _visRows and _offsets from _rows + current collapse state.
+  // Must clear _rendered first: all visIndices shift after collapse/expand,
+  // so any cached DOM element→index mapping is invalid.
+  function _computeVis() {
+    _rendered.forEach(function(el) { el.remove(); });
+    _rendered.clear();
+    _visRows = [];
+    _rows.forEach(function(r) {
+      if (r.type === 'sub') { _visRows.push(r); return; }
+      if (_collapsedSubs[r.sub]) { return; }
+      if (r.type === 'dir') { _visRows.push(r); return; }
+      if (_collapsedDirIds[r.dirId]) { return; }
+      _visRows.push(r);
+    });
+    var off = new Int32Array(_visRows.length + 1);
+    for (var i = 0; i < _visRows.length; i++) { off[i + 1] = off[i] + ROW_H[_visRows[i].type]; }
+    _offsets = off;
+    _spacer.style.height = off[_visRows.length] + 'px';
+  }
+
+  // Build the innerHTML for a row (no wrapper element yet).
+  function _rowInner(r) {
+    if (r.type === 'sub') {
+      return '<span class="chev">&#9660;</span>'
+        + (r.sub ? '<span class="sub-name">' + esc(r.sub) + '</span>'
+                 : '<span class="sub-name dim">(no subsystem)</span>')
+        + '<span class="badge">' + r.count + '</span>';
+    }
+    if (r.type === 'dir') {
+      return '<span class="chev">&#9660;</span>'
+        + '<span class="dir-name">' + esc(r.dir ? r.dir + '/' : '(root)') + '</span>';
+    }
+    if (r.type === 'file') {
+      var fn = r.hit.document.filename || (r.hit.document.relative_path || '').split('/').pop() || '';
+      return '<span class="file-name">' + esc(fn) + '</span>';
+    }
+    // match
+    var m = r.match;
+    var br = r.last ? '\u2514\u2500' : '\u251c\u2500';
+    return '<span class="tree-branch">' + br + '</span>'
+      + '<span class="match-text">' + esc(m.text) + '</span>'
+      + (m.line != null ? '<span class="match-line">:' + (m.line + 1) + '</span>' : '');
+  }
+
+  // Create and position a DOM element for row r at pixel offset top.
+  function _createEl(r, top) {
+    var el = document.createElement('div');
+    el.style.cssText = 'position:absolute;left:0;right:0;top:' + top + 'px';
+    if (r.type === 'sub') {
+      el.className = 'sub-hdr' + (_collapsedSubs[r.sub] ? ' chev-collapsed' : '');
+      el.dataset.vsub = r.sub;
+    } else if (r.type === 'dir') {
+      el.className = 'dir-hdr' + (_collapsedDirIds[r.dirId] ? ' chev-collapsed' : '');
+      el.dataset.vdirid = String(r.dirId);
+    } else if (r.type === 'file') {
+      el.className = 'file-hdr' + (r.astExpanded ? '' : ' ast-pending');
+      el.dataset.path = r.hit.document.relative_path;
+      el.setAttribute('tabindex', '0');
+    } else {
+      el.className = 'match-item';
+      el.dataset.path = r.hit.document.relative_path;
+      if (r.match.line != null) { el.dataset.line = String(r.match.line); }
+      el.setAttribute('tabindex', '0');
+    }
+    el.innerHTML = _rowInner(r);
+    return el;
+  }
+
+  function _scheduleRender() {
+    if (_rafPending) { return; }
+    _rafPending = true;
+    requestAnimationFrame(_doRender);
+  }
+
+  function _doRender() {
+    _rafPending = false;
+    if (!_offsets || _visRows.length === 0) {
+      _rendered.forEach(function(el) { el.remove(); });
+      _rendered.clear();
+      return;
+    }
+    var scrollTop   = resultsEl.scrollTop;
+    var viewHeight  = resultsEl.clientHeight;
+    var rangeTop    = Math.max(0, scrollTop - OVERSCAN);
+    var rangeBottom = scrollTop + viewHeight + OVERSCAN;
+
+    // Binary search: first row whose bottom edge is above rangeTop
+    var lo = 0, hi = _visRows.length - 1, startIdx = 0;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (_offsets[mid + 1] > rangeTop) { startIdx = mid; hi = mid - 1; } else { lo = mid + 1; }
+    }
+    var endIdx = startIdx;
+    while (endIdx < _visRows.length && _offsets[endIdx] < rangeBottom) { endIdx++; }
+
+    // Remove rows that scrolled out of range
+    _rendered.forEach(function(el, idx) {
+      if (idx < startIdx || idx >= endIdx) { el.remove(); _rendered.delete(idx); }
+    });
+    // Add rows now in range
+    for (var i = startIdx; i < endIdx; i++) {
+      if (!_rendered.has(i)) {
+        var el = _createEl(_visRows[i], _offsets[i]);
+        resultsEl.appendChild(el);
+        _rendered.set(i, el);
+      }
+    }
+  }
+
+  resultsEl.addEventListener('scroll', _scheduleRender);
+  new ResizeObserver(_scheduleRender).observe(resultsEl);
+
+  // ── Delegated click/keyboard handlers for virtual rows ────────────────────
+  resultsEl.addEventListener('click', function(e) {
+    var t = e.target;
+    if (!t.closest) { return; }
+
+    var sh = t.closest('.sub-hdr[data-vsub]');
+    if (sh) {
+      var sub = sh.dataset.vsub;
+      _collapsedSubs[sub] = !_collapsedSubs[sub];
+      sh.classList.toggle('chev-collapsed', !!_collapsedSubs[sub]);
+      _computeVis(); _scheduleRender(); return;
+    }
+    var dh = t.closest('.dir-hdr[data-vdirid]');
+    if (dh) {
+      var did = Number(dh.dataset.vdirid);
+      _collapsedDirIds[did] = !_collapsedDirIds[did];
+      dh.classList.toggle('chev-collapsed', !!_collapsedDirIds[did]);
+      _computeVis(); _scheduleRender(); return;
+    }
+    var fh = t.closest('.file-hdr[data-path]');
+    if (fh && !fh.dataset.vsub) {
+      vscode.postMessage({ type: 'openFile', relativePath: fh.dataset.path,
+        root: currentSearch.root, query: currentSearch.query }); return;
+    }
+    var mi = t.closest('.match-item[data-path]');
+    if (mi) {
+      e.stopPropagation();
+      var line = (mi.dataset.line !== undefined && mi.dataset.line !== '')
+        ? parseInt(mi.dataset.line, 10) : undefined;
+      vscode.postMessage({ type: 'openFile', relativePath: mi.dataset.path,
+        root: currentSearch.root, line: line, query: currentSearch.query }); return;
+    }
+    // Capped subsystem expand (inside _cappedEl, not virtual rows)
+    var ch = t.closest('.sub-hdr.is-cap');
+    if (ch) { handleSubExpand(ch.dataset.sub); }
+  });
+
+  resultsEl.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter' && e.key !== ' ') { return; }
+    var t = e.target;
+    if (!t.closest) { return; }
+    var fh = t.closest('.file-hdr[data-path]');
+    if (fh) { fh.click(); e.preventDefault(); return; }
+    var mi = t.closest('.match-item[data-path]');
+    if (mi) { mi.click(); e.preventDefault(); }
+  });
+
+  // ── Capped results (subsystem-level lazy loading, rendered via innerHTML) ─
+  var currentSearch  = { query: '', mode: '', ext: '', sub: '', root: '' };
+  var currentFacets  = [];
+  var subExpansions  = {}; // sub → { state: 'loading'|'loaded', hits, found, capped }
 
   function renderDirTree(hits) {
-    // Groups hits by directory, renders dir+file+match nodes (no sub header).
     var dirs = {};
     hits.forEach(function(hit) {
       var rel = hit.document.relative_path || '';
@@ -285,88 +496,57 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     });
     var html = '';
     Object.keys(dirs).sort().forEach(function(dir) {
-      var files = dirs[dir];
-      html += '<div class="dir-node">';
-      html += '<div class="dir-hdr"><span class="chev">&#9660;</span>';
+      html += '<div class="dir-node"><div class="dir-hdr"><span class="chev">&#9660;</span>';
       html += '<span class="dir-name">' + esc(dir ? dir + '/' : '(root)') + '</span></div>';
       html += '<div class="dir-body">';
-      files.forEach(function(hit) {
+      dirs[dir].forEach(function(hit) {
         var doc = hit.document;
         var matches = hit._matches || [];
         var fname = doc.filename || (doc.relative_path || '').split('/').pop() || '';
-        html += '<div class="file-node">';
-        html += '<div class="file-hdr" tabindex="0" data-path="' + esc(doc.relative_path) + '">';
+        html += '<div class="file-node"><div class="file-hdr" tabindex="0" data-path="' + esc(doc.relative_path) + '">';
         html += '<span class="file-name">' + esc(fname) + '</span></div>';
         if (matches.length > 0) {
           html += '<div class="file-body">';
           matches.forEach(function(m, i) {
-            var last = (i === matches.length - 1);
-            var br = last ? '\u2514\u2500' : '\u251c\u2500';
-            var la = (m.line !== undefined && m.line !== null) ? ' data-line="' + m.line + '"' : '';
+            var br = (i === matches.length - 1) ? '\u2514\u2500' : '\u251c\u2500';
+            var la = m.line != null ? ' data-line="' + m.line + '"' : '';
             html += '<div class="match-item" tabindex="0" data-path="' + esc(doc.relative_path) + '"' + la + '>';
             html += '<span class="tree-branch">' + br + '</span>';
             html += '<span class="match-text">' + esc(m.text) + '</span>';
-            if (m.line !== undefined && m.line !== null) {
-              html += '<span class="match-line">:' + (m.line + 1) + '</span>';
-            }
+            if (m.line != null) { html += '<span class="match-line">:' + (m.line + 1) + '</span>'; }
             html += '</div>';
           });
           html += '</div>';
         }
         html += '</div>';
       });
-      html += '</div></div>'; // dir-body, dir-node
+      html += '</div></div>';
     });
     return html;
   }
 
-  function renderTree(hits) {
-    // Groups hits by subsystem, then renders subsystem > dir > file > matches.
-    var subs = {};
-    hits.forEach(function(hit) {
-      var sub = hit.document.subsystem || '';
-      if (!subs[sub]) { subs[sub] = []; }
-      subs[sub].push(hit);
-    });
-    var html = '';
-    Object.keys(subs).sort().forEach(function(sub) {
-      var subHits = subs[sub];
-      html += '<div class="sub-node">';
-      html += '<div class="sub-hdr"><span class="chev">&#9660;</span>';
-      html += sub ? '<span class="sub-name">' + esc(sub) + '</span>'
-                  : '<span class="sub-name dim">(no subsystem)</span>';
-      html += '<span class="badge">' + subHits.length + '</span></div>';
-      html += '<div class="sub-body">' + renderDirTree(subHits) + '</div>';
-      html += '</div>';
-    });
-    return html;
-  }
-
-  function attachTreeHandlers() {
-    resultsEl.querySelectorAll('.sub-hdr:not(.is-cap)').forEach(function(hdr) {
+  function attachCappedDirHandlers() {
+    _cappedEl.querySelectorAll('.dir-hdr').forEach(function(hdr) {
       hdr.addEventListener('click', function() { hdr.parentNode.classList.toggle('collapsed'); });
     });
-    resultsEl.querySelectorAll('.dir-hdr').forEach(function(hdr) {
-      hdr.addEventListener('click', function() { hdr.parentNode.classList.toggle('collapsed'); });
-    });
-    resultsEl.querySelectorAll('.file-hdr').forEach(function(hdr) {
+    _cappedEl.querySelectorAll('.file-hdr').forEach(function(hdr) {
       hdr.addEventListener('click', function() {
-        vscode.postMessage({ type: 'openFile', relativePath: hdr.dataset.path, root: currentSearch.root, query: currentSearch.query });
+        vscode.postMessage({ type: 'openFile', relativePath: hdr.dataset.path,
+          root: currentSearch.root, query: currentSearch.query });
       });
       hdr.addEventListener('keydown', function(e) { if (e.key === 'Enter') { hdr.click(); } });
     });
-    resultsEl.querySelectorAll('.match-item').forEach(function(item) {
-      item.addEventListener('click', function(e) {
-        e.stopPropagation();
+    _cappedEl.querySelectorAll('.match-item').forEach(function(item) {
+      item.addEventListener('click', function(ev) {
+        ev.stopPropagation();
         var line = (item.dataset.line !== undefined && item.dataset.line !== '')
           ? parseInt(item.dataset.line, 10) : undefined;
-        vscode.postMessage({ type: 'openFile', relativePath: item.dataset.path, root: currentSearch.root, line: line, query: currentSearch.query });
+        vscode.postMessage({ type: 'openFile', relativePath: item.dataset.path,
+          root: currentSearch.root, line: line, query: currentSearch.query });
       });
       item.addEventListener('keydown', function(e) { if (e.key === 'Enter') { item.click(); } });
     });
   }
-
-  // ── Capped results rendering ──────────────────────────────────────────────
 
   function renderCappedTree() {
     var html = '<div class="cap-hint">Too many results \u2014 click a subsystem to expand</div>';
@@ -377,11 +557,8 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
       html += '<div class="sub-node" id="capped-sub-' + esc(sub) + '">';
       html += '<div class="sub-hdr is-cap" tabindex="0" data-sub="' + esc(sub) + '">';
       html += '<span class="chev" style="' + (isOpen ? '' : 'transform:rotate(-90deg)') + '">&#9660;</span>';
-      html += '<span class="sub-name">' + esc(sub) + '</span>';
-      html += '<span class="badge">' + f.count + '</span>';
-      if (exp && exp.state === 'loading') {
-        html += '<span class="cap-loading">Loading\u2026</span>';
-      }
+      html += '<span class="sub-name">' + esc(sub) + '</span><span class="badge">' + f.count + '</span>';
+      if (exp && exp.state === 'loading') { html += '<span class="cap-loading">Loading\u2026</span>'; }
       html += '</div>';
       if (exp && exp.state === 'loaded') {
         html += '<div class="sub-body">';
@@ -401,34 +578,20 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     return html;
   }
 
-  function attachCappedHandlers() {
-    resultsEl.querySelectorAll('.sub-hdr.is-cap').forEach(function(hdr) {
-      var sub = hdr.dataset.sub;
-      hdr.addEventListener('click', function() { handleSubExpand(sub); });
-      hdr.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' || e.key === ' ') { handleSubExpand(sub); e.preventDefault(); }
-      });
-    });
-    attachTreeHandlers(); // handles any already-expanded file/match nodes
-  }
-
   function handleSubExpand(sub) {
     var exp = subExpansions[sub];
     if (!exp || exp.state === 'idle') {
       subExpansions[sub] = { state: 'loading' };
       refreshCappedNode(sub);
-      vscode.postMessage({ type: 'expandSub', sub: sub,
-        query: currentSearch.query, mode: currentSearch.mode,
-        ext: currentSearch.ext, root: currentSearch.root });
+      vscode.postMessage({ type: 'expandSub', sub: sub, query: currentSearch.query,
+        mode: currentSearch.mode, ext: currentSearch.ext, root: currentSearch.root });
     } else {
-      // Toggle collapse on already-loaded node
       var node = document.getElementById('capped-sub-' + sub);
       if (node) { node.classList.toggle('collapsed'); }
     }
   }
 
   function refreshCappedNode(sub) {
-    // Re-render just this subsystem node in place
     var node = document.getElementById('capped-sub-' + sub);
     if (!node) { return; }
     var exp = subExpansions[sub];
@@ -437,85 +600,116 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     if (hdr) {
       var chev = hdr.querySelector('.chev');
       if (chev) { chev.style.transform = isOpen ? '' : 'rotate(-90deg)'; }
-      // Update loading indicator
       var existing = hdr.querySelector('.cap-loading');
       if (exp && exp.state === 'loading') {
         if (!existing) {
           var s = document.createElement('span');
-          s.className = 'cap-loading'; s.textContent = 'Loading\u2026';
-          hdr.appendChild(s);
+          s.className = 'cap-loading'; s.textContent = 'Loading\u2026'; hdr.appendChild(s);
         }
-      } else if (existing) {
-        existing.remove();
-      }
+      } else if (existing) { existing.remove(); }
     }
-    // Update body
     var body = node.querySelector('.sub-body');
     if (exp && exp.state === 'loaded') {
       if (!body) { body = document.createElement('div'); body.className = 'sub-body'; node.appendChild(body); }
-      var inner = '';
-      if (exp.capped) {
-        inner += '<div class="cap-still-capped">Showing ' + exp.hits.length + ' of ' + exp.found
-               + ' \u2014 narrow further with the Sub filter</div>';
-      }
+      var inner = exp.capped
+        ? '<div class="cap-still-capped">Showing ' + exp.hits.length + ' of ' + exp.found
+          + ' \u2014 narrow further with the Sub filter</div>' : '';
       inner += exp.hits.length === 0 ? '<div class="cap-still-capped">No results</div>' : renderDirTree(exp.hits);
       body.innerHTML = inner;
-      attachTreeHandlers();
-    } else if (body) {
-      body.remove();
-    }
+      attachCappedDirHandlers();
+    } else if (body) { body.remove(); }
   }
 
   // ── Main result display ───────────────────────────────────────────────────
 
   function showResults(data) {
     hideConfigError();
-    var hits = data.hits || [];
+    var hits  = data.hits  || [];
     var found = data.found || 0;
     var isCapped = found > hits.length && found > 0;
-    var modeLabel = MODES.find(function(m) { return m.key === data.mode; });
-    modeLabel = modeLabel ? modeLabel.label : data.mode;
-
-    if (isCapped) {
-      statusEl.textContent = found + ' files matched \u2014 too many to show all \u2014 ' + modeLabel + ' mode';
-    } else {
-      statusEl.textContent = found === 0
-        ? 'No results'
-        : found + ' result' + (found === 1 ? '' : 's') + ' \u2014 ' + data.elapsed + 'ms \u2014 ' + modeLabel + ' mode';
-    }
+    var modeEntry = MODES.find(function(m) { return m.key === data.mode; });
+    var modeLabel = modeEntry ? modeEntry.label : data.mode;
     statusEl.className = 'status-bar';
 
     if (found === 0) {
-      resultsEl.innerHTML = '<div class="empty">No results for <strong>' + esc(data.query) + '</strong></div>';
+      statusEl.textContent = 'No results';
+      _setMode('empty');
+      _msgEl.innerHTML = 'No results for <strong>' + esc(data.query) + '</strong>';
       return;
     }
 
     if (isCapped) {
-      // Build facet list from the data; fall back to whatever hits we got
+      statusEl.textContent = found + ' files matched \u2014 too many to show all \u2014 ' + modeLabel + ' mode';
       currentFacets = [];
       if (data.facet_counts) {
-        var subFacet = data.facet_counts.find(function(f) { return f.field_name === 'subsystem'; });
-        if (subFacet) { currentFacets = subFacet.counts || []; }
+        var sf = data.facet_counts.find(function(f) { return f.field_name === 'subsystem'; });
+        if (sf) { currentFacets = sf.counts || []; }
       }
       if (currentFacets.length === 0) {
-        // Synthesize from hits we received
         var seen = {};
         hits.forEach(function(h) { var s = h.document.subsystem || ''; seen[s] = (seen[s] || 0) + 1; });
         currentFacets = Object.keys(seen).sort().map(function(s) { return { value: s, count: seen[s] }; });
       }
-      resultsEl.innerHTML = renderCappedTree();
-      attachCappedHandlers();
+      _setMode('capped');
+      _cappedEl.innerHTML = renderCappedTree();
+      _cappedEl.querySelectorAll('.sub-hdr.is-cap').forEach(function(hdr) {
+        hdr.addEventListener('click', function() { handleSubExpand(hdr.dataset.sub); });
+        hdr.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') { handleSubExpand(hdr.dataset.sub); e.preventDefault(); }
+        });
+      });
       return;
     }
 
-    resultsEl.innerHTML = renderTree(hits);
-    attachTreeHandlers();
+    // ── Virtual scroll path ───────────────────────────────────────────────
+    statusEl.textContent = found + ' result' + (found === 1 ? '' : 's') + ' \u2014 '
+      + data.elapsed + 'ms \u2014 ' + modeLabel + ' mode';
+    _setMode('virtual');
+    _collapsedSubs   = Object.create(null);
+    _collapsedDirIds = Object.create(null);
+    _rows = _buildRows(hits);
+    _computeVis();
+    resultsEl.scrollTop = 0;
+    _scheduleRender();
   }
 
+  // ── Search trigger ────────────────────────────────────────────────────────
+  var timer = null;
+  function triggerSearch() {
+    clearTimeout(timer);
+    timer = setTimeout(function() {
+      var query = qEl.value.trim();
+      if (!query) {
+        _setMode('empty');
+        _msgEl.textContent = 'Type to search across your codebase';
+        statusEl.textContent = 'Built: ' + BUILD_DATE; statusEl.className = 'status-bar';
+        return;
+      }
+      subExpansions = {};
+      statusEl.innerHTML = 'Searching<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>';
+      statusEl.className = 'status-bar';
+      var params = { type: 'search', query: query, mode: modeEl.value,
+        ext: extEl.value.trim(), sub: subEl.value.trim(), root: rootEl.value, limit: 20 };
+      currentSearch = { query: params.query, mode: params.mode, ext: params.ext,
+                        sub: params.sub, root: params.root };
+      vscode.postMessage(params);
+    }, 180);
+  }
+
+  qEl.addEventListener('input',   triggerSearch);
+  modeEl.addEventListener('change', triggerSearch);
+  extEl.addEventListener('input',  triggerSearch);
+  subEl.addEventListener('input',  triggerSearch);
+  rootEl.addEventListener('change', triggerSearch);
+
   qEl.addEventListener('keydown', function(e) {
-    if (e.key === 'ArrowDown') { var f = resultsEl.querySelector('.file-hdr,.match-item'); if (f) { f.focus(); e.preventDefault(); } }
+    if (e.key === 'ArrowDown') {
+      var f = resultsEl.querySelector('.file-hdr,.match-item');
+      if (f) { f.focus(); e.preventDefault(); }
+    }
   });
 
+  // ── Message handler ───────────────────────────────────────────────────────
   window.addEventListener('message', function(ev) {
     var msg = ev.data;
     if (msg.type === 'results') { showResults(msg); }
@@ -529,14 +723,16 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
         subExpansions[sub] = { state: 'loaded', hits: hits, found: found, capped: found > hits.length };
       }
       refreshCappedNode(sub);
-    }
-    else if (msg.type === 'error') {
+    } else if (msg.type === 'error') {
       statusEl.textContent = 'Error: ' + msg.message;
       statusEl.className = 'status-bar error';
-      resultsEl.innerHTML = '<div class="empty">Search failed \u2014 is the Typesense server running?<br><small>Run: ts start</small></div>';
+      _setMode('empty');
+      _msgEl.innerHTML = 'Search failed \u2014 is the Typesense server running?<br><small>Run: ts start</small>';
     } else if (msg.type === 'configError') { showConfigError(msg.message); }
   });
 
+  // Initial state
+  _setMode('empty');
   statusEl.textContent = 'Built: ' + BUILD_DATE;
   qEl.focus();
 })();

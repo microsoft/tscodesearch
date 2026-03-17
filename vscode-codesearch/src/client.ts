@@ -159,6 +159,9 @@ export interface PipelineHit {
         filename?: string;
     };
     _matches: MatchItem[];
+    /** True (default) = AST was run and these are exact match lines.
+     *  False = Typesense matched the file but AST was not run (too many results). */
+    ast_expanded?: boolean;
 }
 
 export type FacetCounts = Array<{
@@ -215,7 +218,7 @@ export async function doQueryCodebase(
                     try {
                         const parsed = JSON.parse(data) as {
                             found: number; overflow: boolean;
-                            hits: Array<{ document: { id: string; relative_path: string; subsystem: string; filename: string }; matches: Array<{ line: number; text: string }> }>;
+                            hits: Array<{ document: { id: string; relative_path: string; subsystem: string; filename: string }; matches: Array<{ line: number; text: string }>; ast_expanded?: boolean }>;
                             facet_counts: FacetCounts | undefined;
                             error?: string;
                         };
@@ -233,6 +236,7 @@ export async function doQueryCodebase(
                                     text: m.text,
                                     line: m.line - 1,  // 1-indexed → 0-indexed
                                 })),
+                                ast_expanded: h.ast_expanded !== false,  // default true for old responses
                             }));
                             resolve({
                                 found:        parsed.found ?? 0,

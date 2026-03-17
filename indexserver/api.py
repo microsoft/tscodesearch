@@ -634,7 +634,7 @@ class _Handler(BaseHTTPRequestHandler):
                 query        = pattern,
                 ext          = ext,
                 sub          = sub,
-                limit        = min(limit, 250),  # Typesense max per_page; overflow detected via found > limit
+                limit        = 250,  # always fetch Typesense max; `limit` controls AST depth
                 symbols_only = (ts_mode_flag == "symbols"),
                 implements   = (ts_mode_flag == "implements"),
                 calls        = (ts_mode_flag == "calls"),
@@ -666,19 +666,14 @@ class _Handler(BaseHTTPRequestHandler):
             hits      = ts_result.get("hits", [])
             facets    = ts_result.get("facet_counts", [])
 
-            if found > limit:
-                self._send_json(200, {
-                    "overflow":     True,
-                    "found":        found,
-                    "hits":         [],
-                    "facet_counts": facets,
-                })
-                return
+            # Split: run AST on the first `limit` files; the rest get ast_expanded=False.
+            ast_hits      = hits[:limit]
+            pending_hits  = hits[limit:]
 
-            # Resolve absolute paths for the returned hits
+            # Resolve absolute paths for AST-eligible files
             file_list: list[str] = []
             hit_by_path: dict[str, dict] = {}
-            for hit in hits:
+            for hit in ast_hits:
                 rel = hit["document"].get("relative_path", "").replace("\\", "/")
                 abs_path = to_native_path(
                     src_root.rstrip("/\\") + "/" + rel
@@ -687,10 +682,10 @@ class _Handler(BaseHTTPRequestHandler):
                     file_list.append(abs_path)
                     hit_by_path[abs_path] = hit
 
-            # Run AST query
+            # Run AST query on eligible files
             ast_results = _run_query(ast_mode, pattern, file_list, include_body=include_body, symbol_kind=symbol_kind, uses_kind=uses_kind)
 
-            # Build response hits (only files with AST matches)
+            # Build response: AST-expanded files (only those with matches)
             response_hits = []
             for ast_item in ast_results:
                 file_path = ast_item["file"]
@@ -705,11 +700,27 @@ class _Handler(BaseHTTPRequestHandler):
                         "subsystem":     doc.get("subsystem", ""),
                         "filename":      doc.get("filename", ""),
                     },
-                    "matches": ast_item["matches"],
+                    "matches":      ast_item["matches"],
+                    "ast_expanded": True,
+                })
+
+            # Append files where AST was not run (Typesense-only matches)
+            for hit in pending_hits:
+                doc = hit.get("document", {})
+                response_hits.append({
+                    "document": {
+                        "id":            doc.get("id", ""),
+                        "relative_path": doc.get("relative_path", ""),
+                        "subsystem":     doc.get("subsystem", ""),
+                        "filename":      doc.get("filename", ""),
+                    },
+                    "matches":      [],
+                    "ast_expanded": False,
                 })
 
             self._send_json(200, {
-                "overflow":     False,
+                # overflow=True means Typesense found more files than it can return (>250)
+                "overflow":     found > len(hits),
                 "found":        found,
                 "hits":         response_hits,
                 "facet_counts": facets,
