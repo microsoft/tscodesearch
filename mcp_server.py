@@ -23,6 +23,51 @@ Tools:
     verify_index     - Start/stop/monitor a background repair scan
     service_status   - Check if Typesense is running and how many docs are indexed
     manage_service   - Start, stop, or restart the Typesense + indexserver processes
+
+CRITICAL USAGE RULE — USE TSCODESEARCH, NOT GREP:
+    ALWAYS use tscodesearch tools for any code investigation in this codebase.
+    NEVER use the Grep tool (ripgrep) for codebase searches except in the
+    following rare cases where tscodesearch cannot help:
+      - Searching for a pattern inside a specific, already-known file path
+        that you have already read and want to re-scan (e.g. confirming a
+        single line in a file you just edited)
+      - Searching non-C# files (JSON, YAML, XML, .csproj, etc.) for
+        config/project-file content
+      - Cross-repository searches spanning paths not covered by the index
+
+    For everything else — finding callers, finding declarations, finding
+    usages of a type, finding files that reference a symbol — use:
+        search_code      → locate relevant files
+        query_codebase   → exact line matches with semantic precision
+        query_single_file→ deep analysis of a known file
+    These tools understand C# syntax, skip comments/strings, and are far
+    more accurate than text search for code.
+
+ISSUE LOGGING — WHEN TSCODESEARCH DOESN'T WORK AS EXPECTED:
+    If a tscodesearch query returns unexpected results (wrong matches, missing
+    results, empty when results were expected, incorrect mode behaviour, etc.),
+    log the issue BEFORE falling back to Grep or another workaround.
+
+    Append to:  tscodesearch_issues.md  (same directory as this mcp_server.py)
+
+    Each entry must include:
+      - Tool and parameters used (exact call)
+      - What you expected to get
+      - What you actually got
+      - Any workaround you used instead
+      - Date (use today's date from the system-reminder context)
+
+    Example entry format:
+        ## Issue: query_codebase returns empty for known callers
+        - **Date**: 2026-03-20
+        - **Call**: query_codebase("calls", "TryGetValue", sub="services")
+        - **Expected**: call sites in OrderProcessor.cs
+        - **Got**: "No AST matches found" (Typesense pre-filter returned 0 files)
+        - **Workaround**: used Grep on the services directory
+        - **Notes**: method is private static, may not be indexed in T2 symbols
+
+    This log is reviewed periodically to improve the tool. Always log — even
+    if the issue seems minor or the workaround was easy.
 """
 
 from __future__ import annotations
@@ -186,7 +231,7 @@ def search_code(
     query: str,
     sub:   str = "",
     ext:   str = "",
-    limit: int = 20,
+    limit: int = 250,
     mode:  str = "text",
     root:  str = "",
     debug: bool = False,
@@ -202,7 +247,7 @@ def search_code(
         sub:   Filter by subsystem — "myapp", "services", "core", etc.
                Leave empty to search all.
         ext:   Filter by extension — "cs", "h", "py". Default: all (.cs ranked first).
-        limit: Maximum results to return. Default 20.
+        limit: Maximum results to return. Default 250.
         mode:  Search strategy:
                "text"       — filename + class/method names + full content (default)
                "declarations" — declaration names only (class/interface/method names)
@@ -300,9 +345,15 @@ def query_codebase(
                  accesses_on  — pattern must be a TYPE name (e.g. "IDataStore"),
                                 not a variable name. Finds .Member accesses on
                                 locals/params declared as that type.
-                                IMPORTANT: returns no results if the variable is only
-                                assigned or forwarded as an argument — in those cases
-                                use query_single_file with all_refs on the variable name.
+                                IMPORTANT: empty results do NOT mean the type is unused —
+                                they mean no .Member call was found. This happens when
+                                the variable is only: assigned, returned, passed as an
+                                argument, used as an out param, or checked for null.
+                                Diagnosis pattern for empty results:
+                                  1. uses("IDataStore", uses_kind="locals") to confirm
+                                     the variable exists in the file
+                                  2. all_refs on the variable name (from step 1) to see
+                                     exactly how it is used (pass-through, assignment, etc.)
                  accesses_of  — pattern must be a MEMBER name (e.g. "Timeout").
                                 Finds every read/write of that property or field.
         sub:     Narrow to a subsystem — the FIRST path component only (the top-level
@@ -319,13 +370,16 @@ def query_codebase(
                  type (all types), member (all members).
                  Also narrows the Typesense pre-filter.
         uses_kind: For uses mode — which annotation positions to search.
-                 Values: all (default), field, param, return, cast, base.
+                 Values: all (default), field, param, return, cast, base, locals.
                  all:    fields + params + return types + casts + base types
+                         + local variable declarations
                  field:  only field/property declarations typed as TYPE
                  param:  only method parameters typed as TYPE
                  return: only methods returning TYPE
                  cast:   only explicit (TYPE)expr casts
                  base:   only types inheriting/implementing TYPE
+                 locals: only local variable declarations typed as TYPE
+                         (e.g. BlobStore store = ...; inside method bodies)
 
     Examples:
         query_codebase("casts", "Widget")
@@ -504,14 +558,29 @@ def query_single_file(
                  Python pattern-required: calls, implements, ident, declarations,
                    decorators, params
                  Python listing (no pattern): classes, methods, imports
+                 NOTE: C# "params" requires a pattern (parameter name or type).
+                   It does NOT work as a listing mode — omitting the pattern
+                   returns no results. To find which methods take a given type
+                   as a parameter, use uses(uses_kind="param") instead, which
+                   also works without a file-specific pattern.
         pattern: Type/method/name to search for. Required for pattern modes;
                  omit for listing modes.
                  accesses_on  — pattern must be a TYPE name (e.g. "IDataStore"),
                                 not a variable name. Finds .Member accesses on
                                 locals/params declared as that type.
-                                IMPORTANT: returns nothing if the variable is only
-                                assigned or forwarded — use all_refs instead when
-                                you want to see pass-through / constructor-arg uses.
+                                IMPORTANT: empty results do NOT mean the type is unused —
+                                they mean no .Member call was found. This happens when
+                                the variable is only assigned, returned, passed as an
+                                argument, used as an out param, or checked for null.
+                                Diagnosis pattern:
+                                  1. uses("IDataStore", uses_kind="locals") → confirm the
+                                     variable name
+                                  2. all_refs(varName) → see exactly how it is used
+                 calls        — pattern must be a METHOD name (e.g. "GetBlobsAsync"),
+                                never a variable or receiver name. Finds call sites
+                                where that method is invoked. To find all usages of a
+                                variable/parameter (including calls made through it),
+                                use all_refs with the variable name instead.
                  accesses_of  — pattern must be a MEMBER name (e.g. "Timeout").
                                 Finds every read/write of that property or field.
                  all_refs     — pattern is a variable/parameter NAME. Finds every
@@ -519,9 +588,9 @@ def query_single_file(
                                 member accesses, and argument positions. Use this when
                                 accesses_on returns empty but you know the variable exists.
         file:    Path to the file. Must be an absolute path. Accepts Windows
-                 paths (e.g. q:/spocore/src/sts/foo.cs), WSL /mnt/ paths,
-                 or $SRC_ROOT-prefixed paths (e.g. $SRC_ROOT/sts/foo.cs).
-                 Relative paths (e.g. sts/foo.cs) are NOT supported and will
+                 paths (e.g. q:/myproject/src/services/foo.cs), WSL /mnt/ paths,
+                 or $SRC_ROOT-prefixed paths (e.g. $SRC_ROOT/services/foo.cs).
+                 Relative paths (e.g. services/foo.cs) are NOT supported and will
                  return "File not found".
         context_lines: Surrounding source lines per match (like grep -C N).
         root:    Named source root (empty = default).
@@ -536,9 +605,13 @@ def query_single_file(
         query_single_file("classes", file="c:/myproject/src/services/OrderService.cs")
         query_single_file("casts", "Repository", file="$SRC_ROOT/services/OrderService.cs")
         query_single_file("declarations", "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
+        query_single_file("calls", "SaveChanges", file="$SRC_ROOT/services/OrderService.cs")
         query_single_file("uses", "IRepository", file="$SRC_ROOT/services/OrderService.cs")
+        query_single_file("uses", "IRepository", uses_kind="param", file="$SRC_ROOT/services/OrderService.cs")
         query_single_file("accesses_on", "IDataStore", file="$SRC_ROOT/services/DataManager.cs")
         query_single_file("accesses_of", "Timeout", file="$SRC_ROOT/services/DataManager.cs")
+        query_single_file("all_refs", "repository", file="$SRC_ROOT/services/OrderService.cs")
+        query_single_file("params", "customerId", file="$SRC_ROOT/services/OrderService.cs")
     """
     from query import process_file, process_py_file
     from config import get_root, ROOTS, to_native_path
