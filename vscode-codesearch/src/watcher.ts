@@ -39,10 +39,12 @@ export class FileWatcher {
     readonly apiPort: number;
     readonly apiKey:  string;
     private readonly _roots: Array<[string, string]>; // [rootName, winPath]
+    private readonly _out:   vscode.OutputChannel;
 
-    constructor(config: CodesearchConfig) {
+    constructor(config: CodesearchConfig, out: vscode.OutputChannel) {
         this.apiPort = (config.port ?? 8108) + 1;
         this.apiKey  = config.api_key;
+        this._out    = out;
         const allRoots = getRoots(config);
         this._roots = Object.entries(allRoots).filter(([, p]) => WIN_PATH_RE.test(p));
         if (this._roots.length > 0) {
@@ -56,25 +58,31 @@ export class FileWatcher {
     // ── Startup ────────────────────────────────────────────────────────────────
 
     private async _start(): Promise<void> {
-        // Pause the WSL PollingObserver — we handle events natively from here.
-        await this.apiPost('/watcher/pause');
+        this._out.appendLine(`[watcher] Starting Windows watcher for ${this._roots.length} root(s): ${this._roots.map(([n]) => n).join(', ')}`);
+        try {
+            // Pause the WSL PollingObserver — we handle events natively from here.
+            await this.apiPost('/watcher/pause');
 
-        // Trigger a background verify for each root to catch up on changes that
-        // occurred while VS Code was closed (git pulls, builds, branch switches, etc.).
-        for (const [name] of this._roots) {
-            await this.apiPost('/verify/start', { root: name, delete_orphans: true });
-        }
+            // Trigger a background verify for each root to catch up on changes that
+            // occurred while VS Code was closed (git pulls, builds, branch switches, etc.).
+            for (const [name] of this._roots) {
+                await this.apiPost('/verify/start', { root: name, delete_orphans: true });
+            }
 
-        if (this._disposed) { return; }
+            if (this._disposed) { return; }
 
-        for (const [, root] of this._roots) {
-            if (this._disposed) { break; }
-            const pattern = new vscode.RelativePattern(vscode.Uri.file(root), '**/*');
-            const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-            watcher.onDidCreate(uri => this._queue(uri.fsPath, 'upsert'));
-            watcher.onDidChange(uri => this._queue(uri.fsPath, 'upsert'));
-            watcher.onDidDelete(uri => this._queue(uri.fsPath, 'delete'));
-            this._fsWatchers.push(watcher);
+            for (const [name, root] of this._roots) {
+                if (this._disposed) { break; }
+                const pattern = new vscode.RelativePattern(vscode.Uri.file(root), '**/*');
+                const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+                watcher.onDidCreate(uri => this._queue(uri.fsPath, 'upsert'));
+                watcher.onDidChange(uri => this._queue(uri.fsPath, 'upsert'));
+                watcher.onDidDelete(uri => this._queue(uri.fsPath, 'delete'));
+                this._fsWatchers.push(watcher);
+                this._out.appendLine(`[watcher] Windows watcher activated for root "${name}" (${root})`);
+            }
+        } catch (e) {
+            this._out.appendLine(`[watcher] _start error: ${e}`);
         }
     }
 
@@ -103,9 +111,9 @@ export class FileWatcher {
 
         try {
             const result = await this.apiPost('/file-events', { events });
-            console.log(`[tscodesearch watcher] sent ${events.length} event(s): queued=${result?.['queued'] ?? '?'} deduped=${result?.['deduped'] ?? '?'}`);
+            this._out.appendLine(`[watcher] sent ${events.length} event(s): queued=${result?.['queued'] ?? '?'} deduped=${result?.['deduped'] ?? '?'}`);
         } catch (e) {
-            console.error(`[tscodesearch watcher] flush error: ${e}`);
+            this._out.appendLine(`[watcher] flush error: ${e}`);
             // Re-queue so nothing is lost on a transient network error
             for (const ev of events) { this._pending.set(ev.path, ev.action); }
         }
@@ -138,12 +146,12 @@ export class FileWatcher {
                     res.on('data', (chunk: Buffer) => { data += chunk; });
                     res.on('end', () => {
                         try { resolve(JSON.parse(data) as Record<string, unknown>); }
-                        catch { resolve(null); }
+                        catch { this._out.appendLine(`[watcher] POST ${path} — unexpected non-JSON response (${res.statusCode}): ${data.slice(0, 200)}`); resolve(null); }
                     });
                 },
             );
             req.setTimeout(5000, () => { req.destroy(); resolve(null); });
-            req.on('error', () => resolve(null));
+            req.on('error', (e) => { this._out.appendLine(`[watcher] POST ${path} error: ${e}`); resolve(null); });
             if (body) { req.write(bodyStr); }
             req.end();
         });
@@ -164,12 +172,12 @@ export class FileWatcher {
                     res.on('data', (chunk: Buffer) => { data += chunk; });
                     res.on('end', () => {
                         try { resolve(JSON.parse(data) as Record<string, unknown>); }
-                        catch { resolve(null); }
+                        catch { this._out.appendLine(`[watcher] GET ${path} — unexpected non-JSON response (${res.statusCode}): ${data.slice(0, 200)}`); resolve(null); }
                     });
                 },
             );
             req.setTimeout(5000, () => { req.destroy(); resolve(null); });
-            req.on('error', () => resolve(null));
+            req.on('error', (e) => { this._out.appendLine(`[watcher] GET ${path} error: ${e}`); resolve(null); });
             req.end();
         });
     }

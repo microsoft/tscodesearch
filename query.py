@@ -644,6 +644,35 @@ def _q_return_type(src, tree, lines, type_name):
     return results
 
 
+def _q_local_type(src, tree, lines, type_name):
+    """
+    Find local variable declarations whose type is TYPE.
+
+    Matches 'BlobStore store = ...;' statements inside method bodies.
+    TYPE matching is exact on the bare (non-generic) name.
+    """
+    results = []
+    for node in _find_all(tree.root_node,
+                          lambda n: n.type == "local_declaration_statement"):
+        var_decl = next((c for c in node.children if c.type == "variable_declaration"), None)
+        if not var_decl:
+            continue
+        type_node = var_decl.child_by_field_name("type")
+        if not type_node:
+            continue
+        type_txt = _text(type_node, src).strip()
+        if type_name not in _type_names(type_txt):
+            continue
+        cls = _enclosing_type_name(node, src)
+        cls_prefix = f"[in {cls}] " if cls else ""
+        for var in _find_all(var_decl, lambda n: n.type == "variable_declarator"):
+            vn = var.child_by_field_name("name")
+            if vn:
+                results.append((_line(node),
+                                 f"[local] {type_txt} {_text(vn, src)}  {cls_prefix}"))
+    return results
+
+
 def _q_base_uses(src, tree, lines, type_name):
     """
     Find type declarations (class/interface/struct/record) that have type_name
@@ -668,7 +697,7 @@ def _q_base_uses(src, tree, lines, type_name):
 def q_uses(src, tree, lines, type_name, uses_kind=None):
     """Find usages of TYPE in type-annotation positions.
 
-    uses_kind: 'all' (default), 'field', 'param', 'return', 'cast', 'base'
+    uses_kind: 'all' (default), 'field', 'param', 'return', 'cast', 'base', 'locals'
     """
     k = (uses_kind or "all").lower().strip()
     if k == "field":
@@ -681,6 +710,8 @@ def q_uses(src, tree, lines, type_name, uses_kind=None):
         return q_casts(src, tree, lines, type_name)
     elif k == "base":
         return _q_base_uses(src, tree, lines, type_name)
+    elif k == "locals":
+        return _q_local_type(src, tree, lines, type_name)
     else:
         return _q_uses_all(src, tree, lines, type_name)
 

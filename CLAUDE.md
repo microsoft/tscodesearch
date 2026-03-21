@@ -294,6 +294,8 @@ Both read the same `codesearch/config.json`. If you update config logic, update 
 
 **`PollingObserver` in watcher.** The watcher polls every 10 s instead of using inotify because the source tree is on a Windows-backed `/mnt/<drive>/` path (NTFS). Don't switch to `Observer` — inotify doesn't fire for changes made on the Windows side.
 
+**Windows file system watcher lives in the VS Code extension (`vscode-codesearch/src/watcher.ts`), not in the indexserver.** When VS Code is open, `FileWatcher` calls `POST /watcher/pause` to stop the indexserver's `PollingObserver`, then uses VS Code's native `createFileSystemWatcher` (backed by `ReadDirectoryChangesW`) to detect changes and forward batched events to `POST /file-events`. On extension deactivation it calls `POST /watcher/resume` to hand back to the `PollingObserver`. Only Windows-style drive paths (`C:/…`) are watched this way; native Linux/WSL paths stay with the `PollingObserver`.
+
 **stdout capture in mcp_server.py.** `format_results()` and `process_file()` print to stdout. `mcp_server.py` captures with `StringIO`. Don't refactor these to return strings — the CLI entry points in `query.py` depend on the print-based interface.
 
 **PID files live in WSL.** `~/.local/typesense/typesense.pid` (Typesense server) and `~/.local/typesense/api.pid` (indexserver — watcher + heartbeat + verifier threads). `~/.local/typesense/indexer.pid` is shared by `ts index` (subprocess) and the verifier thread (written by `api.py`). They are not in the Windows repo directory. `service.py` uses `os.kill(pid, 0)` (WSL-native) to check liveness.

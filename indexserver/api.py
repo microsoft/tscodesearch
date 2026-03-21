@@ -413,10 +413,10 @@ class _Handler(BaseHTTPRequestHandler):
             result: dict = {}
             _watcher_running = bool(_watcher_thread and _watcher_thread.is_alive())
             _queue_depth     = _index_queue.depth
-            if not _watcher_running:
-                _watcher_state = "stopped"
-            elif _watcher_paused:
+            if _watcher_paused:
                 _watcher_state = "paused"
+            elif not _watcher_running:
+                _watcher_state = "stopped"
             elif _queue_depth > 0:
                 _watcher_state = "processing"
             else:

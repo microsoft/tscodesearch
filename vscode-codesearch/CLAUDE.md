@@ -139,6 +139,21 @@ The integration test creates a fresh `codesearch_tstest_{timestamp}` collection 
 | Host → Webview | `error` | `message` |
 | Host → Webview | `configError` | `message` |
 
+## File watcher
+
+The Windows file system watcher lives in `src/watcher.ts` (`FileWatcher` class). It uses VS Code's native `createFileSystemWatcher` (backed by `ReadDirectoryChangesW`) to detect changes under Windows-path roots, then forwards batched events to the indexserver API at `POST /file-events`.
+
+On startup it:
+1. Calls `POST /watcher/pause` to stop the WSL `PollingObserver` (so changes aren't double-processed)
+2. Calls `POST /verify/start` for each root to catch up on changes while VS Code was closed
+3. Creates a `vscode.FileSystemWatcher` per root and logs `[watcher] Windows watcher activated for root "…" (…)` to the output channel
+
+All startup logging (including errors) goes to the TsCodeSearch output channel. The `_start()` method is `async` and wraps its body in try/catch so errors are visible rather than silently swallowed.
+
+On disposal it calls `POST /watcher/resume` so the WSL `PollingObserver` takes over again.
+
+Only roots whose path matches `WIN_PATH_RE` (`/^[A-Za-z]:[/\\]/`) are watched by this class; Linux/WSL paths are left to the indexserver's polling.
+
 ## Key gotchas
 
 **Must compile before loading.** VS Code loads `out/extension.js`. If `out/` is missing, the command is registered but the activation fails silently → "command not found". Always run `npm run compile` (or use `npm run watch` during development).
