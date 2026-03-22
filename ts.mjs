@@ -285,6 +285,16 @@ function printDockerStatus(apiBody) {
     const prog        = syncer.progress      ?? {};
     const syncerRunning = syncer.running ?? false;
 
+    // queue is actively indexing if syncer placed files and queue worker is writing
+    const qDepth    = queue.depth    ?? 0;
+    const qEnqueued = queue.enqueued ?? 0;
+    const qUpserted = queue.upserted ?? 0;
+    const qDeduped  = queue.deduped  ?? 0;
+    const qSkipped  = queue.skipped  ?? 0;
+    const qDeleted  = queue.deleted  ?? 0;
+    const qErrors   = queue.errors   ?? 0;
+    const isQueued  = prog.status === 'queued' && qDepth > 0;
+
     // ── Per-root index status ────────────────────────────────────────────────
     for (const [rootName, info] of Object.entries(collections)) {
         const ndocs    = info?.num_documents;
@@ -301,13 +311,12 @@ function printDockerStatus(apiBody) {
         } else if (warnings.length > 0) {
             badge  = '[!!]';
             detail = `schema outdated (${fmtNum(ndocs)} docs) — run: ts index --root ${rootName} --resethard`;
-        } else if (syncerRunning && isCurrent) {
-            const phase   = prog.phase ?? 'syncing';
-            const total   = prog.total_to_update ?? 0;
-            const updated = prog.updated ?? 0;
-            const pct     = total > 0 ? ` ${Math.floor(updated * 100 / total)}%  ${fmtNum(updated)}/${fmtNum(total)}` : '';
+        } else if (isCurrent && (syncerRunning || isQueued)) {
+            const total = qEnqueued > 0 ? qEnqueued : (prog.total_to_update ?? 0);
+            const done  = qUpserted;
+            const pct   = total > 0 ? ` ${Math.floor(done * 100 / total)}%` : '';
             badge  = '[>>]';
-            detail = `${fmtNum(ndocs)} docs  ${phase}${pct}`;
+            detail = `${fmtNum(ndocs)} docs  indexing  ${fmtNum(done)}/${fmtNum(total)}${pct}`;
         } else if (!synced) {
             badge  = '[~~]';
             detail = `${fmtNum(ndocs)} docs  incomplete sync — run: ts index --root ${rootName}`;
@@ -321,47 +330,38 @@ function printDockerStatus(apiBody) {
     }
 
     // ── Syncer / indexer progress ────────────────────────────────────────────
-    if (syncerRunning) {
-        const phase    = prog.phase    ?? 'starting';
-        const fsFiles  = prog.fs_files ?? 0;
-        const idxDocs  = prog.index_docs ?? 0;
-        const missing  = prog.missing  ?? 0;
-        const stale    = prog.stale    ?? 0;
-        const orphaned = prog.orphaned ?? 0;
-        const total    = prog.total_to_update ?? 0;
-        const updated  = prog.updated  ?? 0;
-        const deleted  = prog.deleted  ?? 0;
-        const errors   = prog.errors   ?? 0;
-        const startedAt = prog.started_at ?? '';
+    if (syncerRunning || isQueued || (syncer.pending ?? 0) > 0) {
+        const phase     = prog.phase    ?? 'starting';
+        const fsFiles   = prog.fs_files ?? 0;
+        const idxDocs   = prog.index_docs ?? 0;
+        const missing   = prog.missing  ?? 0;
+        const stale     = prog.stale    ?? 0;
+        const orphaned  = prog.orphaned ?? 0;
+        const total     = qEnqueued > 0 ? qEnqueued : (prog.total_to_update ?? 0);
+        const done      = qUpserted;
+        const deleted   = qDeleted + (prog.deleted ?? 0);
+        const errors    = qErrors;
+        const startedAt  = prog.started_at ?? '';
         const lastUpdate = prog.last_update ?? '';
-        const pending  = syncer.pending ?? 0;
+        const pending   = syncer.pending ?? 0;
 
-        console.log(`  Syncer  : [>>] ${phase}`);
-        if (startedAt)  console.log(`             started   ${fmtTs(startedAt)}${lastUpdate ? `  last update ${fmtTs(lastUpdate)}` : ''}`);
+        const statusLine = isQueued && !syncerRunning ? `[>>] indexing` : `[>>] ${phase}`;
+        console.log(`  Syncer  : ${statusLine}`);
+        if (startedAt) console.log(`             started ${fmtTs(startedAt)}${lastUpdate ? `  last update ${fmtTs(lastUpdate)}` : ''}`);
         if (fsFiles > 0 || idxDocs > 0)
-            console.log(`             fs=${fmtNum(fsFiles)}  indexed=${fmtNum(idxDocs)}  missing=${fmtNum(missing)}  stale=${fmtNum(stale)}  orphaned=${fmtNum(orphaned)}`);
-        if (total > 0 || updated > 0) {
-            const pct = total > 0 ? ` (${Math.floor(updated * 100 / total)}%)` : '';
-            console.log(`             updated=${fmtNum(updated)}/${fmtNum(total)}${pct}  deleted=${fmtNum(deleted)}  errors=${errors}`);
+            console.log(`             fs=${fmtNum(fsFiles)}  prev_indexed=${fmtNum(idxDocs)}  missing=${fmtNum(missing)}  stale=${fmtNum(stale)}  orphaned=${fmtNum(orphaned)}`);
+        if (total > 0 || done > 0) {
+            const pct = total > 0 ? ` (${Math.floor(done * 100 / total)}%)` : '';
+            console.log(`             written=${fmtNum(done)}/${fmtNum(total)}${pct}  deleted=${fmtNum(deleted)}  errors=${errors}`);
         }
         if (pending > 0) console.log(`             ${pending} more root(s) queued`);
-    } else if ((syncer.pending ?? 0) > 0) {
-        console.log(`  Syncer  : [..] ${syncer.pending} root(s) pending`);
     } else if (prog.status === 'complete') {
-        const when = prog.last_update ? `  completed ${fmtTs(prog.last_update)}` : '';
-        const updated  = prog.updated  ?? 0;
-        const errors   = prog.errors   ?? 0;
-        console.log(`  Syncer  : [OK] last sync complete${when}  updated=${fmtNum(updated)}  errors=${errors}`);
+        const when   = prog.last_update ? `  completed ${fmtTs(prog.last_update)}` : '';
+        const errors = qErrors;
+        console.log(`  Syncer  : [OK] last sync complete${when}  upserted=${fmtNum(qUpserted)}  errors=${errors}`);
     }
 
     // ── Queue stats ──────────────────────────────────────────────────────────
-    const qDepth    = queue.depth    ?? 0;
-    const qEnqueued = queue.enqueued ?? 0;
-    const qUpserted = queue.upserted ?? 0;
-    const qDeduped  = queue.deduped  ?? 0;
-    const qSkipped  = queue.skipped  ?? 0;
-    const qDeleted  = queue.deleted  ?? 0;
-    const qErrors   = queue.errors   ?? 0;
     if (qEnqueued > 0 || qDepth > 0) {
         const errStr = qErrors > 0 ? `  errors=${qErrors}` : '';
         console.log(`  Queue   : depth=${fmtNum(qDepth)}  enqueued=${fmtNum(qEnqueued)}  upserted=${fmtNum(qUpserted)}  skipped=${fmtNum(qSkipped)}  deduped=${fmtNum(qDeduped)}  deleted=${fmtNum(qDeleted)}${errStr}`);
