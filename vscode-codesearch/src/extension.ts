@@ -21,60 +21,16 @@ import { RootsTreeProvider, CodesearchTreeItem } from './treeview';
 // Config discovery (needs vscode API)
 // ---------------------------------------------------------------------------
 
-function friendlyConfigError(raw: string): string {
-    if (raw.includes('directory, not a file') || raw.includes('EISDIR')) {
-        return `tscodesearch.configPath points to a directory — set it to the config.json file itself (e.g. C:\\myproject\\codesearch\\config.json)`;
-    }
-    if (raw.includes('not found') || raw.includes('ENOENT')) {
-        return `config.json not found at the configured path — check the tscodesearch.configPath setting`;
-    }
-    if (raw.includes('JSON') || raw.includes('Unexpected token') || raw.includes('SyntaxError')) {
-        return `config.json contains invalid JSON — check the file for syntax errors`;
-    }
-    return `Failed to load config.json — ${raw}`;
-}
-
-function findConfigPath(): { found: string | null; searched: string[] } {
-    const setting = vscode.workspace.getConfiguration('tscodesearch').get<string>('configPath');
-    if (setting) {
-        try {
-            const stat = fs.statSync(setting);
-            if (!stat.isFile()) {
-                throw new Error(`tscodesearch.configPath points to a directory, not a file.\nExpected a path like: ${path.join(setting, 'config.json')}`);
-            }
-        } catch (e: unknown) {
-            if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-                throw new Error(`tscodesearch.configPath not found: ${setting}`);
-            }
-            throw e;
-        }
-        return { found: setting, searched: [] };
-    }
-
-    const searched: string[] = [];
-
-    // Build search roots: repoPath first (most likely location), then workspace folders
-    const repoPath = vscode.workspace.getConfiguration('tscodesearch').get<string>('repoPath');
-    const searchRoots: string[] = [];
-    if (repoPath) { searchRoots.push(repoPath); }
-    for (const folder of vscode.workspace.workspaceFolders || []) {
-        searchRoots.push(folder.uri.fsPath);
-    }
-
-    for (const root of searchRoots) {
-        for (const rel of ['config.json', 'codesearch/config.json']) {
-            const candidate = path.join(root, rel);
-            searched.push(candidate);
-            if (!fs.existsSync(candidate)) { continue; }
-            try {
-                const d = JSON.parse(fs.readFileSync(candidate, 'utf-8'));
-                if ('api_key' in d && ('roots' in d || 'src_root' in d)) {
-                    return { found: candidate, searched };
-                }
-            } catch { /* skip */ }
-        }
-    }
-    return { found: null, searched };
+/** Returns the path to config.json at <repoPath>/config.json, or null if not found. */
+function findConfigPath(repoPath: string): string | null {
+    if (!repoPath) { return null; }
+    const candidate = path.join(repoPath, 'config.json');
+    if (!fs.existsSync(candidate)) { return null; }
+    try {
+        const d = JSON.parse(fs.readFileSync(candidate, 'utf-8'));
+        if ('api_key' in d) { return candidate; }
+    } catch { /* invalid JSON */ }
+    return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -770,12 +726,12 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
         webviewView.webview.html = buildWebviewHtml(getNonce(), this._roots, this._defaultRoot);
 
         if (!configOk) {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'tscodesearch.configPath');
+            vscode.commands.executeCommand('workbench.action.openSettings', 'tscodesearch.repoPath');
         }
 
         webviewView.webview.onDidReceiveMessage(async (msg) => {
             if (msg.type === 'openSettings') {
-                vscode.commands.executeCommand('workbench.action.openSettings', 'tscodesearch.configPath');
+                vscode.commands.executeCommand('workbench.action.openSettings', 'tscodesearch.repoPath');
 
             } else if (msg.type === 'search') {
                 if (!this._config) {
@@ -861,35 +817,19 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
 
     private _reloadConfig(): boolean {
         try {
-            // Docker mode: use settings-based roots when configured
-            if (this._docker.mode === 'docker') {
-                const configuredRoots = this._docker.getRoots();
-                if (Object.keys(configuredRoots).length > 0) {
-                    this._config = this._docker.getClientConfig();
-                    const rootMap = getRoots(this._config);
-                    this._roots = Object.keys(rootMap);
-                    this._defaultRoot = this._roots[0] ?? 'default';
-                    this._out.appendLine(`[config] Loaded from settings — roots: ${this._roots.join(', ')} | port: ${this._config.port}`);
-                    return true;
-                }
-            }
-
-            // WSL mode (or docker without configured roots): discover config.json on disk
-            const { found, searched } = findConfigPath();
+            const found = findConfigPath(this._docker.repoPath);
             if (!found) {
-                const lines = [
-                    'config.json not found.',
+                const configPath = this._docker.repoPath
+                    ? `${this._docker.repoPath}\\config.json`
+                    : 'config.json';
+                const message = [
+                    `${configPath} not found.`,
                     '',
-                    'Run "TsCodeSearch: Set Up" to configure the server,',
-                    'or set tscodesearch.configPath to the full path of config.json.',
-                    'Example: C:\\myproject\\codesearch\\config.json',
-                ];
-                if (searched.length > 0) {
-                    lines.push('', 'Locations searched:');
-                    searched.forEach((p) => lines.push(`  • ${p}`));
-                }
-                this._out.appendLine(`[config] Not found. Searched: ${searched.join(', ')}`);
-                this._view?.webview.postMessage({ type: 'configError', message: lines.join('\n') });
+                    'Run "TsCodeSearch: Set Up" to initialise the server,',
+                    'or open the tscodesearch repo folder in VS Code.',
+                ].join('\n');
+                this._out.appendLine(`[config] Not found at: ${configPath}`);
+                this._view?.webview.postMessage({ type: 'configError', message });
                 return false;
             }
             this._config = loadConfig(found);
@@ -901,7 +841,7 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
             this._out.appendLine(`[config] Error: ${msg}`);
-            this._view?.webview.postMessage({ type: 'configError', message: friendlyConfigError(msg) });
+            this._view?.webview.postMessage({ type: 'configError', message: `Failed to load config.json — ${msg}` });
             return false;
         }
     }
@@ -945,23 +885,22 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     }
 
-    if (docker.mode === 'wsl') {
-        // WSL mode: config.json is the source of truth for API key, port, and roots.
-        try {
-            const { found } = findConfigPath();
-            if (found) {
-                docker.setDiskConfig(loadConfig(found));
-                _startWatcherAndStatus(docker.getClientConfig());
-            }
-        } catch (e) {
-            out.appendLine(`[activate] WSL config load error: ${e}`);
-        }
-    } else {
-        // Docker mode: VS Code settings own the config.
-        const configuredRoots = docker.getRoots();
-        if (Object.keys(configuredRoots).length > 0) {
+    // config.json always lives at <repoPath>/config.json for both modes.
+    try {
+        const found = findConfigPath(docker.repoPath);
+        if (found) {
+            docker.setDiskConfig(loadConfig(found));
             _startWatcherAndStatus(docker.getClientConfig());
+            // Auto-start the indexserver in the background (start is idempotent).
+            if (docker.repoPath) {
+                out.appendLine('[activate] Auto-starting indexserver...');
+                docker.start(line => out.appendLine(line)).catch(e => {
+                    out.appendLine(`[activate] Indexserver auto-start failed: ${e}`);
+                });
+            }
         }
+    } catch (e) {
+        out.appendLine(`[activate] Config load error: ${e}`);
     }
 
     // ── Commands ─────────────────────────────────────────────────────────────
@@ -1009,7 +948,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 openLabel: 'Select source root folder',
             });
             if (!picks || picks.length === 0) { return; }
-            await docker.addRoot(name.trim(), picks[0].fsPath);
+            docker.addRoot(name.trim(), picks[0].fsPath);
             treeProvider.refresh();
             const choice = await vscode.window.showInformationMessage(
                 `TsCodeSearch: Added root "${name.trim()}". Restart the server to apply.`,
@@ -1031,7 +970,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 { modal: true }, 'Remove',
             );
             if (confirm !== 'Remove') { return; }
-            await docker.removeRoot(name);
+            docker.removeRoot(name);
             treeProvider.refresh();
         }),
     );

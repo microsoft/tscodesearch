@@ -2,14 +2,14 @@
  * Unified server manager for codesearch.
  *
  * Owns root management (VS Code settings), config.json generation, and server
- * lifecycle for both Docker and WSL modes.  Heavy lifting is delegated to two
- * shell scripts that are called via `wsl.exe bash -l`:
+ * lifecycle for both Docker and WSL modes.  All heavy lifting is delegated to
+ * ts.mjs (Node.js CLI, no WSL required):
  *
- *   tscodesearch-docker.sh  — builds and runs the Docker container
- *   tscodesearch-wsl.sh     — manages the WSL indexserver (Python venvs + ts.sh)
+ *   node.exe <repoPath>/ts.mjs <cmd>
  *
- * Both modes expose the same management API (port typesensePort+1) so
- * FileWatcher and StatusBarManager work identically for both.
+ * ts.mjs reads config.json directly and dispatches to Docker or WSL internals
+ * based on the "mode" field.  The management API (port typesensePort+1) is the
+ * same for both modes, so FileWatcher and StatusBarManager work identically.
  */
 
 import * as vscode from 'vscode';
@@ -26,22 +26,21 @@ function cfg<T>(key: string, fallback: T): T {
     return vscode.workspace.getConfiguration('tscodesearch').get<T>(key) ?? fallback;
 }
 
-function storedApiKey(context: vscode.ExtensionContext): string {
-    let key = context.globalState.get<string>('server.apiKey');
-    if (!key) {
-        const bytes = new Uint8Array(20);
-        for (let i = 0; i < 20; i++) { bytes[i] = Math.floor(Math.random() * 256); }
-        key = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-        void context.globalState.update('server.apiKey', key);
+/**
+ * Scan VS Code workspace folders for one that contains a valid config.json
+ * (identified by having an "api_key" field).  Returns the folder path (the
+ * repo root) or null if nothing is found.
+ */
+function discoverRepoPath(): string | null {
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        const candidate = path.join(folder.uri.fsPath, 'config.json');
+        if (!fs.existsSync(candidate)) { continue; }
+        try {
+            const d = JSON.parse(fs.readFileSync(candidate, 'utf-8'));
+            if ('api_key' in d) { return folder.uri.fsPath; }
+        } catch { /* skip */ }
     }
-    return key;
-}
-
-/** Convert a Windows path to its WSL /mnt/<drive>/... equivalent. */
-function winToWsl(winPath: string): string {
-    return winPath
-        .replace(/\\/g, '/')
-        .replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
+    return null;
 }
 
 function spawnLines(
@@ -60,38 +59,25 @@ function spawnLines(
         proc.stderr.on('data', onData);
         proc.on('close', (code) => {
             if (code === 0) { resolve(); }
-            else { reject(new Error(`${args[args.length - 1]?.split('/').pop() ?? cmd} exited with code ${code}`)); }
+            else { reject(new Error(`ts ${args[0] ?? ''} exited with code ${code}`)); }
         });
-        proc.on('error', (err) => {
-            // wsl.exe not found → helpful message
-            if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-                reject(new Error('WSL is not available. Install WSL 2 from the Microsoft Store.'));
-            } else {
-                reject(err);
-            }
-        });
+        proc.on('error', reject);
     });
 }
 
 // ── ServerManager ─────────────────────────────────────────────────────────────
 
 export class ServerManager {
-    private readonly _context:    vscode.ExtensionContext;
-    private readonly _storageDir: string;
-    private readonly _out:        vscode.OutputChannel;
-    private _diskConfig:          CodesearchConfig | null = null;
+    private readonly _out:  vscode.OutputChannel;
+    private _diskConfig:    CodesearchConfig | null = null;
 
-    constructor(context: vscode.ExtensionContext, out: vscode.OutputChannel) {
-        this._context    = context;
-        this._storageDir = context.globalStorageUri.fsPath;
-        this._out        = out;
-        fs.mkdirSync(this._storageDir, { recursive: true });
+    constructor(_context: vscode.ExtensionContext, out: vscode.OutputChannel) {
+        this._out = out;
     }
 
     /**
      * In WSL mode, config.json on disk is the source of truth.
      * Call this once at startup after discovering the config file.
-     * Roots, port, and API key will all come from the file instead of VS Code settings.
      */
     setDiskConfig(config: CodesearchConfig): void {
         this._diskConfig = config;
@@ -99,14 +85,13 @@ export class ServerManager {
 
     // ── Mode + settings ──────────────────────────────────────────────────────
 
-    get mode():          ServerMode { return cfg<ServerMode>('mode', 'docker'); }
+    get mode():          ServerMode { return (this._diskConfig?.mode as ServerMode | undefined) ?? 'docker'; }
     get mcpPort():       number     { return cfg('mcpPort',         3000); }
     get typesensePort(): number     { return cfg('typesensePort',   8108); }
     get apiPort():       number     { return this.typesensePort + 1; }
-    get repoPath():      string     { return cfg('repoPath',        ''); }
-    get apiKey():        string     { return storedApiKey(this._context); }
-
-    // Docker-specific (ignored in WSL mode)
+    /** Explicit setting takes precedence; falls back to workspace folder auto-detection. */
+    get repoPath(): string { return cfg('repoPath', '') || discoverRepoPath() || ''; }
+    // Docker-specific
     get containerName(): string { return cfg('dockerContainer', 'codesearch'); }
     get imageName():     string { return cfg('dockerImage',     'codesearch-mcp'); }
     get dataVolume():    string { return `${this.containerName}_data`; }
@@ -116,128 +101,81 @@ export class ServerManager {
         return this.mode === 'docker' ? this.containerName : 'Indexserver (WSL)';
     }
 
+    // ── Config file helpers ──────────────────────────────────────────────────
+
+    private _configFilePath(): string {
+        if (!this.repoPath) {
+            throw new Error('tscodesearch repo not found. Open the repo folder in VS Code, or set tscodesearch.repoPath explicitly.');
+        }
+        return path.join(this.repoPath, 'config.json');
+    }
+
+    private _readConfigFile(): CodesearchConfig {
+        return JSON.parse(fs.readFileSync(this._configFilePath(), 'utf-8')) as CodesearchConfig;
+    }
+
+    private _writeConfigFile(config: CodesearchConfig): void {
+        fs.writeFileSync(this._configFilePath(), JSON.stringify(config, null, 2), 'utf-8');
+        this._diskConfig = config;
+    }
+
     // ── Root management ──────────────────────────────────────────────────────
 
     getRoots(): Record<string, string> {
-        if (this.mode === 'wsl' && this._diskConfig) {
-            return getRootsFromConfig(this._diskConfig);
+        if (this._diskConfig) { return getRootsFromConfig(this._diskConfig); }
+        if (this.repoPath) {
+            try { return getRootsFromConfig(this._readConfigFile()); } catch { /* fall through */ }
         }
-        return cfg<Record<string, string>>('roots', {});
+        return {};
     }
 
-    async addRoot(name: string, winPath: string): Promise<void> {
-        const roots = { ...this.getRoots(), [name]: winPath };
-        await vscode.workspace.getConfiguration('tscodesearch').update(
-            'roots', roots, vscode.ConfigurationTarget.Global,
-        );
-        this.writeConfig();
+    addRoot(name: string, winPath: string): void {
+        const config = this._readConfigFile();
+        config.roots = { ...(config.roots ?? {}), [name]: { windows_path: winPath } };
+        this._writeConfigFile(config);
     }
 
-    async removeRoot(name: string): Promise<void> {
-        const roots = { ...this.getRoots() };
-        delete roots[name];
-        await vscode.workspace.getConfiguration('tscodesearch').update(
-            'roots', roots, vscode.ConfigurationTarget.Global,
-        );
-        this.writeConfig();
+    removeRoot(name: string): void {
+        const config = this._readConfigFile();
+        const { [name]: _, ...rest } = (config.roots ?? {});
+        config.roots = rest;
+        this._writeConfigFile(config);
     }
 
     // ── Config generation ────────────────────────────────────────────────────
 
     /**
-     * Write config.json and return its Windows path.
-     *
-     * WSL mode:    writes directly to <repoPath>/config.json (Windows paths).
-     *              This is the single file read by both the MCP server and the
-     *              indexserver, so writing here keeps everything in sync without
-     *              a separate sync_config step.
-     * Docker mode: writes to extension storage (container paths: /source/<name>),
-     *              then the shell script mounts it into the container.
+     * Sync VS Code settings (port, docker_container, docker_image) into config.json
+     * so that ts.mjs picks them up on the next invocation.  Returns the config path.
      */
     writeConfig(): string {
-        const roots = this.getRoots();
-
-        if (this.mode === 'wsl' && this.repoPath) {
-            // WSL mode: write Windows paths directly to the shared config.json.
-            const config = {
-                api_key: this.apiKey,
-                port:    this.typesensePort,
-                roots,
-            };
-            const dest = path.join(this.repoPath, 'config.json');
-            fs.writeFileSync(dest, JSON.stringify(config, null, 2), 'utf-8');
-            return dest;
-        }
-
-        // Docker mode: translate to container paths.
-        const configRoots:  Record<string, string> = {};
-        const hostMounts:   Record<string, string> = {};
-        for (const [name, winPath] of Object.entries(roots)) {
-            configRoots[name] = `/source/${name}`;
-            hostMounts[name]  = winToWsl(winPath);  // WSL path for docker -v mounts
-        }
-        const config = {
-            api_key:  this.apiKey,
-            port:     this.typesensePort,
-            roots:    configRoots,
-            _mounts:  hostMounts,  // host-side paths read by tscodesearch-docker.sh
-        };
-        const dest = path.join(this._storageDir, 'config.json');
-        fs.writeFileSync(dest, JSON.stringify(config, null, 2), 'utf-8');
-        return dest;
+        const config = this._readConfigFile();
+        config.port             = this.typesensePort;
+        config.docker_container = this.containerName;
+        config.docker_image     = this.imageName;
+        this._writeConfigFile(config);
+        return this._configFilePath();
     }
 
     /** Config for the VS Code extension (Windows paths for file resolution). */
     getClientConfig(): CodesearchConfig {
-        if (this.mode === 'wsl' && this._diskConfig) {
-            return this._diskConfig;
-        }
-        return {
-            api_key: this.apiKey,
-            port:    this.typesensePort,
-            roots:   this.getRoots(),
-        };
+        if (this._diskConfig) { return this._diskConfig; }
+        return this._readConfigFile();
     }
 
-    // ── Script invocation ────────────────────────────────────────────────────
-
-    private _scriptWslPath(): string {
-        const repoPath = this.repoPath;
-        if (!repoPath) { throw new Error('tscodesearch.repoPath is not set. Point it to the tscodesearch repo root.'); }
-        const name = this.mode === 'docker' ? 'tscodesearch-docker.sh' : 'tscodesearch-wsl.sh';
-        return winToWsl(path.join(repoPath, name));
-    }
-
-    /** Build the option flags passed to the shell script after the command name. */
-    private _buildFlags(): string[] {
-        const configWin = this.writeConfig();
-        const flags = [
-            '--config',   winToWsl(configWin),
-            '--mcp-port', String(this.mcpPort),
-        ];
-        if (this.repoPath) {
-            flags.push('--repo-path', winToWsl(this.repoPath));
-        }
-        if (this.mode === 'docker') {
-            flags.push(
-                '--container', this.containerName,
-                '--image',     this.imageName,
-                '--data-vol',  this.dataVolume,
-            );
-        }
-        return flags;
-    }
+    // ── CLI invocation ───────────────────────────────────────────────────────
 
     private async _run(cmd: string, onLine?: (line: string) => void): Promise<void> {
         if (!this.repoPath) {
-            throw new Error('tscodesearch.repoPath is not set. Point it to the tscodesearch repo root.');
+            throw new Error('tscodesearch repo not found. Open the repo folder in VS Code, or set tscodesearch.repoPath explicitly.');
         }
-        const log = (l: string) => { this._out.appendLine(l); onLine?.(l); };
-        await spawnLines(
-            'wsl.exe',
-            ['bash', '-l', this._scriptWslPath(), cmd, ...this._buildFlags()],
-            log,
-        );
+        // Sync VS Code settings into config.json before every lifecycle command
+        // so ts.mjs reads up-to-date port / container / image values.
+        this.writeConfig();
+
+        const tsMjs = path.join(this.repoPath, 'ts.mjs');
+        const log   = (l: string) => { this._out.appendLine(l); onLine?.(l); };
+        await spawnLines('node.exe', [tsMjs, cmd], log);
     }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
@@ -254,14 +192,10 @@ export class ServerManager {
         await this._run('restart', onLine);
     }
 
-    async registerMcp(): Promise<void> {
-        await this._run('register-mcp');
-    }
-
     /**
      * Full setup wizard.  Prompts for repo path if not configured, then
-     * calls the mode-specific setup script (installs deps, starts service,
-     * registers MCP).
+     * calls `ts.mjs setup` which builds the Docker image (if needed) and starts
+     * the container.
      */
     async setup(progress: vscode.Progress<{ message: string }>): Promise<void> {
         if (!this.repoPath) {

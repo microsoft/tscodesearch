@@ -33,6 +33,7 @@ _RUN_DIR.mkdir(parents=True, exist_ok=True)
 _THIS_DIR      = Path(__file__).parent
 _VENV_PY       = str(_HOME / ".local" / "indexserver-venv" / "bin" / "python3")
 _SERVER_PY     = str(_THIS_DIR / "start_server.py")
+_ENTRYPOINT    = str(_THIS_DIR.parent / "scripts" / "entrypoint.sh")
 _WATCHER_PY    = str(_THIS_DIR / "watcher.py")
 _SERVER_PID    = str(_RUN_DIR / "typesense.pid")
 _WATCHER_PID   = str(_RUN_DIR / "watcher.pid")
@@ -119,7 +120,17 @@ def _restart_server() -> None:
     subprocess.run([_VENV_PY, _SERVER_PY, "--stop"], capture_output=True)
     time.sleep(2)
     _log("Starting Typesense server...")
-    result = subprocess.run([_VENV_PY, _SERVER_PY], capture_output=True, text=True)
+    env = os.environ.copy()
+    env.update({
+        "TYPESENSE_DATA":      str(_RUN_DIR),
+        "CONFIG_FILE":         str(_THIS_DIR.parent / "config.json"),
+        "APP_ROOT":            str(_THIS_DIR.parent),
+        "PYTHON3":             _VENV_PY,
+        "PYTHONPATH":          str(_THIS_DIR.parent),
+        "CODESEARCH_API_HOST": "127.0.0.1",
+    })
+    result = subprocess.run(["bash", _ENTRYPOINT, "--background", "--disown"], env=env,
+                            capture_output=True, text=True)
     if result.returncode == 0:
         _log("Server restarted OK.")
     else:

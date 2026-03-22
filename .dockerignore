@@ -12,11 +12,15 @@ __pycache__/
 # VS Code extension (separate project)
 vscode-codesearch/
 
-# Tests (optional, can include for CI)
-# tests/
+# Sample data — mounted as a volume during e2e tests, not baked into the image
+sample/
 
-# Local config (regenerated in container)
+# Tests — mounted as a volume at runtime so changes don't require a rebuild
+tests/
+
+# Local config files (contain secrets — never bake into the image)
 config.json
+config.container.json
 
 # Documentation
 *.md

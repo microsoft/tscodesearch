@@ -7,13 +7,12 @@ import os
 import re as _re
 
 # ── config.json ───────────────────────────────────────────────────────────────
-# Stores roots (or legacy src_root) and api_key. Written by setup_mcp.cmd.
-#
-# New multi-root format:
-#   {"api_key": "codesearch-local", "roots": {"default": "C:/myproject/src", "other": "C:/other/src"}}
-#
-# Legacy single-root format (auto-promoted to roots.default):
-#   {"src_root": "C:/myproject/src", "api_key": "codesearch-local"}
+# Each root entry is an object:
+#   {"api_key": "...", "port": 8108, "roots": {
+#       "default": {"windows_path": "C:/myproject/src", "local_path": "/mnt/c/myproject/src"}
+#   }}
+# windows_path: original Windows path (used for display and path resolution on Windows)
+# local_path:   path as seen by this process (WSL or Docker container)
 _CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 def _read_config() -> dict:
@@ -32,16 +31,29 @@ API_PORT: int = PORT + 1   # management API (indexserver/api.py)
 API_KEY: str = _CONFIG.get("api_key", "codesearch-local")
 
 # ── Roots ─────────────────────────────────────────────────────────────────────
-# Each root maps a name → source directory (Windows forward-slash path).
-# Old-format config has a single "src_root" key; promote it to roots.default.
-_raw_roots: dict = _CONFIG.get("roots") or {"default": _CONFIG.get("src_root", "")}
+# ROOTS      — path used to find files (local_path if set, otherwise windows_path)
+# HOST_ROOTS — original Windows path stored as relative_path prefix in indexed docs
 
-ROOTS: dict[str, str] = {
-    name: path.replace("\\", "/").rstrip("/")
-    for name, path in _raw_roots.items()
-}
+def _parse_roots(raw: dict) -> tuple[dict, dict]:
+    """Parse roots config.  Each entry must be an object with at least one of:
+      local_path   — path as seen by the current process (WSL or Docker container)
+      windows_path — original Windows path (used as relative_path prefix in indexed docs)
 
-# Backward-compat global: the "default" root's src path
+    ROOTS uses local_path when present, otherwise windows_path.
+    HOST_ROOTS is populated only when windows_path is set.
+    """
+    local_paths: dict[str, str] = {}
+    windows_paths: dict[str, str] = {}
+    for name, val in raw.items():
+        lp = val.get("local_path", "").replace("\\", "/").rstrip("/")
+        wp = val.get("windows_path", "").replace("\\", "/").rstrip("/")
+        local_paths[name] = lp or wp
+        if wp:
+            windows_paths[name] = wp
+    return local_paths, windows_paths
+
+ROOTS, HOST_ROOTS = _parse_roots(_CONFIG.get("roots", {}))
+
 SRC_ROOT: str = ROOTS.get("default") or next(iter(ROOTS.values()), "")
 
 
@@ -105,6 +117,13 @@ def get_root(name: str = "") -> tuple[str, str]:
     if name not in ROOTS:
         raise ValueError(f"Unknown root {name!r}. Available: {sorted(ROOTS)}")
     return collection_for_root(name), to_native_path(ROOTS[name])
+
+
+def get_host_root(name: str = "") -> str:
+    """Return the Windows path for a root, or the local path if no windows_path is set."""
+    if not name:
+        name = "default" if "default" in ROOTS else next(iter(ROOTS), "")
+    return HOST_ROOTS.get(name) or ROOTS.get(name, "")
 
 
 # Backward-compat global: the default root's collection name

@@ -84,7 +84,7 @@ cat > "$SCRIPT_DIR/config.json" <<EOF
 {
   "port": ${TYPESENSE_PORT},
   "api_key": "${TYPESENSE_API_KEY}",
-  "roots": { "default": "/tmp/src" }
+  "roots": { "default": {"local_path": "/tmp/src"} }
 }
 EOF
 

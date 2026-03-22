@@ -43,13 +43,13 @@ _RUN_DIR      = Path(os.environ.get("TYPESENSE_DATA", _HOME / ".local" / "typese
 _RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 _THIS_DIR     = Path(__file__).parent                           # indexserver/
+_REPO_ROOT    = str(_THIS_DIR.parent)                           # repo root
 
 # Support Docker: use system Python if venv doesn't exist
 _VENV_PY_PATH = _HOME / ".local" / "indexserver-venv" / "bin" / "python3"
 _VENV_PY      = str(_VENV_PY_PATH) if _VENV_PY_PATH.exists() else sys.executable
 _SERVER_PY    = str(_THIS_DIR / "start_server.py")
-_INDEXER_PY   = str(_THIS_DIR / "indexer.py")
-_API_PY       = str(_THIS_DIR / "api.py")
+_ENTRYPOINT   = str(_THIS_DIR.parent / "scripts" / "entrypoint.sh")
 
 _INDEXER_LOG  = str(_RUN_DIR / "indexer.log")
 _SERVER_PID   = str(_RUN_DIR / "typesense.pid")
@@ -158,6 +158,20 @@ def _kill_pid(pid_file: str, label: str, wait_secs: float = 5.0) -> None:
 
 
 # ── commands ───────────────────────────────────────────────────────────────────
+
+def _entrypoint_env() -> dict:
+    """Build the environment for entrypoint.sh --background calls."""
+    env = os.environ.copy()
+    env.update({
+        "TYPESENSE_DATA":      str(_RUN_DIR),
+        "CONFIG_FILE":         str(Path(_REPO_ROOT) / "config.json"),
+        "APP_ROOT":            _REPO_ROOT,
+        "PYTHON3":             _VENV_PY,
+        "PYTHONPATH":          _REPO_ROOT,
+        "CODESEARCH_API_HOST": "127.0.0.1",
+    })
+    return env
+
 
 def cmd_status(args) -> None:
     print("-- Typesense Service Status ------------------------------------------")
@@ -352,7 +366,7 @@ def _check_typesense_locks() -> bool:
 def cmd_start(args) -> None:
     if not API_KEY or not API_KEY.strip():
         print("ERROR: api_key is missing or blank in config.json.")
-        print("       Delete config.json and re-run setup_mcp.cmd to regenerate it.")
+        print("       Delete config.json and re-run setup.cmd to regenerate it.")
         sys.exit(1)
 
     for root_name, raw_path in ROOTS.items():
@@ -365,42 +379,10 @@ def cmd_start(args) -> None:
     if not _check_typesense_locks():
         sys.exit(1)
 
-    server_alive, _ = _pid_alive(_SERVER_PID)
-    if not server_alive and not _typesense_health()["ok"]:
-        print("Starting Typesense server...")
-        result = subprocess.run([_VENV_PY, _SERVER_PY])
-        if result.returncode != 0:
-            print("ERROR: server failed to start")
-            sys.exit(1)
-    else:
-        print("Server already running.")
-
-    api_alive, _ = _pid_alive(_API_PID)
-    if not api_alive:
-        print(f"Starting indexserver (watcher + heartbeat, {len(ROOTS)} root(s))...")
-        subprocess.Popen(
-            [_VENV_PY, _API_PY],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        time.sleep(1)   # give api.py a moment to write api.pid
-        print("  Indexserver started")
-    else:
-        print("Indexserver already running.")
-
-    # Auto-index any root whose collection is missing
-    for root_name, _src in ROOTS.items():
-        coll_name = collection_for_root(root_name)
-        if _collection_stats(coll_name) is None:
-            print(f"Collection '{coll_name}' not found — starting indexer...")
-            indexer_alive, _ = _pid_alive(_INDEXER_PID)
-            if not indexer_alive:
-                import types as _types
-                cmd_index(_types.SimpleNamespace(resethard=False, root=root_name))
-                break
-            else:
-                print("  (indexer already running)")
+    result = subprocess.run(["bash", _ENTRYPOINT, "--background", "--disown"], env=_entrypoint_env())
+    if result.returncode != 0:
+        print("ERROR: startup failed — check logs with: ts log")
+        sys.exit(1)
 
     cmd_status(args)
 
@@ -484,22 +466,13 @@ def cmd_index(args) -> None:
             print("ERROR: failed to reinstall Typesense binary")
             sys.exit(1)
 
-        # Start Typesense fresh
-        print("Starting Typesense server...")
-        result = subprocess.run([_VENV_PY, _SERVER_PY])
+        # Start Typesense, run initial index, start indexserver
+        print("Starting services and reindexing...")
+        result = subprocess.run(["bash", _ENTRYPOINT, "--background", "--disown"], env=_entrypoint_env())
         if result.returncode != 0:
-            print("ERROR: server failed to start after resethard")
+            print("ERROR: startup failed after resethard — check logs with: ts log")
             sys.exit(1)
-
-        # Restart indexserver
-        print("Restarting indexserver...")
-        subprocess.Popen(
-            [_VENV_PY, _API_PY],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        time.sleep(1)  # give api.py a moment to write api.pid and become ready
+        return
 
     elif not _typesense_health()["ok"]:
         print("ERROR: Typesense server is not running. Start it first with: ts start")

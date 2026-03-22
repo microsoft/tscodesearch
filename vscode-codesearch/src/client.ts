@@ -9,11 +9,18 @@ import * as http from 'http';
 // Types
 // ---------------------------------------------------------------------------
 
+export interface RootEntry {
+    windows_path: string;
+    local_path?: string;
+}
+
 export interface CodesearchConfig {
     api_key: string;
-    port?: number;
-    roots?: Record<string, string>;
-    src_root?: string; // legacy
+    port: number;
+    mode?: 'docker' | 'wsl';
+    roots: Record<string, RootEntry>;
+    docker_container?: string;
+    docker_image?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,9 +138,9 @@ export function loadConfig(configPath: string): CodesearchConfig {
 }
 
 export function getRoots(config: CodesearchConfig): Record<string, string> {
-    if (config.roots && Object.keys(config.roots).length > 0) { return config.roots; }
-    if (config.src_root) { return { default: config.src_root }; }
-    return {};
+    return Object.fromEntries(
+        Object.entries(config.roots).map(([k, v]) => [k, v.windows_path])
+    );
 }
 
 export function sanitizeName(name: string): string {
@@ -192,8 +199,8 @@ export async function doQueryCodebase(
 ): Promise<{ found: number; overflow: boolean; hits: PipelineHit[]; facet_counts: FacetCounts | undefined }> {
     const modeEntry = MODES.find((m) => m.key === mode);
     const serverMode = modeEntry?.astMode ?? mode;
-    const port   = (config.port ?? 8108) + 1;
-    const apiKey = config.api_key ?? 'codesearch-local';
+    const port   = config.port + 1;
+    const apiKey = config.api_key;
     const bodyObj: Record<string, unknown> = { mode: serverMode, pattern: query, sub, ext, root: rootName, limit };
     if (modeEntry?.uses_kind) { bodyObj['uses_kind'] = modeEntry.uses_kind; }
     const body   = JSON.stringify(bodyObj);

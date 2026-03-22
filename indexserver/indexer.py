@@ -473,7 +473,7 @@ def _file_priority(ext: str) -> int:
     return _PRIORITY.get(ext, 0)
 
 
-def build_document(full_path: str, relative_path: str) -> dict:
+def build_document(full_path: str, relative_path: str, host_root: str = "") -> dict:
     try:
         stat = os.stat(full_path)
         src_bytes = open(full_path, "rb").read()
@@ -499,13 +499,17 @@ def build_document(full_path: str, relative_path: str) -> dict:
     _raw = src_bytes.decode("utf-8", errors="replace")
     content = " ".join(dict.fromkeys(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', _raw)))
     relative_path_norm = relative_path.replace("\\", "/")
+    # If a host root is provided, prefix it so the stored path is the full
+    # Windows path (e.g. C:/repos/src/Foo.cs) rather than just Foo.cs.
+    # subsystem is always derived from the bare relative segment.
+    stored_path = (host_root.rstrip("/") + "/" + relative_path_norm) if host_root else relative_path_norm
 
     return {
-        "id":            file_id(relative_path_norm),
-        "relative_path": relative_path_norm,
+        "id":            file_id(stored_path),
+        "relative_path": stored_path,
         "filename":      os.path.basename(full_path),
         "extension":     ext.lstrip("."),
-        "subsystem":     subsystem_from_path(relative_path),
+        "subsystem":     subsystem_from_path(relative_path_norm),
         "namespace":     meta["namespace"],
         "class_names":   meta["class_names"],
         "method_names":  meta["method_names"],
@@ -750,6 +754,7 @@ def index_file_list(
     verbose: bool = False,
     on_progress=None,
     stop_event=None,
+    host_root: str = "",
 ) -> tuple[int, int]:
     """Shared batch-upsert pipeline used by both the full indexer and the verifier.
 
@@ -775,7 +780,7 @@ def index_file_list(
         if stop_event and stop_event.is_set():
             break
 
-        doc = build_document(full_path, rel)
+        doc = build_document(full_path, rel, host_root=host_root)
         if doc is None:
             errors += 1
             continue
@@ -820,12 +825,20 @@ def walk_and_enqueue(
     )
 
 
-def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, collection=None):
-    if src_root is None:
-        src_root = _SRC_ROOT_NATIVE
-    else:
-        src_root = _to_native_path(src_root)
+def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, collection=None, host_root=""):
     coll_name = collection or COLLECTION
+    if src_root is None:
+        # Derive src_root (and host_root if not supplied) from config using collection name.
+        from indexserver.config import ROOTS, HOST_ROOTS, collection_for_root
+        for name in ROOTS:
+            if collection_for_root(name) == coll_name:
+                src_root = ROOTS[name]
+                if not host_root:
+                    host_root = HOST_ROOTS.get(name, "")
+                break
+        if src_root is None:
+            src_root = _SRC_ROOT_NATIVE
+    src_root = _to_native_path(src_root)
     client = get_client()
     ensure_collection(client, resethard=resethard, collection=coll_name)
 
@@ -871,6 +884,7 @@ def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, coll
         client, _tracked_files(), coll_name,
         batch_size=batch_size, verbose=verbose,
         on_progress=_rate_report,
+        host_root=host_root,
     )
 
     elapsed = time.time() - t0
@@ -889,10 +903,12 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Index source files into Typesense")
     ap.add_argument("--resethard", action="store_true",
                     help="Drop and recreate the collection first")
-    ap.add_argument("--src", default=_SRC_ROOT_NATIVE,
-                    help=f"Root directory to index (default: {_SRC_ROOT_NATIVE})")
+    ap.add_argument("--src", default=None,
+                    help="Root directory to index (default: derived from --collection via config)")
     ap.add_argument("--collection", default=None,
                     help="Collection name (default: from config)")
+    ap.add_argument("--host-root", default="",
+                    help="Windows-side path prefix stored in indexed filenames (overrides config lookup)")
     ap.add_argument("--status", action="store_true",
                     help="Show index stats and exit")
     ap.add_argument("--verbose", action="store_true")
@@ -909,4 +925,4 @@ if __name__ == "__main__":
             print(f"Cannot retrieve index stats: {e}")
     else:
         run_index(src_root=args.src, resethard=args.resethard, verbose=args.verbose,
-                  collection=coll)
+                  collection=coll, host_root=args.host_root)

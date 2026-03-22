@@ -30,12 +30,32 @@ API_PORT: int = PORT + 1   # management API (indexserver/api.py)
 API_KEY: str = _CONFIG.get("api_key", "codesearch-local")
 
 # ── Roots ─────────────────────────────────────────────────────────────────────
-_raw_roots: dict = _CONFIG.get("roots") or {"default": _CONFIG.get("src_root", "")}
+# Supports two formats for each root entry in config.json:
+#   Old (string): "default": "/source/default"
+#   New (object): "default": {"local_path": "/source/default", "windows_path": "C:/repos/src"}
+#
+# ROOTS      — path used to find files (local_path in container, string value in WSL)
+# HOST_ROOTS — original Windows path stored as relative_path prefix in indexed docs
 
-ROOTS: dict[str, str] = {
-    name: path.replace("\\", "/").rstrip("/")
-    for name, path in _raw_roots.items()
-}
+def _parse_roots(raw: dict) -> tuple[dict, dict]:
+    """Parse roots config.  Each entry must be an object with at least one of:
+      local_path   — path as seen by the current process (container or WSL)
+      windows_path — original Windows path (used as the relative_path prefix in indexed docs)
+
+    ROOTS uses local_path when present, otherwise windows_path.
+    HOST_ROOTS is populated only when windows_path is set.
+    """
+    local_paths: dict[str, str] = {}
+    windows_paths: dict[str, str] = {}
+    for name, val in raw.items():
+        lp = val.get("local_path", "").replace("\\", "/").rstrip("/")
+        wp = val.get("windows_path", "").replace("\\", "/").rstrip("/")
+        local_paths[name] = lp or wp
+        if wp:
+            windows_paths[name] = wp
+    return local_paths, windows_paths
+
+ROOTS, HOST_ROOTS = _parse_roots(_CONFIG.get("roots", {}))
 
 SRC_ROOT: str = ROOTS.get("default") or next(iter(ROOTS.values()), "")
 

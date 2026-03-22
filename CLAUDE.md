@@ -10,9 +10,28 @@ MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/python3 /mnt/
 ```
 
 - `.venv/Scripts/python.exe` is Windows-only and not accessible from Git Bash / Bash tool
-- `~/.local/mcp-venv/` is the MCP client venv — it lacks `typesense` and `pathspec`
 - `~/.local/indexserver-venv/` has everything: `typesense`, `tree_sitter_c_sharp`, `tree_sitter`, `watchdog`, `pathspec`, `pytest`
 - For tests: `MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/pytest /mnt/q/spocore/tscodesearch/tests/ [args]"`
+
+---
+
+## CRITICAL: scripts that run outside Docker must be Node.js
+
+**All scripts invoked from the host (Windows or WSL) must be Node.js — no bash scripts.**
+
+Rationale: Docker mode must have zero WSL dependency. If a script were bash, running it
+in Docker mode would require WSL just to invoke the host-side orchestration. Node.js runs
+natively on Windows, so it works in every context without a WSL bridge.
+
+Rules:
+- Host-side orchestration scripts (test runner, setup, root management, etc.) = `.mjs` / `.js`
+- The same Node.js script is used for both Docker mode and WSL mode, with env/platform
+  detection inside the script for any environment-specific paths or behaviours
+- Bash scripts are only allowed where bash is guaranteed: inside Docker containers or in
+  WSL. All such scripts live in `scripts/` (`entrypoint.sh`, `e2e.sh`, `wsl-setup.sh`).
+  `docker/` contains only Docker config files (`Dockerfile`, `docker-compose.yml`).
+
+When asked to create or modify a host-side script: write Node.js, not bash.
 
 ---
 
@@ -24,7 +43,7 @@ names from the codebase being searched** (type names, method names, property
 names, namespace names, etc.). Always substitute **fictional, generic names**
 (e.g. `Widget`, `IRepository`, `SaveChanges`, `ConnectionString`, `Order`).
 
-This applies everywhere: `query.py` docstrings, `mcp_server.py` tool
+This applies everywhere: `query.py` docstrings, `mcp_server.ts` tool
 descriptions, `CLAUDE.md`, test fixture comments, and any other documentation.
 Using real names leaks implementation details into tool metadata that is
 visible outside this repository.
@@ -36,15 +55,12 @@ Two distinct layers that run in separate processes and venvs:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  MCP CLIENT  (Claude ↔ tools)                               │
-│  mcp_server.py   search.py   query.py   config.py           │
-│  Claude Code VSCode ext → mcp.sh  (WSL)  ← actual in use   │
-│  Manual/CI alternative  → mcp.cmd (Windows)                 │
-│  Venv (WSL):     ~/.local/mcp-venv/bin/python               │
-│  Venv (Windows): codesearch/.venv/Scripts/python.exe        │
-└───────┬────────────────────────┬───────────────────────────┘
-        │  HTTP  localhost:8108  │  HTTP  localhost:PORT+1
-        │  (Typesense search)    │  (indexserver management API)
-┌───────▼────────────────────────▼───────────────────────────┐
+│  mcp_server.js  (Node.js — runs on Windows)                 │
+│  Claude Code → mcp.cmd  → node mcp_server.js               │
+└───────────────────────────┬───────────────────────────────┘
+                            │  HTTP  localhost:PORT+1
+                            │  (indexserver management API)
+┌───────────────────────────▼───────────────────────────────┐
 │  INDEXSERVER  (single process: api.py)                      │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │  api.py  — management HTTP server + thread manager  │   │
@@ -54,7 +70,7 @@ Two distinct layers that run in separate processes and venvs:
 │  └─────────────────────────────────────────────────────┘   │
 │  indexer.py   verifier.py   watcher.py   start_server.py   │
 │  Venv (WSL only): ~/.local/indexserver-venv/               │
-│  Entry: ts.cmd (Windows→WSL bridge) / ts.sh (WSL direct)   │
+│  Entry: ts.mjs (Node.js management CLI)                    │
 └─────────────────────────────────────────────────────────────┘
                          │  data at ~/.local/typesense/
                     Typesense server (Linux binary)
@@ -69,9 +85,9 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 | File | Responsibility |
 |------|---------------|
 | `config.py` | Shared constants: `HOST`, `PORT`, `API_KEY`, `ROOTS`, `COLLECTION`, `INCLUDE_EXTENSIONS`. Reads `config.json`. Provides `get_root(name)` → `(collection, src_path)` and `collection_for_root(name)` → `"codesearch_{name}"`. |
-| `search.py` | HTTP search wrapper. `search(query, ...)` builds params and calls Typesense; `format_results()` prints human-readable output. Used by `mcp_server.py`. |
+| `search.py` | Test utility: direct Typesense HTTP search. `search(query, ...)` builds params and calls Typesense; `format_results()` prints human-readable output. Run from WSL. |
 | `query.py` | Tree-sitter AST query functions (`q_classes`, `q_methods`, `q_fields`, `q_calls`, `q_implements`, `q_uses`, `q_casts`, `q_all_refs`, `q_attrs`, `q_usings`, `q_declarations`, `q_params`, `q_accesses_on`, `q_accesses_of`, `q_text`). `process_file(path, mode, mode_arg, uses_kind, ...)` dispatches to them and prints matches. `files_from_search()` resolves Typesense hits to local file paths. |
-| `mcp_server.py` | FastMCP server. Exposes `search_code`, `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status` tools. Captures stdout with `StringIO`. Supports multi-root via `root=` parameter. |
+| `mcp_server.ts` / `mcp_server.js` | Node.js MCP server (TypeScript source, compiled to JS). Exposes `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `manage_service` tools. Runs on Windows; communicates with the indexserver via HTTP. |
 
 ### Server-side (`indexserver/`)
 
@@ -90,25 +106,21 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 
 | Command | What it does |
 |---------|-------------|
-| `ts.cmd <cmd>` | Windows CMD/PowerShell → WSL bridge. Strips trailing `\` from `%~dp0`, converts with `wslpath -u`, then runs `ts.sh` in WSL. |
-| `ts.sh <cmd>` | WSL / Git Bash entry point. From Git Bash: `MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/path/to/tscodesearch/ts.sh <cmd>`. |
-| `mcp.cmd` | Runs `mcp_server.py` under `.venv/Scripts/python.exe` (Windows). |
-| `mcp.sh` | Runs `mcp_server.py` under `~/.local/mcp-venv/bin/python` (WSL). |
-| `setup_mcp.cmd <src-dir>` | One-time setup: writes `config.json`, creates venvs, registers MCP with Claude Code. |
-| `smoke-test.cmd` | Runs `indexserver/smoke_test.py` via WSL indexserver venv. |
-| `run-server-tests.cmd [filter]` | Runs all tests in `tests/` via WSL indexserver venv + pytest. |
+| `ts.cmd <cmd>` | Thin wrapper: `node ts.mjs %*` |
+| `ts.mjs <cmd>` | Management CLI: start/stop/restart/status/index/verify/log/root/build/setup. Reads `config.json` `mode` field to decide Docker vs WSL. |
+| `mcp.cmd` | Thin wrapper: `node mcp_server.js` (Windows). On Linux/WSL: `node mcp_server.js` directly. |
+| `setup.cmd [--wsl]` | Thin wrapper: checks Node.js 20+, then calls `node setup.mjs`. |
+| `setup.mjs [--wsl]` | Full setup: build MCP server, register with Claude Code, WSL environment (if --wsl), create config.json, start service, install VS Code extension. |
+| `run_tests.cmd [args]` | Thin wrapper: `node run_tests.mjs %*`. |
+| `run_tests.mjs --docker\|--wsl\|--linux` | Full test runner. `--wsl` requires `--destructive`. |
 
 ## Venvs
 
 | Venv | Location | Used by | Packages |
 |------|----------|---------|----------|
-| MCP (WSL) | `~/.local/mcp-venv/` | `mcp.sh` → `mcp_server.py` — **used by Claude Code VSCode ext** | `mcp`, `tree_sitter_c_sharp`, `tree_sitter` |
-| MCP (Windows) | `.venv/` | `mcp.cmd` → `mcp_server.py` — alternative, not used by extension | same as above |
-| Indexserver | `~/.local/indexserver-venv/` | `ts.cmd/ts.sh` → all indexserver modules | `typesense`, `tree_sitter_c_sharp`, `tree_sitter`, `watchdog`, `pathspec`, `pytest` |
+| Indexserver | `~/.local/indexserver-venv/` | all indexserver modules | `typesense`, `tree_sitter_c_sharp`, `tree_sitter`, `watchdog`, `pathspec`, `pytest` |
 
-> **The indexserver and MCP client have separate tree-sitter parsers.** Both parse C# correctly — they just run in different processes. Do not confuse `codesearch.query` (MCP-side) with `codesearch.indexserver.indexer` (indexer-side) when tracing a bug.
-
-> **MCP runs in WSL; CLI can be Windows or WSL.** The Claude Code VSCode extension always launches `mcp.sh`, so `mcp_server.py` runs as a Linux process (`sys.platform == "linux"`). Direct CLI invocations of `query.py` or `search.py` can run under either the Windows venv or the WSL venv. Both are supported — `config.to_native_path()` converts `X:/...` ↔ `/mnt/x/...` based on `sys.platform`.
+> **MCP server is Node.js (`mcp_server.js`), not Python.** `mcp.cmd` (Windows) runs `node mcp_server.js`; on Linux/WSL run it directly. No Python venv is required for the MCP layer.
 
 ## config.json
 
@@ -117,11 +129,14 @@ Shared by both layers. Located at `config.json` in the repo root.
 ```json
 {
   "api_key": "codesearch-local",
+  "mode": "docker",
   "roots": {
     "default": "C:/myproject/src"
   }
 }
 ```
+
+`mode` is `"docker"` (default) or `"wsl"`. Written by `setup.mjs` with an auto-generated API key. Roots use Windows-style paths (`C:/...`) and are added via `ts root --add` or the VS Code extension.
 
 Old single-root format (`"src_root": "..."`) is auto-promoted to `roots.default` in memory — no file change needed to keep it working.
 
@@ -137,7 +152,6 @@ Default root → `codesearch_default`. Both `config.py` files compute this ident
 
 | Goal | Tool |
 |------|------|
-| Find which files mention a symbol (file-level, fast) | `search_code` |
 | Get exact line-level results across the codebase | `query_codebase` |
 | Inspect or enumerate contents of one specific file | `query_single_file` |
 
@@ -163,8 +177,8 @@ Default root → `codesearch_default`. Both `config.py` files compute this ident
 
 ## Typesense schema — search mode mapping
 
-| `search_code` mode | `query_by` field(s) | What it finds |
-|--------------------|---------------------|---------------|
+| `query_codebase` mode | `query_by` field(s) | What it finds |
+|-----------------------|---------------------|---------------|
 | `text` (default) | `filename`, `class/method_names`, `content` | Broad keyword search |
 | `declarations` | `method_sigs`, `method_names`, `filename` | Methods/types whose signature contains the query [T1] |
 | `implements` | `base_types`, `class_names`, `filename` | Files where a type inherits/implements the query [T1] |
@@ -223,11 +237,9 @@ T2 fields (`type_refs`, `attributes`, `usings`) are broader and may have minor f
 74 tests covering all 15 `query_cs` modes. **No Typesense required** — calls query functions directly against `tests/query_fixture.cs` (a synthetic C# file with no project-specific references).
 
 ```bash
-# Quick run via helper script (creates /tmp/ts-test-venv if needed):
-bash test-query.sh
-
-# Or directly:
-/tmp/ts-test-venv/bin/pytest tests/test_query_cs.py -v
+node run_tests.mjs --wsl --destructive tests/test_query_cs.py
+# or directly in WSL:
+~/.local/indexserver-venv/bin/pytest tests/test_query_cs.py -v
 ```
 
 The venv at `/tmp/ts-test-venv` only needs `tree-sitter`, `tree-sitter-c-sharp`, and `pytest` — it is independent of the MCP and indexserver venvs.
@@ -236,28 +248,32 @@ The venv at `/tmp/ts-test-venv` only needs `tree-sitter`, `tree-sitter-c-sharp`,
 
 Tests are split into thematic files. Some require Typesense running (`ts start`); others run standalone.
 
-**From the Claude Code Bash tool** (the correct way — avoids path-conversion problems):
+**From the Claude Code Bash tool** (the correct way — Windows Node.js, no `wsl.exe node`):
 ```bash
-# All tests
-MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/<drive>/path/to/tscodesearch/run_tests.sh
+# WSL mode (Windows host, pytest runs in WSL)
+node run_tests.mjs --wsl --destructive
 
 # Filter by test name or class
-MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/<drive>/path/to/tscodesearch/run_tests.sh -k TestQCasts
+node run_tests.mjs --wsl --destructive -k TestQCasts
 
 # Single file
-MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/<drive>/path/to/tscodesearch/run_tests.sh tests/test_mode_casts.py
-```
+node run_tests.mjs --wsl --destructive tests/test_mode_casts.py
 
-From WSL directly:
-```bash
-bash /mnt/<drive>/path/to/tscodesearch/run_tests.sh
-bash /mnt/<drive>/path/to/tscodesearch/run_tests.sh -k TestVerifier
+# Docker mode
+node run_tests.mjs --docker
 ```
 
 From Windows CMD/PowerShell:
 ```
-run-server-tests.cmd
-run-server-tests.cmd TestVerifier
+node run_tests.mjs --wsl --destructive
+node run_tests.mjs --wsl --destructive -k TestVerifier
+node run_tests.mjs --docker
+```
+
+From Linux / CI:
+```
+node run_tests.mjs --linux
+node run_tests.mjs --linux -k TestVerifier
 ```
 
 | File | Class | Server needed | Tests |
@@ -282,10 +298,10 @@ run-server-tests.cmd TestVerifier
 
 ## Common gotchas
 
-**MCP server runs in WSL — file paths must be `/mnt/x/...` inside the process.** `config.json` stores roots as Windows paths (`X:/...`) because `setup_mcp.cmd` writes them from Windows. At runtime, `config.to_native_path()` converts them to the platform-native format: `/mnt/x/...` on Linux, `X:/...` on Windows. If you add any new code that constructs file paths from `SRC_ROOT`, wrap it with `to_native_path()`. This is the root cause of why `files=` glob and `files_from_search()` failed silently before the fix — they produced `c:/myproject/src/...` paths which don't exist in WSL.
+**MCP server runs in WSL — file paths must be `/mnt/x/...` inside the process.** `config.json` stores roots as Windows paths (`X:/...`). At runtime, `config.to_native_path()` converts them to the platform-native format: `/mnt/x/...` on Linux, `X:/...` on Windows. If you add any new code that constructs file paths from `SRC_ROOT`, wrap it with `to_native_path()`. This is the root cause of why `files=` glob and `files_from_search()` failed silently before the fix — they produced `c:/myproject/src/...` paths which don't exist in WSL.
 
 **Two `config.py` files that look identical but serve different roles:**
-- `codesearch/config.py` — imported by MCP client (`search.py`, `query.py`, `mcp_server.py`)
+- `codesearch/config.py` — imported by Python CLI tools (`search.py`, `query.py`)
 - `codesearch/indexserver/config.py` — imported by all indexserver modules
 
 Both read the same `codesearch/config.json`. If you update config logic, update both.
@@ -296,23 +312,14 @@ Both read the same `codesearch/config.json`. If you update config logic, update 
 
 **Windows file system watcher lives in the VS Code extension (`vscode-codesearch/src/watcher.ts`), not in the indexserver.** When VS Code is open, `FileWatcher` calls `POST /watcher/pause` to stop the indexserver's `PollingObserver`, then uses VS Code's native `createFileSystemWatcher` (backed by `ReadDirectoryChangesW`) to detect changes and forward batched events to `POST /file-events`. On extension deactivation it calls `POST /watcher/resume` to hand back to the `PollingObserver`. Only Windows-style drive paths (`C:/…`) are watched this way; native Linux/WSL paths stay with the `PollingObserver`.
 
-**stdout capture in mcp_server.py.** `format_results()` and `process_file()` print to stdout. `mcp_server.py` captures with `StringIO`. Don't refactor these to return strings — the CLI entry points in `query.py` depend on the print-based interface.
+**stdout capture in mcp_server.js.** `format_results()` and `process_file()` in Python print to stdout; `mcp_server.js` captures that output by spawning the Python helpers as subprocesses. Don't refactor the Python side to return strings — the CLI entry points in `query.py` depend on the print-based interface.
 
 **PID files live in WSL.** `~/.local/typesense/typesense.pid` (Typesense server) and `~/.local/typesense/api.pid` (indexserver — watcher + heartbeat + verifier threads). `~/.local/typesense/indexer.pid` is shared by `ts index` (subprocess) and the verifier thread (written by `api.py`). They are not in the Windows repo directory. `service.py` uses `os.kill(pid, 0)` (WSL-native) to check liveness.
 
-**cmd→WSL path conversion: never pass a trailing backslash to wslpath.** `%~dp0` always ends with `\`, so `wsl wslpath -u "%~dp0"` produces `"C:\path\"` where the `\"` is parsed by CommandLineToArgvW as an escaped quote, leaving the string unclosed. Always strip the trailing backslash first:
-```cmd
-set "_WIN=%~dp0"
-for /f "usebackq tokens=*" %%W in (`wsl wslpath -u "%_WIN:~0,-1%"`) do set "_WSLDIR=%%W/"
-```
-The explicit `%%W/` re-adds the trailing slash after wslpath (which strips it).
+**`entrypoint.sh --background` vs `--background --disown`.** `--background` alone starts daemons and exits but the processes remain session-attached — when the WSL session ends, they die. This is intentional for tests: clean teardown with no leftover processes. `--background --disown` additionally calls `disown` so the processes survive the WSL session ending. Used by `ts start` and `setup.mjs` for production use.
 
-**Shell script `$REPO` is relative to the script's own location.** `ts.sh` sets `REPO=$(cd "$(dirname "$0")" && pwd)` — do not prepend the repo directory name again when building paths to `indexserver/service.py`.
+**`scripts/` vs `docker/`.** `docker/` contains only `Dockerfile` and `docker-compose.yml`. All shell scripts (`entrypoint.sh`, `e2e.sh`, `wsl-setup.sh`) live in `scripts/`. Python files in `indexserver/` reference `scripts/entrypoint.sh`.
 
-**Running `ts.sh` from the Claude Code Bash tool (Git Bash).** The Bash tool runs in Git Bash, which automatically converts `/mnt/<drive>/...` paths to Windows paths before passing them to `wsl.exe`. This breaks WSL invocation. Always use:
-```bash
-MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/path/to/tscodesearch/ts.sh <cmd>
-```
-`MSYS_NO_PATHCONV=1` disables Git Bash path conversion for that command. `ts.cmd` cannot be invoked from the Bash tool (it requires Windows cmd.exe).
+**Running tests from the Claude Code Bash tool.** Run `node run_tests.mjs` directly (Windows Node.js), not `wsl.exe node`. The Bash tool runs in Git Bash on Windows, so `node` resolves to the Windows Node.js binary, which is the correct one to use. `wsl.exe node` would look for Node.js inside WSL, which may not be installed.
 
 **Line endings: `.sh` files must stay LF.** `.gitattributes` enforces `eol=lf` for `*.sh`, `Dockerfile`, and `*.py`/`*.json`/`*.toml`, and `eol=crlf` for `*.cmd`/`*.bat`. If you ever see a shell script fail with `\r: command not found`, the file has CRLF endings — fix with `git add --renormalize .` (use `-c core.safecrlf=false` if git refuses due to existing mixed-ending files).

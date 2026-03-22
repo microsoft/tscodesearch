@@ -1,14 +1,15 @@
-# Dockerfile for codesearch MCP server
+# Dockerfile for codesearch indexserver
 #
 # Builds a container that runs:
-#   - Typesense server (full-text search)
-#   - File watcher (incremental index updates)
-#   - MCP server (SSE/HTTP interface for Claude)
+#   - Typesense server    (full-text search, port 8108)
+#   - Indexserver API     (management + watcher + verifier, port 8109)
+#
+# The MCP server runs on the host as a Node.js process (mcp_server.js).
 #
 # Usage:
 #   docker build -t codesearch-mcp -f docker/Dockerfile .
 #   docker run -d --rm \
-#       -p 3000:3000 \
+#       -p 8109:8109 \
 #       -v /path/to/source:/source:ro \
 #       -v codesearch_data:/typesensedata \
 #       codesearch-mcp
@@ -38,37 +39,33 @@ RUN mkdir -p ${TYPESENSE_DIR} && \
 
 # Python dependencies
 RUN pip install --no-cache-dir \
-    mcp \
     tree-sitter \
     tree-sitter-c-sharp \
     tree-sitter-python \
     typesense \
     watchdog \
     pathspec \
-    uvicorn
+    pytest
 
 # Copy application code
-# Note: Build context should be the codesearch directory
-COPY . /app/codesearch/
+COPY . /app/
 
-# Copy and set up entrypoint (convert CRLF to LF for Windows compatibility)
-COPY docker/entrypoint.sh /entrypoint.sh
-RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+# Copy and set up entrypoint + e2e helper (convert CRLF to LF for Windows compatibility)
+COPY scripts/entrypoint.sh /entrypoint.sh
+COPY scripts/e2e.sh /app/scripts/e2e.sh
+RUN sed -i 's/\r$//' /entrypoint.sh /app/scripts/e2e.sh \
+    && chmod +x /entrypoint.sh /app/scripts/e2e.sh
 
 # Create required directories
 RUN mkdir -p ${TYPESENSE_DATA} /source
 
-# Default environment variables
+# Default environment variables (no secrets — api key is generated at runtime or passed via config mount)
 ENV CODESEARCH_PORT=8108
 ENV CODESEARCH_ROOT_NAME=default
-ENV CODESEARCH_API_KEY=""
-ENV MCP_PORT=3000
-
 # Volume mount points
-VOLUME ["/source", "/typesensedata"]
+VOLUME ["/typesensedata"]
 
-# Expose MCP SSE port and management API port
-EXPOSE 3000
+# Expose management API port (Typesense is internal-only)
 EXPOSE 8109
 
 ENTRYPOINT ["/entrypoint.sh"]

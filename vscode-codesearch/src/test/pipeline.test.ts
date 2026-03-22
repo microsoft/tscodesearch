@@ -102,18 +102,18 @@ before(async () => {
     cfg = loaded.config;
     rootPath = loaded.rootPath;
     const port = cfg.port ?? 8108;
-    const apiKey = cfg.api_key ?? 'codesearch-local';
-    serverAvailable = await serverIsUp(port, apiKey);
-    if (serverAvailable) { astAvailable = await queryApiIsUp(port); }
+    // Check the indexserver management API (port+1) — Typesense is internal-only.
+    serverAvailable = await queryApiIsUp(port);
+    if (serverAvailable) { astAvailable = true; }
 });
 
 function skipIfNoServer(t: { skip(msg?: string): void }): boolean {
-    if (!serverAvailable) { t.skip('Typesense not running — run: ts start'); return true; }
+    if (!serverAvailable) { t.skip('Indexserver not running — run: ts start'); return true; }
     return false;
 }
 
 function skipIfNoLiveParams(t: { skip(msg?: string): void }): boolean {
-    if (!serverAvailable) { t.skip('Typesense not running — run: ts start'); return true; }
+    if (!serverAvailable) { t.skip('Indexserver not running — run: ts start'); return true; }
     if (!LIVE_QUERY) { t.skip('CS_QUERY not set — set CS_QUERY=<symbol> to run live tests'); return true; }
     return false;
 }

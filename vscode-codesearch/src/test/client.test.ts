@@ -80,9 +80,9 @@ before(
 
 after(() => new Promise<void>((resolve) => mockServer.close(() => resolve())));
 
-// doQueryCodebase uses (config.port ?? 8108) + 1, so set port = mockPort - 1
+// doQueryCodebase uses config.port + 1, so set port = mockPort - 1
 function makeCfg(): CodesearchConfig {
-    return { api_key: 'test-key', port: mockPort - 1, src_root: 'C:/src' };
+    return { api_key: 'test-key', port: mockPort - 1, mode: 'wsl', roots: { default: { windows_path: 'C:/src' } } };
 }
 
 beforeEach(() => {
@@ -97,26 +97,19 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('loadConfig', () => {
-    it('reads legacy src_root format', () => {
-        const p = writeTempConfig({ src_root: 'C:/myproject/src', api_key: 'test-key' });
+    it('reads config', () => {
+        const p = writeTempConfig({ api_key: 'mk', port: 8108, mode: 'wsl', roots: { default: { windows_path: 'C:/src' } } });
         const cfg = loadConfig(p);
-        assert.equal(cfg.api_key, 'test-key');
-        assert.equal(cfg.src_root, 'C:/myproject/src');
+        assert.equal(cfg.api_key, 'mk');
+        assert.equal(cfg.port, 8108);
+        assert.equal(cfg.mode, 'wsl');
+        assert.deepEqual(cfg.roots, { default: { windows_path: 'C:/src' } });
     });
 
-    it('reads multi-root format', () => {
-        const p = writeTempConfig({
-            api_key: 'mk',
-            roots: { default: 'C:/src', other: 'C:/other' },
-        });
+    it('reads multiple roots', () => {
+        const p = writeTempConfig({ api_key: 'mk', port: 8108, mode: 'docker', roots: { default: { windows_path: 'C:/src' }, other: { windows_path: 'C:/other' } } });
         const cfg = loadConfig(p);
-        assert.deepEqual(cfg.roots, { default: 'C:/src', other: 'C:/other' });
-    });
-
-    it('reads port field', () => {
-        const p = writeTempConfig({ api_key: 'x', src_root: 'C:/s', port: 9000 });
-        const cfg = loadConfig(p);
-        assert.equal(cfg.port, 9000);
+        assert.deepEqual(cfg.roots, { default: { windows_path: 'C:/src' }, other: { windows_path: 'C:/other' } });
     });
 
     it('throws on missing file', () => {
@@ -136,27 +129,13 @@ describe('loadConfig', () => {
 // ---------------------------------------------------------------------------
 
 describe('getRoots', () => {
-    it('returns roots map from multi-root config', () => {
-        const cfg: CodesearchConfig = { api_key: 'x', roots: { default: 'C:/src', foo: 'C:/foo' } };
+    it('returns the roots map', () => {
+        const cfg: CodesearchConfig = { api_key: 'x', port: 8108, mode: 'wsl', roots: { default: { windows_path: 'C:/src' }, foo: { windows_path: 'C:/foo' } } };
         assert.deepEqual(getRoots(cfg), { default: 'C:/src', foo: 'C:/foo' });
     });
 
-    it('promotes legacy src_root to default key', () => {
-        const cfg: CodesearchConfig = { api_key: 'x', src_root: 'C:/src' };
-        assert.deepEqual(getRoots(cfg), { default: 'C:/src' });
-    });
-
-    it('prefers roots over src_root when both present', () => {
-        const cfg: CodesearchConfig = {
-            api_key: 'x',
-            src_root: 'C:/legacy',
-            roots: { main: 'C:/main' },
-        };
-        assert.deepEqual(getRoots(cfg), { main: 'C:/main' });
-    });
-
-    it('returns empty object when neither present', () => {
-        const cfg: CodesearchConfig = { api_key: 'x' };
+    it('returns empty object for no roots', () => {
+        const cfg: CodesearchConfig = { api_key: 'x', port: 8108, mode: 'docker', roots: {} };
         assert.deepEqual(getRoots(cfg), {});
     });
 });
@@ -415,7 +394,7 @@ describe('doQueryCodebase', () => {
     });
 
     it('rejects when server is unreachable', async () => {
-        const cfg: CodesearchConfig = { api_key: 'k', port: 1, src_root: 'C:/src' };
+        const cfg: CodesearchConfig = { api_key: 'k', port: 1, mode: 'wsl', roots: { default: { windows_path: 'C:/src' } } };
         await assert.rejects(() => doQueryCodebase(cfg, 'x', 'uses', '', '', '', 10));
     });
 });

@@ -94,15 +94,6 @@ install_venvs() {
         || die "Python 3.10+ is required (found: $(python3 --version 2>&1))"
     log "Found: $(python3 --version 2>&1)"
 
-    # MCP venv (~/.local/mcp-venv)
-    if [ ! -f "$HOME/.local/mcp-venv/bin/python" ]; then
-        log "Creating mcp-venv..."
-        python3 -m venv "$HOME/.local/mcp-venv"
-    fi
-    log "Updating mcp-venv packages..."
-    "$HOME/.local/mcp-venv/bin/pip" install --quiet --upgrade \
-        mcp tree-sitter tree-sitter-c-sharp typesense
-
     # Indexserver venv (~/.local/indexserver-venv)
     if [ ! -f "$HOME/.local/indexserver-venv/bin/python" ]; then
         log "Creating indexserver-venv..."

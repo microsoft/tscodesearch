@@ -29,6 +29,13 @@ from indexserver.indexer import build_document, file_id as _file_id
 MTIME_DELETE = None
 
 
+class _Fence:
+    """Sentinel inserted into the queue. When the worker reaches it (after draining
+    all preceding items), it fires the callback."""
+    __slots__ = ("callback",)
+    def __init__(self, cb): self.callback = cb
+
+
 class IndexQueue:
     """Thread-safe, deduplicating batching queue for Typesense index writes."""
 
@@ -50,6 +57,8 @@ class IndexQueue:
         self._n_deleted   = 0
         self._n_skipped   = 0
         self._n_errors    = 0
+        # collection → Windows host root (empty string = no host path prefix)
+        self._host_roots: dict[str, str] = {}
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -71,6 +80,14 @@ class IndexQueue:
             self._thread.join(timeout=timeout)
 
     # ── public interface ──────────────────────────────────────────────────────
+
+    def register_host_root(self, collection: str, host_root: str) -> None:
+        """Register the Windows host root for a collection.
+
+        When set, build_document stores the full host path (e.g.
+        C:/repos/src/Foo.cs) in relative_path instead of just Foo.cs.
+        """
+        self._host_roots[collection] = host_root.replace("\\", "/").rstrip("/")
 
     def enqueue(
         self,
@@ -128,6 +145,18 @@ class IndexQueue:
                 n_dedup += 1
         return n_new, n_dedup
 
+    def fence(self, callback) -> None:
+        """Insert a completion fence.
+
+        The callback fires after all items currently in the queue (at the time
+        fence() is called) have been flushed to Typesense. Items enqueued after
+        this call are unaffected — they will be processed after the fence fires.
+        """
+        with self._cond:
+            key = ("__fence__", object())   # unique key per fence
+            self._items[key] = _Fence(callback)
+            self._cond.notify()
+
     @property
     def depth(self) -> int:
         """Number of items currently waiting in the queue."""
@@ -153,7 +182,20 @@ class IndexQueue:
         while not self._stop.is_set():
             batch = self._take()
             if batch:
-                self._flush(batch)
+                regular: list = []
+                for item in batch:
+                    if isinstance(item, _Fence):
+                        if regular:
+                            self._flush(regular)
+                            regular = []
+                        try:
+                            item.callback()
+                        except Exception as e:
+                            print(f"[index-queue] fence callback error: {e}", flush=True)
+                    else:
+                        regular.append(item)
+                if regular:
+                    self._flush(regular)
             else:
                 with self._cond:
                     if not self._items and not self._stop.is_set():
@@ -175,8 +217,10 @@ class IndexQueue:
         n_skipped = 0
 
         for full_path, rel, collection, action, mtime in batch:
+            host_root = self._host_roots.get(collection, "")
+            stored_id = _file_id((host_root + "/" + rel) if host_root else rel)
             if action == "delete":
-                deletes.setdefault(collection, []).append(_file_id(rel))
+                deletes.setdefault(collection, []).append(stored_id)
             else:
                 try:
                     stat = os.stat(full_path)
@@ -187,14 +231,14 @@ class IndexQueue:
                     # Skip upsert if file hasn't changed since it was last indexed.
                     if mtime is not None and current_mtime == mtime:
                         try:
-                            stored = self._client.collections[collection].documents[_file_id(rel)].retrieve()
+                            stored = self._client.collections[collection].documents[stored_id].retrieve()
                             if stored.get("mtime") == mtime:
                                 n_skipped += 1
                                 continue
                         except Exception:
                             pass  # doc absent or fetch failed — proceed with upsert
 
-                    doc = build_document(full_path, rel)
+                    doc = build_document(full_path, rel, host_root=host_root)
                     if doc:
                         upserts.setdefault(collection, []).append(doc)
                 except OSError:

@@ -42,7 +42,7 @@ from indexserver.config import (
 )
 from indexserver.indexer import (
     walk_source_files, file_id, _to_native_path,
-    get_client, index_file_list,
+    get_client, ensure_collection, index_file_list,
 )
 
 # ── runtime paths ──────────────────────────────────────────────────────────────
@@ -192,22 +192,38 @@ def check_ready(src_root: str | None = None,
 
 def run_verify(src_root: str | None = None,
                collection: str | None = None,
+               queue=None,
                delete_orphans: bool = True,
-               stop_event=None) -> None:
+               resethard: bool = False,
+               stop_event=None,
+               on_complete=None) -> None:
     """Collect the diff, then run the shared batch-upsert pipeline.
 
     Args:
         src_root:       Source root to scan (default: from config).
         collection:     Typesense collection name (default: from config).
+        queue:          IndexQueue to use for async writes. When provided,
+                        upserts are enqueued and the function returns before
+                        they are flushed. A fence is placed so on_complete
+                        fires after all enqueued items reach Typesense.
+                        When None, index_file_list() is called synchronously
+                        (backward-compat for CLI and tests).
         delete_orphans: Remove index entries for files no longer on disk.
+        resethard:      Drop and recreate the collection before syncing.
         stop_event:     Optional threading.Event; when set the verifier
                         stops cleanly at the next checkpoint and marks
                         progress status as 'cancelled'.
+        on_complete:    Called after all work is written to Typesense.
+                        With queue: fires via fence (async).
+                        Without queue: called directly before returning.
     """
     src_root  = _to_native_path(src_root or SRC_ROOT)
     coll_name = collection or COLLECTION
 
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
+
+    client = get_client()
+    ensure_collection(client, resethard=resethard, collection=coll_name)
 
     progress: dict = {
         "status":          "running",
@@ -316,7 +332,7 @@ def run_verify(src_root: str | None = None,
         print("[verifier] Index is already up to date.", flush=True)
         return
 
-    # ── Phase 2: batch-upsert via shared pipeline ─────────────────────────────
+    # ── Phase 2: upsert changed/missing files ────────────────────────────────
     print(
         f"[verifier] Phase 2/2: indexing {len(to_update):,} changed/missing files…",
         flush=True,
@@ -324,72 +340,122 @@ def run_verify(src_root: str | None = None,
     progress["phase"] = "updating index"
     _write_progress(progress)
 
-    last_print = time.time()
-    total_to_update = len(to_update)
+    if queue is not None:
+        # Async path: enqueue all upserts, delete orphans synchronously, then
+        # place a fence so on_complete fires after all enqueued items are flushed.
+        queue.enqueue_bulk(
+            ((full_path, rel) for full_path, rel in to_update),
+            collection=coll_name,
+            stop_event=stop_event,
+        )
 
-    def _on_progress(n_indexed: int, n_errors: int) -> None:
-        progress["updated"]     = n_indexed
-        progress["errors"]      = n_errors
+        if stop_event and stop_event.is_set():
+            progress["status"]      = "cancelled"
+            progress["phase"]       = "cancelled"
+            progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            _write_progress(progress)
+            print("[verifier] Cancelled during enqueue.", flush=True)
+            return
+
+        if delete_orphans and orphaned_ids:
+            print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries…", flush=True)
+            progress["phase"] = "removing orphans"
+            _write_progress(progress)
+            for doc_id in orphaned_ids:
+                try:
+                    client.collections[coll_name].documents[doc_id].delete()
+                    progress["deleted"] += 1
+                except Exception:
+                    pass
+
+        progress["status"]      = "queued"
+        progress["phase"]       = f"queued ({len(to_update):,} files in index queue)"
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         _write_progress(progress)
-        nonlocal last_print
-        now = time.time()
-        if now - last_print >= 15:
-            pct = n_indexed * 100 // total_to_update if total_to_update else 100
-            print(
-                f"[verifier]   [{_fmt_time(now - t0)}] "
-                f"{n_indexed:,}/{total_to_update:,} ({pct}%)  "
-                f"errors={n_errors}",
-                flush=True,
-            )
-            last_print = now
-
-    client = get_client()
-    total_indexed, total_errors = index_file_list(
-        client, to_update, coll_name,
-        batch_size=BATCH_SIZE,
-        on_progress=_on_progress,
-        stop_event=stop_event,
-    )
-    progress["updated"] = total_indexed
-    progress["errors"]  = total_errors
-
-    # Phase 2b: remove orphaned entries (skip if cancelled during upsert)
-    if stop_event and stop_event.is_set():
-        progress["status"]      = "cancelled"
-        progress["phase"]       = "cancelled"
-        progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        _write_progress(progress)
-        print("[verifier] Cancelled during upsert.", flush=True)
-        return
-
-    if delete_orphans and orphaned_ids:
         print(
-            f"[verifier]   removing {len(orphaned_ids)} orphaned entries…",
+            f"[verifier] Enqueued {len(to_update):,} files. "
+            f"deleted={progress['deleted']}  "
+            f"(completion fires when queue drains)",
             flush=True,
         )
-        progress["phase"] = "removing orphans"
+
+        if on_complete:
+            def _fence_cb(prog=progress, t=t0, n=len(to_update), d=progress["deleted"]):
+                prog["status"]      = "complete"
+                prog["phase"]       = "done"
+                prog["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                _write_progress(prog)
+                print(
+                    f"[verifier] Done in {_fmt_time(time.time() - t)}. "
+                    f"enqueued={n}  deleted={d}",
+                    flush=True,
+                )
+                on_complete()
+            queue.fence(_fence_cb)
+
+    else:
+        # Sync path (backward compat for CLI and unit tests).
+        last_print = time.time()
+        total_to_update = len(to_update)
+
+        def _on_progress(n_indexed: int, n_errors: int) -> None:
+            progress["updated"]     = n_indexed
+            progress["errors"]      = n_errors
+            progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            _write_progress(progress)
+            nonlocal last_print
+            now = time.time()
+            if now - last_print >= 15:
+                pct = n_indexed * 100 // total_to_update if total_to_update else 100
+                print(
+                    f"[verifier]   [{_fmt_time(now - t0)}] "
+                    f"{n_indexed:,}/{total_to_update:,} ({pct}%)  "
+                    f"errors={n_errors}",
+                    flush=True,
+                )
+                last_print = now
+
+        total_indexed, total_errors = index_file_list(
+            client, to_update, coll_name,
+            batch_size=BATCH_SIZE,
+            on_progress=_on_progress,
+            stop_event=stop_event,
+        )
+        progress["updated"] = total_indexed
+        progress["errors"]  = total_errors
+
+        if stop_event and stop_event.is_set():
+            progress["status"]      = "cancelled"
+            progress["phase"]       = "cancelled"
+            progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            _write_progress(progress)
+            print("[verifier] Cancelled during upsert.", flush=True)
+            return
+
+        if delete_orphans and orphaned_ids:
+            print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries…", flush=True)
+            progress["phase"] = "removing orphans"
+            _write_progress(progress)
+            for doc_id in orphaned_ids:
+                try:
+                    client.collections[coll_name].documents[doc_id].delete()
+                    progress["deleted"] += 1
+                except Exception:
+                    pass
+
+        elapsed = _fmt_time(time.time() - t0)
+        progress["status"]      = "complete"
+        progress["phase"]       = "done"
+        progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         _write_progress(progress)
-        for doc_id in orphaned_ids:
-            try:
-                client.collections[coll_name].documents[doc_id].delete()
-                progress["deleted"] += 1
-            except Exception:
-                pass
-
-    # ── Done ──────────────────────────────────────────────────────────────────
-    elapsed = _fmt_time(time.time() - t0)
-    progress["status"]      = "complete"
-    progress["phase"]       = "done"
-    progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-    _write_progress(progress)
-
-    print(
-        f"[verifier] Done in {elapsed}. "
-        f"updated={total_indexed}  deleted={progress['deleted']}  "
-        f"errors={total_errors}",
-        flush=True,
-    )
+        print(
+            f"[verifier] Done in {elapsed}. "
+            f"updated={total_indexed}  deleted={progress['deleted']}  "
+            f"errors={total_errors}",
+            flush=True,
+        )
+        if on_complete:
+            on_complete()
 
 
 # ── entry point ────────────────────────────────────────────────────────────────

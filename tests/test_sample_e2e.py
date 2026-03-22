@@ -1,24 +1,18 @@
 """
 End-to-end integration tests using the checked-in sample/ directory.
 
-Run via run_tests.sh (auto-starts Typesense if needed):
+Each test class calls run_index() in setUpClass to create a fresh collection
+from sample/root1 or sample/root2, then deletes it in tearDownClass.  This
+works in both native WSL mode (sample/ on the host) and Docker mode (sample/
+is at /app/sample/ inside the container via COPY . /app/).
+
+Run natively (auto-starts Typesense if needed):
     MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/c/.../run_tests.sh tests/test_sample_e2e.py
 
-Run in Docker mode (builds container, indexes sample/, tears down after):
+Run in Docker mode:
     MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/c/.../run_tests.sh --docker
 
-These tests do NOT skip — if Typesense is unreachable the suite fails loudly,
-which makes misconfiguration obvious rather than silently green.
-
-Modes
-─────
-  Native  run_index() is called directly; two fresh collections are created
-          from sample/root1 and sample/root2, then deleted after the suite.
-
-  Docker  run_tests.sh --docker starts the container and sets:
-              CODESEARCH_TEST_PORT  host-mapped Typesense port
-              CODESEARCH_TEST_KEY   api key
-          The container has already indexed the sample dirs; tests only query.
+These tests do NOT skip — if Typesense is unreachable the suite fails loudly.
 
 sample/ layout
 ──────────────
@@ -45,19 +39,14 @@ if _root not in sys.path:
 SAMPLE_ROOT1 = os.path.join(_root, "sample", "root1")
 SAMPLE_ROOT2 = os.path.join(_root, "sample", "root2")
 
-# ── Connection config (native vs Docker) ─────────────────────────────────────
+_CONFIG_PATH = os.path.join(_root, "config.json")
 
-_DOCKER_MODE = "CODESEARCH_TEST_PORT" in os.environ
+# ── Connection config ─────────────────────────────────────────────────────────
 
-if _DOCKER_MODE:
-    _HOST = "localhost"
-    _PORT = int(os.environ["CODESEARCH_TEST_PORT"])
-    _KEY  = os.environ.get("CODESEARCH_TEST_KEY", "e2e-test-key")
-else:
-    try:
-        from indexserver.config import HOST as _HOST, PORT as _PORT, API_KEY as _KEY
-    except Exception:
-        _HOST, _PORT, _KEY = "localhost", 8108, "codesearch-local"
+try:
+    from indexserver.config import HOST as _HOST, PORT as _PORT, API_KEY as _KEY
+except Exception:
+    _HOST, _PORT, _KEY = "localhost", 8108, "codesearch-local"
 
 
 def _require_server() -> None:
@@ -69,9 +58,8 @@ def _require_server() -> None:
                 return
     except Exception:
         pass
-    mode = "Docker" if _DOCKER_MODE else "native"
     raise AssertionError(
-        f"Typesense not reachable at {_HOST}:{_PORT} ({mode} mode).\n"
+        f"Typesense not reachable at {_HOST}:{_PORT}.\n"
         f"Start it with: run_tests.sh  (auto-starts)  or  ts start  (WSL direct)"
     )
 
@@ -124,19 +112,14 @@ class TestSampleRoot1E2E(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _require_server()
-        if _DOCKER_MODE:
-            cls.coll = "codesearch_root1"
-        else:
-            from indexserver.indexer import run_index
-            stamp = int(time.time())
-            cls.coll = f"test_e2e_r1_{stamp}"
-            run_index(src_root=SAMPLE_ROOT1, collection=cls.coll,
-                      resethard=True, verbose=False)
-            time.sleep(0.5)
+        from indexserver.indexer import run_index
+        cls.coll = f"test_e2e_r1_{int(time.time())}"
+        run_index(src_root=SAMPLE_ROOT1, collection=cls.coll, resethard=True, verbose=False)
+        time.sleep(0.5)
 
     @classmethod
     def tearDownClass(cls):
-        if not _DOCKER_MODE and hasattr(cls, "coll"):
+        if hasattr(cls, "coll"):
             _delete_collection(cls.coll)
 
     # ── File-level ────────────────────────────────────────────────────────────
@@ -305,19 +288,14 @@ class TestSampleRoot2E2E(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _require_server()
-        if _DOCKER_MODE:
-            cls.coll = "codesearch_root2"
-        else:
-            from indexserver.indexer import run_index
-            stamp = int(time.time())
-            cls.coll = f"test_e2e_r2_{stamp}"
-            run_index(src_root=SAMPLE_ROOT2, collection=cls.coll,
-                      resethard=True, verbose=False)
-            time.sleep(0.5)
+        from indexserver.indexer import run_index
+        cls.coll = f"test_e2e_r2_{int(time.time())}"
+        run_index(src_root=SAMPLE_ROOT2, collection=cls.coll, resethard=True, verbose=False)
+        time.sleep(0.5)
 
     @classmethod
     def tearDownClass(cls):
-        if not _DOCKER_MODE and hasattr(cls, "coll"):
+        if hasattr(cls, "coll"):
             _delete_collection(cls.coll)
 
     # ── File-level ────────────────────────────────────────────────────────────
@@ -468,24 +446,19 @@ class TestSampleMultiRootE2E(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _require_server()
-        if _DOCKER_MODE:
-            cls.coll_r1 = "codesearch_root1"
-            cls.coll_r2 = "codesearch_root2"
-        else:
-            from indexserver.indexer import run_index
-            stamp = int(time.time())
-            cls.coll_r1 = f"test_e2e_mr1_{stamp}"
-            cls.coll_r2 = f"test_e2e_mr2_{stamp}"
-            run_index(src_root=SAMPLE_ROOT1, collection=cls.coll_r1,
-                      resethard=True, verbose=False)
-            run_index(src_root=SAMPLE_ROOT2, collection=cls.coll_r2,
-                      resethard=True, verbose=False)
-            time.sleep(0.5)
+        from indexserver.indexer import run_index
+        stamp = int(time.time())
+        cls.coll_r1 = f"test_e2e_mr1_{stamp}"
+        cls.coll_r2 = f"test_e2e_mr2_{stamp}"
+        run_index(src_root=SAMPLE_ROOT1, collection=cls.coll_r1, resethard=True, verbose=False)
+        run_index(src_root=SAMPLE_ROOT2, collection=cls.coll_r2, resethard=True, verbose=False)
+        time.sleep(0.5)
 
     @classmethod
     def tearDownClass(cls):
-        if not _DOCKER_MODE:
+        if hasattr(cls, "coll_r1"):
             _delete_collection(cls.coll_r1)
+        if hasattr(cls, "coll_r2"):
             _delete_collection(cls.coll_r2)
 
     def test_both_collections_exist(self):
@@ -525,6 +498,91 @@ class TestSampleMultiRootE2E(unittest.TestCase):
         self.assertIsNotNone(info)
         self.assertEqual(info["num_documents"], 4,
             f"root2 expected 4 docs, got {info['num_documents']}")
+
+
+# ── TestPreConfiguredRootsE2E ─────────────────────────────────────────────────
+
+_IN_DOCKER = os.environ.get("CODESEARCH_TEST_DOCKER") == "1"
+
+
+@unittest.skipUnless(_IN_DOCKER, "pre-configured roots: only runs inside Docker (CODESEARCH_TEST_DOCKER=1)")
+class TestPreConfiguredRootsE2E(unittest.TestCase):
+    """E2E: verify collections pre-indexed by the entrypoint from config.json roots.
+
+    run_tests.sh --docker writes config.json with root1 and root2 before starting
+    the container.  The entrypoint indexes those roots on startup.  This class
+    confirms that the right collections exist with the right content — testing
+    the full root-add-from-outside workflow without touching anything from within.
+
+    No setUpClass/tearDownClass: collections are owned by the container lifetime.
+    """
+
+    def _coll(self, name: str) -> str:
+        from indexserver.config import collection_for_root
+        return collection_for_root(name)
+
+    # ── Collection naming ─────────────────────────────────────────────────────
+
+    def test_collection_name_convention(self):
+        """codesearch_{sanitized_name} naming applies to pre-configured roots."""
+        self.assertEqual(self._coll("root1"), "codesearch_root1")
+        self.assertEqual(self._coll("root2"), "codesearch_root2")
+
+    # ── root1 ─────────────────────────────────────────────────────────────────
+
+    def test_root1_collection_exists(self):
+        coll = self._coll("root1")
+        self.assertIsNotNone(_collection_info(coll),
+            f"Collection {coll!r} not found — entrypoint should have indexed root1")
+
+    def test_root1_has_four_files(self):
+        coll = self._coll("root1")
+        info = _collection_info(coll)
+        self.assertIsNotNone(info)
+        self.assertEqual(info["num_documents"], 4,
+            f"Expected 4 docs in {coll!r}, got {info['num_documents']}")
+
+    def test_root1_has_processors_cs(self):
+        self.assertIsNotNone(_get_doc(self._coll("root1"), "Processors.cs"),
+            "Processors.cs not found in pre-configured root1 collection")
+
+    def test_root1_has_datastore_cs(self):
+        self.assertIsNotNone(_get_doc(self._coll("root1"), "DataStore.cs"),
+            "DataStore.cs not found in pre-configured root1 collection")
+
+    # ── root2 ─────────────────────────────────────────────────────────────────
+
+    def test_root2_collection_exists(self):
+        coll = self._coll("root2")
+        self.assertIsNotNone(_collection_info(coll),
+            f"Collection {coll!r} not found — entrypoint should have indexed root2")
+
+    def test_root2_has_four_files(self):
+        coll = self._coll("root2")
+        info = _collection_info(coll)
+        self.assertIsNotNone(info)
+        self.assertEqual(info["num_documents"], 4,
+            f"Expected 4 docs in {coll!r}, got {info['num_documents']}")
+
+    def test_root2_has_widgets_cs(self):
+        self.assertIsNotNone(_get_doc(self._coll("root2"), "Widgets.cs"),
+            "Widgets.cs not found in pre-configured root2 collection")
+
+    def test_root2_has_repositories_cs(self):
+        self.assertIsNotNone(_get_doc(self._coll("root2"), "Repositories.cs"),
+            "Repositories.cs not found in pre-configured root2 collection")
+
+    # ── Isolation ─────────────────────────────────────────────────────────────
+
+    def test_root1_does_not_contain_root2_content(self):
+        hits = _search(self._coll("root1"), "WidgetClient", query_by="class_names,filename")
+        self.assertNotIn("Widgets.cs", [h["filename"] for h in hits],
+            "Widgets.cs must not appear in pre-configured root1 collection")
+
+    def test_root2_does_not_contain_root1_content(self):
+        hits = _search(self._coll("root2"), "TextProcessor", query_by="class_names,filename")
+        self.assertNotIn("Processors.cs", [h["filename"] for h in hits],
+            "Processors.cs must not appear in pre-configured root2 collection")
 
 
 if __name__ == "__main__":

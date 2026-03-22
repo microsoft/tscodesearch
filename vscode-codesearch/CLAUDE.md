@@ -67,7 +67,7 @@ The extension reads `codesearch/config.json` — the same file used by the MCP a
 {
   "api_key": "codesearch-local",
   "port": 8108,
-  "roots": { "default": "C:/myproject/src" }
+  "roots": { "default": { "windows_path": "C:/myproject/src" } }
 }
 ```
 

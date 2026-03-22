@@ -1,12 +1,12 @@
 """
-Manage the Typesense server running in WSL.
+Typesense server utilities for WSL.
 
 The Typesense binary lives at ~/.local/typesense/typesense-server.
 This script runs natively in WSL.
 
 Usage:
-    python start_server.py           -- start the server
     python start_server.py --stop    -- stop the server
+    python start_server.py --install -- download and install the binary
     python start_server.py --log     -- print the info log
     python start_server.py --errlog  -- print the error log
 """
@@ -24,7 +24,7 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-from indexserver.config import API_KEY, PORT, TYPESENSE_VERSION
+from indexserver.config import TYPESENSE_VERSION
 
 _HOME    = Path.home()
 
@@ -33,7 +33,6 @@ _RUN_DIR = Path(os.environ.get("TYPESENSE_DATA", _HOME / ".local" / "typesense")
 _RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 PID_FILE       = _RUN_DIR / "typesense.pid"
-DATA_PATH      = str(_RUN_DIR / "data")
 LOG_PATH       = str(_RUN_DIR / "typesense.log")
 ERROR_LOG_PATH = str(_RUN_DIR / "typesense-error.log")
 
@@ -44,69 +43,6 @@ BIN_PATH = str(_RUN_DIR / "typesense-server")
 
 
 # ── Core operations ────────────────────────────────────────────────────────────
-
-def wait_for_ready(timeout: int = 120) -> bool:
-    """Poll /health until Typesense is ready, streaming relevant log lines as they appear."""
-    import threading
-
-    url      = f"http://localhost:{PORT}/health"
-    deadline = time.time() + timeout
-
-    # Keywords worth surfacing to the user (filter out noisy raft heartbeats)
-    _SHOW = (
-        "CollectionManager::load",
-        "Loading collection",
-        "Loaded ",
-        "Indexed ",
-        "Finished loading",
-        "ERROR",
-        "FATAL",
-    )
-    _SKIP = ("raft_server.cpp:706",)  # periodic heartbeat noise
-
-    log_done = threading.Event()
-
-    def _tail_log():
-        """Read new lines from the log file and print progress ones."""
-        try:
-            with open(ERROR_LOG_PATH, "rb") as f:
-                f.seek(0, 2)  # start at current end
-                while not log_done.wait(0.5):
-                    raw = f.read()
-                    if not raw:
-                        continue
-                    for line in raw.decode("utf-8", errors="replace").splitlines():
-                        if any(s in line for s in _SKIP):
-                            continue
-                        if any(s in line for s in _SHOW):
-                            # Extract just the message part after the log prefix
-                            parts = line.split("] ", 1)
-                            msg = parts[1] if len(parts) > 1 else line
-                            print(f"\n  [{msg.strip()}]", end="", flush=True)
-        except OSError:
-            pass
-
-    t = threading.Thread(target=_tail_log, daemon=True)
-    t.start()
-
-    try:
-        while time.time() < deadline:
-            try:
-                with urllib.request.urlopen(url, timeout=2) as r:
-                    if r.status == 200:
-                        print()
-                        return True
-            except Exception:
-                pass
-            print(".", end="", flush=True)
-            time.sleep(1)
-    finally:
-        log_done.set()
-        t.join(timeout=1)
-
-    print()
-    return False
-
 
 def is_running() -> bool:
     if not PID_FILE.exists():
@@ -119,53 +55,6 @@ def is_running() -> bool:
         return True
     except (OSError, ProcessLookupError):
         return False
-
-
-def start():
-    if is_running():
-        print(f"Typesense is already running on port {PORT}.")
-        return
-
-    # Check for Docker-installed binary first, then fall back to default
-    if _DOCKER_BIN and os.path.isfile(_DOCKER_BIN):
-        bin_path = _DOCKER_BIN
-    else:
-        bin_path = BIN_PATH
-
-    if not os.path.isfile(bin_path) or not os.access(bin_path, os.X_OK):
-        print(f"ERROR: Typesense binary not found at {bin_path}.")
-        print(f"       Run setup_mcp.cmd to install all dependencies.")
-        sys.exit(1)
-
-    os.makedirs(DATA_PATH, exist_ok=True)
-
-    # Launch Typesense directly via Popen — NOT via a shell with capture_output.
-    # Using a shell + capture_output would block forever because bash waits for
-    # its child (Typesense) before exiting, keeping the stdout pipe open.
-    with open(LOG_PATH, "w") as log_out, open(ERROR_LOG_PATH, "w") as log_err:
-        p = subprocess.Popen(
-            [bin_path,
-             f"--data-dir={DATA_PATH}",
-             f"--api-key={API_KEY}",
-             f"--api-port={PORT}",
-             "--enable-cors"],
-            stdout=log_out,
-            stderr=log_err,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-
-    PID_FILE.write_text(str(p.pid))
-    print(f"Typesense started (pid={p.pid}). Waiting for health check", end="")
-
-    _ready_timeout = 120
-    if wait_for_ready(_ready_timeout):
-        print(f" Ready at http://localhost:{PORT}")
-    else:
-        print(f"\nERROR: Typesense did not respond within {_ready_timeout}s. Check logs:")
-        print(f"  cat {LOG_PATH}")
-        print(f"  cat {ERROR_LOG_PATH}")
-        sys.exit(1)
 
 
 def stop():
@@ -272,4 +161,4 @@ if __name__ == "__main__":
     elif args.install:
         install_binary()
     else:
-        start()
+        ap.print_help()

@@ -5,7 +5,7 @@ Combines in one process:
   - HTTP management API   port PORT+1, authenticated with the same API key
   - File watcher          thread: PollingObserver on all configured roots
   - Heartbeat watchdog    thread: checks Typesense health every 30 s
-  - Verifier              on-demand thread: run_verify() started via POST /verify/start
+  - Syncer               on-demand thread: run_verify() via POST /index/start or /verify/start
 
 Started by: ts start
 Stopped by: ts stop (SIGTERM → graceful shutdown of all threads)
@@ -53,12 +53,12 @@ if _base not in sys.path:
 import typesense
 
 from indexserver.config import (
-    API_KEY, API_PORT, PORT, HOST, ROOTS, get_root,
+    API_KEY, API_PORT, PORT, HOST, ROOTS, HOST_ROOTS, get_root,
     INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES,
     to_native_path, collection_for_root, TYPESENSE_CLIENT_CONFIG,
 )
 from indexserver.index_queue import IndexQueue
-from indexserver.indexer import walk_and_enqueue, walk_source_files, ensure_collection, get_client, verify_all_schemas, verify_schema
+from indexserver.indexer import walk_source_files, ensure_collection, get_client, verify_all_schemas, verify_schema
 from indexserver.verifier import check_ready, run_verify
 from indexserver.watcher import run_watcher
 
@@ -73,6 +73,35 @@ _THIS_DIR      = Path(__file__).parent
 _VENV_PY_PATH  = _HOME / ".local" / "indexserver-venv" / "bin" / "python3"
 _VENV_PY       = str(_VENV_PY_PATH) if _VENV_PY_PATH.exists() else sys.executable
 _SERVER_PY     = str(_THIS_DIR / "start_server.py")
+_ENTRYPOINT    = str(_THIS_DIR.parent / "scripts" / "entrypoint.sh")
+
+# ── completion markers ─────────────────────────────────────────────────────────
+# Written to $TYPESENSE_DATA/synced_<collection>.json when a full sync completes.
+# Absence = sync never completed (or was interrupted); triggers auto-sync on startup.
+
+def _marker_path(collection: str) -> Path:
+    return _RUN_DIR / f"synced_{collection}.json"
+
+def _read_marker(collection: str) -> dict | None:
+    p = _marker_path(collection)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return None
+
+def _write_marker(collection: str) -> None:
+    _marker_path(collection).write_text(json.dumps({
+        "collection":   collection,
+        "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }))
+
+def _delete_marker(collection: str) -> None:
+    p = _marker_path(collection)
+    if p.exists():
+        p.unlink()
+
 
 CHECK_INTERVAL = 30    # heartbeat poll interval (seconds)
 FAIL_THRESHOLD = 3     # consecutive failures before restarting Typesense
@@ -82,13 +111,12 @@ _watcher_stop  = threading.Event()
 _watcher_thread: threading.Thread | None = None
 _watcher_lock  = threading.Lock()
 
-_verify_stop   = threading.Event()
-_verify_thread: threading.Thread | None = None
-_verify_lock   = threading.Lock()
-
-_index_thread: threading.Thread | None = None
-_index_lock   = threading.Lock()
-_index_progress: dict = {}   # updated by the in-process indexer thread
+# Unified sync thread — runs verify/index jobs sequentially.
+# Both POST /index/start and POST /verify/start feed this queue.
+_sync_thread:  threading.Thread | None = None
+_sync_lock     = threading.Lock()
+_sync_pending: list = []   # jobs: [{root_name,src_root,collection,resethard,host_root}]
+_sync_stop:    threading.Event | None = None   # stop event for the running job
 
 # Schema validation results cached at startup by verify_all_schemas().
 # Shape: {root_name: {"ok": bool, "warnings": [...], "collection": str}}
@@ -96,6 +124,9 @@ _schema_status: dict = {}
 
 # Typesense client, set in run() and used by /status for live doc counts.
 _ts_client = None
+
+# Last known Typesense health; updated every heartbeat interval.
+_ts_healthy: bool = True
 
 # Set to True by POST /watcher/pause (Windows watcher running — polling not needed).
 # Suppresses heartbeat auto-revival of the watcher thread.
@@ -152,71 +183,55 @@ def _enqueue_file_events(events: list) -> dict:
 
 # ── In-process indexer thread ──────────────────────────────────────────────────
 
-def _run_index_thread(src_root: str, collection: str, resethard: bool, stop_event: threading.Event, root_name: str = "") -> None:
-    """Walk src_root and feed every file into _index_queue (runs as a thread in api.py).
+def _drain_sync_queue() -> None:
+    """Run all pending sync jobs sequentially (the _sync_thread target).
 
-    Retries up to 3 times (with a 15 s delay) if Typesense isn't fully ready
-    yet after a hard reset.  On retry the collection is NOT dropped again —
-    ensure_collection will create it if it doesn't exist.
+    Each job calls run_verify() with the shared IndexQueue. The verifier
+    enqueues upserts, deletes orphans synchronously, then places a fence
+    so the completion marker is written only after all files reach Typesense.
     """
-    global _index_progress, _schema_status
-    _INDEXER_PID.write_text(str(os.getpid()))
-    max_attempts = 3
-    try:
-        for attempt in range(1, max_attempts + 1):
-            try:
-                _index_progress = {
-                    "status":     "starting",
-                    "collection": collection,
-                    "src_root":   src_root,
-                    "attempt":    attempt,
-                }
-                prefix = f"(attempt {attempt}/{max_attempts}) " if attempt > 1 else ""
-                print(f"[indexer] {prefix}Starting {'(resethard) ' if resethard else ''}for {src_root} → {collection}", flush=True)
-                n_new, n_dedup = walk_and_enqueue(
-                    src_root, collection, _index_queue,
-                    resethard=resethard, stop_event=stop_event,
-                )
-                _index_progress = {
-                    "status":     "queued" if not stop_event.is_set() else "stopped",
-                    "collection": collection,
-                    "discovered": n_new + n_dedup,
-                    "deduped":    n_dedup,
-                    "queue_depth": _index_queue.depth,
-                }
-                print(f"[indexer] Walk complete: {n_new} queued, {n_dedup} deduped, queue depth={_index_queue.depth}", flush=True)
+    global _sync_pending, _sync_stop
+    while True:
+        with _sync_lock:
+            if not _sync_pending:
+                break
+            job = _sync_pending.pop(0)
 
-                # Refresh schema status now that the collection exists with the new schema
-                if root_name and _ts_client and not stop_event.is_set():
-                    exists, warnings = verify_schema(_ts_client, collection)
-                    _schema_status[root_name] = {
-                        "ok":                exists and not warnings,
-                        "collection_exists": exists,
-                        "warnings":          warnings,
-                        "collection":        collection,
-                    }
-                    if not exists:
-                        print(f"[indexer] schema MISSING {collection}", flush=True)
-                    elif warnings:
-                        for w in warnings:
-                            print(f"[indexer] schema WARN {collection}: {w}", flush=True)
-                    else:
-                        print(f"[indexer] schema OK {collection}", flush=True)
+        src_root   = job["src_root"]
+        collection = job["collection"]
+        resethard  = job["resethard"]
+        host_root  = job["host_root"]
 
-                break  # success
-            except Exception as e:
-                if attempt < max_attempts and not stop_event.is_set():
-                    print(f"[indexer] ERROR (attempt {attempt}/{max_attempts}): {e} — retrying in 15 s…", flush=True)
-                    stop_event.wait(15)
-                    resethard = False  # collection already dropped on first attempt
-                else:
-                    raise
-    except Exception as e:
-        _index_progress = {"status": "error", "error": str(e)}
-        print(f"[indexer] ERROR: {e}", flush=True)
-    finally:
-        if _INDEXER_PID.exists():
-            _INDEXER_PID.unlink()
+        if resethard:
+            _delete_marker(collection)
+
+        if host_root:
+            _index_queue.register_host_root(collection, host_root)
+
+        stop = threading.Event()
+        _sync_stop = stop
+
+        def on_complete(coll=collection):
+            _write_marker(coll)
+
+        _INDEXER_PID.write_text(str(os.getpid()))
+        try:
+            run_verify(
+                src_root=src_root,
+                collection=collection,
+                queue=_index_queue,
+                delete_orphans=True,
+                resethard=resethard,
+                stop_event=stop,
+                on_complete=on_complete,
+            )
+        except Exception as e:
+            print(f"[syncer] ERROR for {collection}: {e}", flush=True)
+        finally:
+            if _INDEXER_PID.exists():
+                _INDEXER_PID.unlink()
+
+    _sync_stop = None
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -235,7 +250,17 @@ def _restart_typesense() -> None:
     print("[heartbeat] Restarting Typesense server…", flush=True)
     subprocess.run([_VENV_PY, _SERVER_PY, "--stop"], capture_output=True)
     time.sleep(2)
-    result = subprocess.run([_VENV_PY, _SERVER_PY], capture_output=True, text=True)
+    env = os.environ.copy()
+    env.update({
+        "TYPESENSE_DATA":      str(_RUN_DIR),
+        "CONFIG_FILE":         str(_THIS_DIR.parent / "config.json"),
+        "APP_ROOT":            str(_THIS_DIR.parent),
+        "PYTHON3":             _VENV_PY,
+        "PYTHONPATH":          str(_THIS_DIR.parent),
+        "CODESEARCH_API_HOST": "127.0.0.1",
+    })
+    result = subprocess.run(["bash", _ENTRYPOINT, "--background", "--disown"], env=env,
+                            capture_output=True, text=True)
     if result.returncode == 0:
         print("[heartbeat] Server restarted OK.", flush=True)
     else:
@@ -262,6 +287,7 @@ def _start_watcher() -> None:
 # ── heartbeat loop (runs as a thread) ─────────────────────────────────────────
 
 def _heartbeat_loop(stop_event: threading.Event) -> None:
+    global _ts_healthy
     failures = 0
     # Give Typesense a moment to be ready before first check
     if stop_event.wait(10):
@@ -272,8 +298,10 @@ def _heartbeat_loop(stop_event: threading.Event) -> None:
             if failures:
                 print(f"[heartbeat] Server recovered after {failures} failure(s).", flush=True)
             failures = 0
+            _ts_healthy = True
         else:
             failures += 1
+            _ts_healthy = False
             print(f"[heartbeat] Health check failed ({failures}/{FAIL_THRESHOLD}).", flush=True)
             if failures >= FAIL_THRESHOLD:
                 _restart_typesense()
@@ -394,18 +422,18 @@ class _Handler(BaseHTTPRequestHandler):
         return {}
 
     def _handle(self) -> None:
-        global _verify_thread, _verify_stop, _watcher_paused, _index_thread
-
-        if not self._auth():
-            self._send_json(401, {"error": "unauthorized"})
-            return
+        global _sync_thread, _sync_pending, _sync_stop, _watcher_paused
 
         path   = self.path.split("?")[0].rstrip("/")
         method = self.command
 
-        # ── GET /health ───────────────────────────────────────────────────────
+        # ── GET /health  (no auth required) ──────────────────────────────────
         if method == "GET" and path == "/health":
             self._send_json(200, {"ok": True})
+            return
+
+        if not self._auth():
+            self._send_json(401, {"error": "unauthorized"})
             return
 
         # ── GET /status ───────────────────────────────────────────────────────
@@ -428,16 +456,13 @@ class _Handler(BaseHTTPRequestHandler):
                 "queue_depth": _queue_depth,
             }
             result["queue"] = _index_queue.stats()
-            result["indexer"] = {
-                "running":  bool(_index_thread and _index_thread.is_alive()),
-                "progress": _index_progress,
-            }
-            result["verifier"] = {
-                "running": bool(_verify_thread and _verify_thread.is_alive())
+            result["syncer"] = {
+                "running": bool(_sync_thread and _sync_thread.is_alive()),
+                "pending": len(_sync_pending),
             }
             if _PROGRESS_FILE.exists():
                 try:
-                    result["verifier"]["progress"] = json.loads(_PROGRESS_FILE.read_text())
+                    result["syncer"]["progress"] = json.loads(_PROGRESS_FILE.read_text())
                 except Exception:
                     pass
 
@@ -455,14 +480,18 @@ class _Handler(BaseHTTPRequestHandler):
                 # Use the live Typesense retrieve() as the authoritative existence check;
                 # the cached _schema_status may be stale (e.g. collection just created).
                 col_live_exists = ndocs is not None
+                marker = _read_marker(coll)
                 collections[root_name] = {
                     "collection":        coll,
                     "num_documents":     ndocs,
                     "collection_exists": col_live_exists,
                     "schema_ok":         col_live_exists and schema.get("ok", False),
                     "schema_warnings":   schema.get("warnings", []) if col_live_exists else [],
+                    "synced":            marker is not None,
+                    "synced_at":         marker.get("completed_at", "") if marker else "",
                 }
             result["collections"] = collections
+            result["typesense_ok"] = _ts_healthy
 
             self._send_json(200, result)
             return
@@ -479,68 +508,31 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, result)
             return
 
-        # ── POST /verify/start ────────────────────────────────────────────────
+        # ── POST /verify/start  (alias for /index/start without resethard) ────
         if method == "POST" and path == "/verify/start":
-            body   = self._read_body()
-            delete = body.get("delete_orphans", True)
-            try:
-                collection, src_root = get_root(body.get("root", ""))
-            except ValueError as e:
-                self._send_json(400, {"error": str(e)})
-                return
-
-            with _verify_lock:
-                if _verify_thread and _verify_thread.is_alive():
-                    self._send_json(409, {"error": "verify already running"})
-                    return
-
-                _verify_stop = threading.Event()
-
-                def _run():
-                    _INDEXER_PID.write_text(str(os.getpid()))
-                    try:
-                        run_verify(
-                            src_root=src_root,
-                            collection=collection,
-                            delete_orphans=delete,
-                            stop_event=_verify_stop,
-                        )
-                    finally:
-                        if _INDEXER_PID.exists():
-                            _INDEXER_PID.unlink()
-
-                _verify_thread = threading.Thread(
-                    target=_run, name="verifier", daemon=True
-                )
-                _verify_thread.start()
-
-            self._send_json(200, {
-                "started":    True,
-                "collection": collection,
-                "src_root":   src_root,
-            })
-            return
+            path = "/index/start"  # fall through; resethard defaults to False
 
         # ── GET /verify/status ────────────────────────────────────────────────
         if method == "GET" and path == "/verify/status":
             if not _PROGRESS_FILE.exists():
-                self._send_json(404, {"error": "no verify scan has been run"})
+                self._send_json(404, {"error": "no sync has been run yet"})
                 return
             try:
                 data = json.loads(_PROGRESS_FILE.read_text())
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
                 return
-            data["running"] = bool(_verify_thread and _verify_thread.is_alive())
+            data["running"] = bool(_sync_thread and _sync_thread.is_alive())
             self._send_json(200, data)
             return
 
-        # ── POST /verify/stop ─────────────────────────────────────────────────
+        # ── POST /verify/stop  (alias for /index/stop) ────────────────────────
         if method == "POST" and path == "/verify/stop":
-            if not (_verify_thread and _verify_thread.is_alive()):
-                self._send_json(404, {"error": "no verify job is running"})
+            if not (_sync_thread and _sync_thread.is_alive()):
+                self._send_json(404, {"error": "no sync job is running"})
                 return
-            _verify_stop.set()
+            if _sync_stop:
+                _sync_stop.set()
             self._send_json(200, {"stopped": True})
             return
 
@@ -581,22 +573,28 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": str(e)})
                 return
             resethard = bool(body.get("resethard", False))
+            host_root = HOST_ROOTS.get(root_name, "")
 
-            with _index_lock:
-                if _index_thread and _index_thread.is_alive():
-                    self._send_json(409, {"error": "index already running"})
-                    return
-                _index_stop = threading.Event()
-                _index_thread = threading.Thread(
-                    target=_run_index_thread,
-                    args=(src_root, collection, resethard, _index_stop, root_name),
-                    name="indexer",
-                    daemon=True,
-                )
-                _index_thread.start()
+            with _sync_lock:
+                if resethard:
+                    _delete_marker(collection)
+                job = {"root_name": root_name, "src_root": src_root, "collection": collection,
+                       "resethard": resethard, "host_root": host_root}
+                _sync_pending.append(job)
+                queued_pos = len(_sync_pending)
+                if not (_sync_thread and _sync_thread.is_alive()):
+                    _sync_thread = threading.Thread(
+                        target=_drain_sync_queue,
+                        name="syncer",
+                        daemon=True,
+                    )
+                    _sync_thread.start()
+                    queued_pos = 0
 
             self._send_json(200, {
-                "started":    True,
+                "started":    queued_pos == 0,
+                "queued":     queued_pos > 0,
+                "position":   queued_pos,
                 "collection": collection,
                 "src_root":   src_root,
             })
@@ -729,11 +727,13 @@ class _Handler(BaseHTTPRequestHandler):
 
         # ── POST /query ───────────────────────────────────────────────────────
         if method == "POST" and path == "/query":
-            body    = self._read_body()
-            mode    = body.get("mode", "")
-            pattern = body.get("pattern", "")
-            files   = body.get("files", [])
-            uses_kind_q = str(body.get("uses_kind", "") or "")
+            body         = self._read_body()
+            mode         = body.get("mode", "")
+            pattern      = body.get("pattern", "")
+            files        = body.get("files", [])
+            uses_kind_q  = str(body.get("uses_kind", "") or "")
+            include_body = bool(body.get("include_body", False))
+            symbol_kind  = str(body.get("symbol_kind", "") or "")
             if not mode:
                 self._send_json(400, {"error": "mode required"})
                 return
@@ -741,7 +741,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "files must be a non-empty list"})
                 return
             try:
-                results = _run_query(mode, pattern, files, uses_kind=uses_kind_q)
+                results = _run_query(mode, pattern, files,
+                                     include_body=include_body,
+                                     symbol_kind=symbol_kind,
+                                     uses_kind=uses_kind_q)
                 self._send_json(200, {"results": results})
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
@@ -800,6 +803,25 @@ def run(host: str = "127.0.0.1", port: int = API_PORT) -> None:
     # Verify collection schemas match the expected definition; cache for /status
     _schema_status = verify_all_schemas(_ts_client)
 
+    # Auto-sync roots that have no completion marker (first run or interrupted)
+    global _sync_thread, _sync_pending
+    for root_name in ROOTS:
+        try:
+            collection, src_root = get_root(root_name)
+        except ValueError:
+            continue
+        if _read_marker(collection) is None:
+            _sync_pending.append({
+                "root_name": root_name,
+                "src_root":  src_root,
+                "collection": collection,
+                "resethard":  False,
+                "host_root":  HOST_ROOTS.get(root_name, ""),
+            })
+    if _sync_pending:
+        _sync_thread = threading.Thread(target=_drain_sync_queue, name="syncer", daemon=True)
+        _sync_thread.start()
+
     # Start watcher thread
     _start_watcher()
 
@@ -829,9 +851,10 @@ def run(host: str = "127.0.0.1", port: int = API_PORT) -> None:
         print("[api] HTTP server shutdown timed out — continuing anyway", flush=True)
     _hb_stop.set()
     _watcher_stop.set()
-    if _verify_thread and _verify_thread.is_alive():
-        _verify_stop.set()
-        _verify_thread.join(timeout=5)
+    if _sync_thread and _sync_thread.is_alive():
+        if _sync_stop:
+            _sync_stop.set()
+        _sync_thread.join(timeout=5)
     _index_queue.stop(timeout=5)
 
     if _API_PID.exists():

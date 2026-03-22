@@ -8,40 +8,9 @@ on:
 
 jobs:
   # ── Job 1: full native test suite ──────────────────────────────────────────
-  # Downloads Typesense, creates a venv, and runs all 686 tests.
+  # Downloads Typesense, creates a venv, runs all tests directly on the runner.
   native:
     name: Native tests
-    runs-on: ubuntu-latest
-
-    env:
-      TYPESENSE_VERSION: "27.1"
-      TYPESENSE_API_KEY: ci-test-key
-      TYPESENSE_PORT: 8108
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Run native tests
-        run: bash ci-test.sh --no-docker
-
-      - name: Upload Typesense log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: typesense-log
-          path: /tmp/typesense-ci/typesense.log
-
-  # ── Job 2: Docker E2E ───────────────────────────────────────────────────────
-  # Builds the codesearch-mcp image, starts a container with sample/root1 and
-  # sample/root2 mounted, waits for indexing to complete, then runs the 52
-  # test_sample_e2e.py tests and the VS Code extension pipeline tests against
-  # the live container.
-  docker-e2e:
-    name: Docker E2E tests
     runs-on: ubuntu-latest
 
     steps:
@@ -55,19 +24,49 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Set up Python venv
+      - name: Install Python dependencies
         run: |
-          python3 -m venv /tmp/e2e-venv
-          /tmp/e2e-venv/bin/pip install -q -r requirements-dev.txt
+          python3 -m venv ~/.local/indexserver-venv
+          ~/.local/indexserver-venv/bin/pip install -q \
+            typesense tree-sitter tree-sitter-c-sharp tree-sitter-python \
+            watchdog pathspec pytest
 
-      - name: Run Docker E2E tests (Python + VS Code extension)
-        run: PYTEST=/tmp/e2e-venv/bin/pytest bash run_tests.sh --docker
+      - name: Write config.json
+        run: echo '{"api_key":"ci-test-key","port":8108,"roots":{}}' > config.json
 
-      - name: Dump container logs on failure
+      - name: Run tests
+        run: node run_tests.mjs --linux
+
+      - name: Upload logs on failure
         if: failure()
-        run: |
-          docker ps -a
-          for id in $(docker ps -aq); do
-            echo "=== logs for $id ==="
-            docker logs --tail 60 "$id" 2>&1 || true
-          done
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-logs
+          path: /tmp/codesearch-run-*
+          if-no-files-found: ignore
+
+  # ── Job 2: Docker E2E ───────────────────────────────────────────────────────
+  # Builds the codesearch-mcp image, starts a container with sample/root1 and
+  # sample/root2 mounted, waits for indexing, then runs pytest inside the
+  # container and VS Code extension pipeline tests from the host.
+  docker-e2e:
+    name: Docker E2E tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run Docker E2E tests
+        run: node run_tests.mjs --docker
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-e2e-logs
+          path: /tmp/codesearch-run-*
+          if-no-files-found: ignore
