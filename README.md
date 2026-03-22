@@ -2,6 +2,25 @@
 
 Full-text and structural code search for a large monorepo. Runs a [Typesense](https://typesense.org) search server and exposes results as MCP tools so Claude can query the codebase directly without copy-pasting.
 
+> **Early alpha.** Expect rough edges. The only supported install path is cloning the repository and running `setup.cmd`.
+
+## Installation
+
+```
+git clone https://github.com/microsoft/tscodesearch
+cd tscodesearch
+setup.cmd          # Docker mode (default)
+setup.cmd --wsl    # WSL mode (alternative)
+```
+
+`setup.cmd` builds the MCP server, registers it with Claude Code, creates `config.json`, and installs the VS Code extension. After it completes:
+
+```
+ts start
+```
+
+Then open VS Code (or reload: **Ctrl+Shift+P > Reload Window**) and use **TsCodeSearch: Add Root** to point at your source directory.
+
 ## Prerequisites
 
 **Docker mode (default):**
@@ -22,15 +41,20 @@ setup.cmd          # Docker mode (default)
 setup.cmd --wsl    # WSL mode
 ```
 
-`setup.cmd` checks for Node.js then calls `node setup.mjs`, which does everything:
+`setup.cmd` checks for Node.js then calls `node setup.mjs`, which:
 1. Builds the MCP server (`npm install && npm run build`)
 2. Registers the MCP server with Claude Code
 3. Sets up the WSL environment (WSL mode only)
 4. Creates `config.json` with an auto-generated API key and `mode` field
-5. Starts the service
-6. Installs the VS Code extension
+5. Installs the VS Code extension
 
-After setup, open VS Code and use **TsCodeSearch: Add Root** to point at your source directory.
+After setup, start the service:
+
+```
+ts start
+```
+
+Then open VS Code (or reload: **Ctrl+Shift+P > Reload Window**) and use **TsCodeSearch: Add Root** to point at your source directory.
 
 To uninstall: `setup.cmd --uninstall`
 
