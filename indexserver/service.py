@@ -198,9 +198,9 @@ def cmd_status(args) -> None:
             ndocs        = coll_info.get("num_documents") or 0
             warnings     = coll_info.get("schema_warnings") or []
             col_exists   = coll_info.get("collection_exists", coll_info.get("num_documents") is not None)
-            indexer_running = (api_info or {}).get("indexer", {}).get("running", False)
+            syncer_running  = (api_info or {}).get("syncer", {}).get("running", False)
             if not col_exists:
-                if indexer_running:
+                if syncer_running:
                     print(f"  [{root_name}] Index : [>>] indexing in progress ({ndocs:,} docs so far)")
                     # Don't add to missing_collections — searches will work once done
                 else:
@@ -212,6 +212,8 @@ def cmd_status(args) -> None:
                     print(f"             {w}")
                 print(f"             Fix: ts index --root {root_name} --resethard")
                 missing_collections.append(root_name)
+            elif syncer_running:
+                print(f"  [{root_name}] Index : [>>] indexing in progress ({ndocs:,} docs so far)")
             else:
                 print(f"  [{root_name}] Index : [OK]  {ndocs:,} docs  ({coll_name})")
         elif health["ok"]:
@@ -252,46 +254,32 @@ def cmd_status(args) -> None:
             err_note   = f"  errors={errors}" if errors else ""
             print(f"  Queue   : {upserted} upserted, {deleted} deleted, {deduped} deduped{depth_note}{err_note}")
 
-        indexer_info = api_info.get("indexer", {})
-        if indexer_info.get("running"):
-            prog = indexer_info.get("progress", {})
-            disc = prog.get("discovered", 0)
-            qdep = prog.get("queue_depth", queue.get("depth", 0) if queue else 0)
-            print(f"  Indexer : [>>] running  (discovered={disc:,}  queue={qdep:,})")
-        elif indexer_info.get("progress"):
-            prog   = indexer_info["progress"]
-            status = prog.get("status", "idle")
-            disc   = prog.get("discovered", 0)
-            print(f"  Indexer : {status}  (last run: {disc:,} files discovered)")
-
-        verifier = api_info.get("verifier", {})
-        if verifier.get("running"):
-            prog  = verifier.get("progress", {})
+        syncer_info = api_info.get("syncer", {})
+        prog = syncer_info.get("progress", {})
+        if syncer_info.get("running"):
             total = prog.get("total_to_update", 0)
-            done  = prog.get("updated", 0)
+            phase = prog.get("phase", "starting")
+            qdep  = queue.get("depth", 0) if queue else 0
             if total:
-                pct = f"{done * 100 // total}%"
-                print(f"  Verifier: [>>] running  ({pct}  {done:,}/{total:,} updated)")
+                upserted_so_far = (queue or {}).get("upserted", 0)
+                print(f"  Syncer  : [>>] running  ({upserted_so_far:,}/{total:,} upserted  queue={qdep:,})")
             else:
-                phase = prog.get("phase", "starting")
-                print(f"  Verifier: [>>] running  ({phase})")
-        else:
-            prog = verifier.get("progress", {})
-            if prog:
-                vstatus  = prog.get("status", "idle")
-                missing  = prog.get("missing", 0)
-                stale    = prog.get("stale", 0)
-                fs_files = prog.get("fs_files", 0)
-                indexed  = prog.get("index_docs", 0)
-                detail_parts = []
-                if fs_files:
-                    detail_parts.append(f"{indexed:,}/{fs_files:,} indexed")
-                if missing:
-                    detail_parts.append(f"{missing:,} missing")
-                if stale:
-                    detail_parts.append(f"{stale:,} stale")
-                detail = f"  ({', '.join(detail_parts)})" if detail_parts else ""
-                print(f"  Verifier: {vstatus}{detail}")
+                print(f"  Syncer  : [>>] running  ({phase}  queue={qdep:,})")
+        elif prog:
+            vstatus  = prog.get("status", "idle")
+            missing  = prog.get("missing", 0)
+            stale    = prog.get("stale", 0)
+            fs_files = prog.get("fs_files", 0)
+            indexed  = prog.get("index_docs", 0)
+            detail_parts = []
+            if fs_files:
+                detail_parts.append(f"{indexed:,}/{fs_files:,} indexed")
+            if missing:
+                detail_parts.append(f"{missing:,} missing")
+            if stale:
+                detail_parts.append(f"{stale:,} stale")
+            detail = f"  ({', '.join(detail_parts)})" if detail_parts else ""
+            print(f"  Syncer  : {vstatus}{detail}")
 
     if missing_collections:
         print(f"")

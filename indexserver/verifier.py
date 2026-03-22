@@ -197,15 +197,16 @@ def run_verify(src_root: str | None = None,
                resethard: bool = False,
                stop_event=None,
                on_complete=None) -> None:
-    """Collect the diff, then run the shared batch-upsert pipeline.
+    """Scan the file system, diff against the index, and repair any gaps.
 
     Args:
         src_root:       Source root to scan (default: from config).
         collection:     Typesense collection name (default: from config).
         queue:          IndexQueue to use for async writes. When provided,
-                        upserts are enqueued and the function returns before
-                        they are flushed. A fence is placed so on_complete
-                        fires after all enqueued items reach Typesense.
+                        missing/stale files are enqueued inline during the FS
+                        scan so Typesense writes begin immediately — no waiting
+                        for the full walk to finish. A fence fires on_complete
+                        after all enqueued items are flushed.
                         When None, index_file_list() is called synchronously
                         (backward-compat for CLI and tests).
         delete_orphans: Remove index entries for files no longer on disk.
@@ -269,7 +270,11 @@ def run_verify(src_root: str | None = None,
     # Start with all index IDs; discard each FS file as we walk.
     # What remains at the end is the orphaned set.
     remaining: set[str] = set(index_map)
-    to_update: list[tuple[str, str]] = []
+    # Async path: enqueue files inline during the scan so the queue worker
+    # can start writing to Typesense immediately, without waiting for the
+    # full FS walk to finish.  Sync path still collects a list for index_file_list().
+    to_update: list[tuple[str, str]] | None = [] if queue is None else None
+    n_enqueued = 0
     n_fs = 0
     last_scan_print = time.time()
 
@@ -286,15 +291,28 @@ def run_verify(src_root: str | None = None,
         idx_mtime = index_map.get(doc_id)
         if idx_mtime is None:
             progress["missing"] += 1
-            to_update.append((full_path, rel))
+            needs_update = True
         elif mtime != idx_mtime:
             progress["stale"] += 1
-            to_update.append((full_path, rel))
+            needs_update = True
+        else:
+            needs_update = False
+
+        if needs_update:
+            if queue is not None:
+                queue.enqueue(full_path, rel, coll_name, mtime=mtime)
+                n_enqueued += 1
+                progress["total_to_update"] = n_enqueued
+            else:
+                to_update.append((full_path, rel))
 
         now = time.time()
         if now - last_scan_print >= 15:
             progress["fs_files"] = n_fs
-            progress["phase"] = f"collecting: scanning filesystem ({n_fs:,} files)"
+            if queue is not None:
+                progress["phase"] = f"scanning filesystem ({n_fs:,} files, {n_enqueued:,} queued)"
+            else:
+                progress["phase"] = f"collecting: scanning filesystem ({n_fs:,} files)"
             _write_progress(progress)
             print(
                 f"[verifier]   [{_fmt_time(now - t0)}] scanned {n_fs:,} files  "
@@ -304,12 +322,12 @@ def run_verify(src_root: str | None = None,
             last_scan_print = now
 
     orphaned_ids = list(remaining)
-    progress["fs_files"]        = n_fs
-    progress["orphaned"]        = len(orphaned_ids)
-    progress["total_to_update"] = len(to_update)
+    progress["fs_files"] = n_fs
+    progress["orphaned"] = len(orphaned_ids)
+    if queue is None:
+        progress["total_to_update"] = len(to_update)
 
     print(f"[verifier]   {n_fs:,} files on disk", flush=True)
-
     print(
         f"[verifier]   missing={progress['missing']}  "
         f"stale={progress['stale']}  orphaned={len(orphaned_ids)}",
@@ -324,7 +342,9 @@ def run_verify(src_root: str | None = None,
         print("[verifier] Cancelled.", flush=True)
         return
 
-    if not to_update and not orphaned_ids:
+    total_to_update = n_enqueued if queue is not None else len(to_update)
+
+    if total_to_update == 0 and not orphaned_ids:
         progress["status"]  = "complete"
         progress["phase"]   = "done (index already up to date)"
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -332,31 +352,10 @@ def run_verify(src_root: str | None = None,
         print("[verifier] Index is already up to date.", flush=True)
         return
 
-    # ── Phase 2: upsert changed/missing files ────────────────────────────────
-    print(
-        f"[verifier] Phase 2/2: indexing {len(to_update):,} changed/missing files…",
-        flush=True,
-    )
-    progress["phase"] = "updating index"
-    _write_progress(progress)
-
     if queue is not None:
-        # Async path: enqueue all upserts, delete orphans synchronously, then
-        # place a fence so on_complete fires after all enqueued items are flushed.
-        queue.enqueue_bulk(
-            ((full_path, rel) for full_path, rel in to_update),
-            collection=coll_name,
-            stop_event=stop_event,
-        )
-
-        if stop_event and stop_event.is_set():
-            progress["status"]      = "cancelled"
-            progress["phase"]       = "cancelled"
-            progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-            _write_progress(progress)
-            print("[verifier] Cancelled during enqueue.", flush=True)
-            return
-
+        # Async path: all upserts already enqueued during the scan above.
+        # Handle orphan deletion, then place a fence so on_complete fires
+        # after everything reaches Typesense.
         if delete_orphans and orphaned_ids:
             print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries…", flush=True)
             progress["phase"] = "removing orphans"
@@ -369,18 +368,18 @@ def run_verify(src_root: str | None = None,
                     pass
 
         progress["status"]      = "queued"
-        progress["phase"]       = f"queued ({len(to_update):,} files in index queue)"
+        progress["phase"]       = f"queued ({n_enqueued:,} files in index queue)"
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         _write_progress(progress)
         print(
-            f"[verifier] Enqueued {len(to_update):,} files. "
+            f"[verifier] Enqueued {n_enqueued:,} files. "
             f"deleted={progress['deleted']}  "
             f"(completion fires when queue drains)",
             flush=True,
         )
 
         if on_complete:
-            def _fence_cb(prog=progress, t=t0, n=len(to_update), d=progress["deleted"]):
+            def _fence_cb(prog=progress, t=t0, n=n_enqueued, d=progress["deleted"]):
                 prog["status"]      = "complete"
                 prog["phase"]       = "done"
                 prog["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
