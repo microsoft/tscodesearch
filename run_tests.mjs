@@ -435,6 +435,10 @@ async function startTypesenseLinux({ port, key, TYPESENSE_VERSION, TS_DIR }) {
   }
 
   const logStream = createWriteStream(`${TS_DIR}/typesense.log`);
+  await new Promise((resolve, reject) => {
+    logStream.once('open', resolve);
+    logStream.once('error', reject);
+  });
   const proc = spawn(tsBin, [
     `--data-dir=${TS_DIR}/data`, `--api-key=${key}`, `--port=${port}`,
   ], { stdio: ['ignore', logStream, logStream] });
