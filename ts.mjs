@@ -249,7 +249,7 @@ function waitForReady() {
             const text = data.toString();
             process.stdout.write(text);
             if (text.includes('Ready for connections')) {
-                finish('Server is ready.');
+                finish('Management API is up. Typesense may still be loading — run: ts status');
             }
         };
 
@@ -381,8 +381,10 @@ function printDockerStatus(apiBody) {
     }
 
     // ── Typesense health ─────────────────────────────────────────────────────
-    const tsOk = apiBody?.typesense_ok;
-    if (tsOk === false) console.log(`  Typesense: [!!] unhealthy`);
+    const tsOk      = apiBody?.typesense_ok;
+    const tsLoading = apiBody?.typesense_loading;
+    if (tsLoading)           console.log(`  Typesense: [..] loading`);
+    else if (tsOk === false) console.log(`  Typesense: [!!] unhealthy`);
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────

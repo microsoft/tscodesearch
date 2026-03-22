@@ -386,7 +386,7 @@ Args:
     const colInfo = st.collections?.[rootName] ?? {};
     const ndocs = colInfo.num_documents;
     const lines = [];
-    lines.push(`Typesense  : ${st.typesense_ok !== false ? "ok" : "NOT OK"}`);
+    lines.push(`Typesense  : ${st.typesense_loading ? "loading" : (st.typesense_ok !== false ? "ok" : "NOT OK")}`);
     if (ndocs != null) {
         lines.push(`Docs       : ${Number(ndocs).toLocaleString()}  (collection: ${collection})`);
     }

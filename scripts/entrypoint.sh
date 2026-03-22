@@ -116,7 +116,8 @@ else
     nohup "$TYPESENSE_BIN" \
         --data-dir="${TYPESENSE_DATA}/data" \
         --api-key="$CODESEARCH_API_KEY" \
-        --port="$CODESEARCH_PORT" \
+        --api-port="$CODESEARCH_PORT" \
+        --peering-port="$((CODESEARCH_PORT - 1))" \
         --listen-address=0.0.0.0 \
         --enable-cors \
         > "$TYPESENSE_LOG" 2>&1 &
@@ -127,32 +128,8 @@ else
     echo "[entrypoint] Typesense started (pid=$TYPESENSE_PID)"
 fi
 
-# ── Wait for Typesense health ─────────────────────────────────────────────────
-
-echo -n "[entrypoint] Waiting for Typesense"
-HEALTH_URL="http://localhost:${CODESEARCH_PORT}/health"
-MAX_WAIT=60
-WAITED=0
-
-while [ $WAITED -lt $MAX_WAIT ]; do
-    if curl -s "$HEALTH_URL" 2>/dev/null | grep -q '"ok":true'; then
-        echo " ready"
-        break
-    fi
-    echo -n "."
-    sleep 1
-    WAITED=$((WAITED + 1))
-done
-
-if [ $WAITED -ge $MAX_WAIT ]; then
-    echo ""
-    echo "[entrypoint] ERROR: Typesense did not become healthy within ${MAX_WAIT}s"
-    echo "[entrypoint] Log output:"
-    cat "$TYPESENSE_LOG"
-    exit 1
-fi
-
 # ── Start management API (api.py — watcher + heartbeat + verifier threads) ───
+# api.py starts immediately and waits for Typesense internally (async init).
 
 if [ "$BACKGROUND" = "1" ] && _check_running "$API_PID_FILE"; then
     echo "[entrypoint] Management API already running (pid=$(cat "$API_PID_FILE"))"
