@@ -146,14 +146,8 @@ if (existsSync(join(REPO, 'config.json'))) {
   console.log(`  Created with mode=${mode} (api_key auto-generated).`);
 }
 
-// [5] Start service
-step(5, isWsl ? 'Starting indexserver (WSL)' : 'Building Docker image and starting container');
-if (!isWsl) console.log('  (This may take a few minutes on first run.)');
-if (run('node', [join(REPO, 'ts.mjs'), isWsl ? 'start' : 'setup']) !== 0)
-  die('Service failed to start. See output above.');
-
-// [6] VS Code extension
-step(6, 'Installing VS Code extension');
+// [5] VS Code extension
+step(5, 'Installing VS Code extension');
 const vscodeDir = join(REPO, 'vscode-codesearch');
 if (!existsSync(join(vscodeDir, 'package.json'))) {
   console.log('  SKIPPED: vscode-codesearch directory not found.');
@@ -178,6 +172,8 @@ if (!existsSync(join(vscodeDir, 'package.json'))) {
 // ── Done ─────────────────────────────────────────────────────────────────────
 
 console.log('\n── Setup complete! ──────────────────────────────────────────────────────────\n');
-console.log('Open VS Code (or reload: Ctrl+Shift+P > Reload Window), then:');
+console.log('Next: start the service:');
+console.log(isWsl ? '  ts start' : '  ts start  (builds Docker image on first run — may take a few minutes)');
+console.log('\nThen open VS Code (or reload: Ctrl+Shift+P > Reload Window) and:');
 console.log('  TsCodeSearch: Add Root  — to add source directories to index');
 console.log('\nService management:  ts start / ts stop / ts restart / ts status');

@@ -5,7 +5,7 @@
 ::   setup.cmd --wsl        WSL mode
 ::   setup.cmd --uninstall  Unregister MCP server and stop service
 
-:: ── Ensure Node.js 20+ ───────────────────────────────────────────────────────
+:: -- Ensure Node.js 20+ ----------------------------------------------------------
 node -e "process.exit(parseInt(process.version.slice(1)) >= 20 ? 0 : 1)" 2>nul
 if not errorlevel 1 goto :run
 

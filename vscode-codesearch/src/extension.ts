@@ -142,7 +142,6 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 </div>
 <div id="status" class="status-bar"></div>
 <div id="results" class="results">
-  <div class="empty">Type to search across your codebase</div>
 </div>
 <div id="configError" class="config-error">
   <div id="configErrorMsg" class="config-error-msg"></div>
