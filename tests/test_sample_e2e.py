@@ -66,7 +66,7 @@ def _require_server() -> None:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _search(collection: str, q: str,
-            query_by: str = "filename,class_names,method_names,content",
+            query_by: str = "filename,class_names,method_names,tokens",
             per_page: int = 20) -> list[dict]:
     params = urllib.parse.urlencode({
         "q": q, "query_by": query_by, "per_page": per_page, "num_typos": 0,
@@ -145,7 +145,7 @@ class TestSampleRoot1E2E(unittest.TestCase):
                              "BlobStorage.cs not found in index")
 
     def test_services_py_indexed(self):
-        hits = _search(self.coll, "services", query_by="filename,content")
+        hits = _search(self.coll, "services", query_by="filename,tokens")
         self.assertIn("services.py", [h["filename"] for h in hits],
                       "services.py not found in index")
 
@@ -165,17 +165,17 @@ class TestSampleRoot1E2E(unittest.TestCase):
         self.assertIn("BaseProcessor", bt,
             f"Expected BaseProcessor in base_types (TextProcessor : BaseProcessor<string>): {bt}")
 
-    def test_processors_attributes_has_serializable(self):
+    def test_processors_attr_names_has_serializable(self):
         doc = _get_doc(self.coll, "Processors.cs")
         self.assertIsNotNone(doc)
-        attrs = doc.get("attributes", [])
+        attrs = doc.get("attr_names", [])
         self.assertIn("Serializable", attrs,
             f"Expected Serializable attribute on BaseProcessor: {attrs}")
 
-    def test_processors_attributes_has_obsolete(self):
+    def test_processors_attr_names_has_obsolete(self):
         doc = _get_doc(self.coll, "Processors.cs")
         self.assertIsNotNone(doc)
-        attrs = doc.get("attributes", [])
+        attrs = doc.get("attr_names", [])
         self.assertIn("Obsolete", attrs,
             f"Expected Obsolete attribute on TextProcessor: {attrs}")
 
@@ -256,9 +256,9 @@ class TestSampleRoot1E2E(unittest.TestCase):
             "DataStore.cs not found via base_types search for IDataStore")
 
     def test_attrs_search_finds_processors_for_serializable(self):
-        hits = _search(self.coll, "Serializable", query_by="attributes,filename")
+        hits = _search(self.coll, "Serializable", query_by="attr_names,filename")
         self.assertIn("Processors.cs", [h["filename"] for h in hits],
-            "Processors.cs not found via attributes search for Serializable")
+            "Processors.cs not found via attr_names search for Serializable")
 
     def test_calls_search_finds_processors_for_create(self):
         hits = _search(self.coll, "Create", query_by="call_sites,filename")
@@ -321,7 +321,7 @@ class TestSampleRoot2E2E(unittest.TestCase):
                              "SynthTypes.cs not found in index")
 
     def test_models_py_indexed(self):
-        hits = _search(self.coll, "models", query_by="filename,content")
+        hits = _search(self.coll, "models", query_by="filename,tokens")
         self.assertIn("models.py", [h["filename"] for h in hits],
                       "models.py not found in index")
 
@@ -349,19 +349,19 @@ class TestSampleRoot2E2E(unittest.TestCase):
 
     # ── Semantic fields: Repositories.cs ──────────────────────────────────────
 
-    def test_repositories_attributes_has_cacheable(self):
+    def test_repositories_attr_names_has_cacheable(self):
         doc = _get_doc(self.coll, "Repositories.cs")
         self.assertIsNotNone(doc)
-        attrs = doc.get("attributes", [])
+        attrs = doc.get("attr_names", [])
         self.assertIn("Cacheable", attrs,
-            f"Expected Cacheable in attributes (ProductRepository [Cacheable]): {attrs}")
+            f"Expected Cacheable in attr_names (ProductRepository [Cacheable]): {attrs}")
 
-    def test_repositories_attributes_has_obsolete(self):
+    def test_repositories_attr_names_has_obsolete(self):
         doc = _get_doc(self.coll, "Repositories.cs")
         self.assertIsNotNone(doc)
-        attrs = doc.get("attributes", [])
+        attrs = doc.get("attr_names", [])
         self.assertIn("Obsolete", attrs,
-            f"Expected Obsolete in attributes (LegacyRepository [Obsolete]): {attrs}")
+            f"Expected Obsolete in attr_names (LegacyRepository [Obsolete]): {attrs}")
 
     def test_repositories_class_names_has_inventorymanager(self):
         doc = _get_doc(self.coll, "Repositories.cs")
@@ -376,12 +376,12 @@ class TestSampleRoot2E2E(unittest.TestCase):
         self.assertIn("ProcessInventory", mn,
             f"Expected ProcessInventory in method_names (WarehouseService): {mn}")
 
-    def test_repositories_method_sigs_has_blobstore_param(self):
+    def test_repositories_member_sigs_has_blobstore_param(self):
         doc = _get_doc(self.coll, "Repositories.cs")
         self.assertIsNotNone(doc)
-        sigs = doc.get("method_sigs", [])
+        sigs = doc.get("member_sigs", [])
         self.assertTrue(any("BlobStore" in s for s in sigs),
-            f"Expected a method_sig containing BlobStore (DataPipeline.Store/Retrieve): {sigs}")
+            f"Expected a member_sig containing BlobStore (DataPipeline.Store/Retrieve): {sigs}")
 
     # ── Semantic fields: SynthTypes.cs ────────────────────────────────────────
 
@@ -417,9 +417,9 @@ class TestSampleRoot2E2E(unittest.TestCase):
             "Widgets.cs not found via call_sites search for FetchWidget")
 
     def test_attrs_search_finds_repositories_for_cacheable(self):
-        hits = _search(self.coll, "Cacheable", query_by="attributes,filename")
+        hits = _search(self.coll, "Cacheable", query_by="attr_names,filename")
         self.assertIn("Repositories.cs", [h["filename"] for h in hits],
-            "Repositories.cs not found via attributes search for Cacheable")
+            "Repositories.cs not found via attr_names search for Cacheable")
 
     def test_symbols_search_finds_repositories_for_inventorymanager(self):
         hits = _search(self.coll, "InventoryManager",

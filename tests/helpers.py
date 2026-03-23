@@ -27,7 +27,7 @@ def _server_ok() -> bool:
 
 
 def _search(collection: str, q: str,
-            query_by: str = "filename,symbols,class_names,method_names,content",
+            query_by: str = "filename,class_names,method_names,tokens",
             per_page: int = 10) -> list[dict]:
     params = urllib.parse.urlencode({
         "q": q, "query_by": query_by,

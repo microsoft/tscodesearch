@@ -210,7 +210,7 @@ class TestVerifier(unittest.TestCase):
 
     def _get(self, filename: str) -> dict | None:
         hits = _search(self.coll, os.path.splitext(filename)[0],
-                       query_by="filename,symbols,class_names,method_names,content")
+                       query_by="filename,class_names,method_names,tokens")
         return next((h for h in hits if h["filename"] == filename), None)
 
     # ── no-op: index is already up to date ────────────────────────────────────
@@ -257,7 +257,7 @@ class TestVerifier(unittest.TestCase):
         time.sleep(0.5)
 
         hits = _search(self.coll, "FooModified",
-                       query_by="class_names,content,filename")
+                       query_by="class_names,tokens,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("foo.cs", names, "Modified foo.cs should be re-indexed")
 

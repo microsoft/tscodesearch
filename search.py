@@ -5,13 +5,12 @@ Usage:
     search.py "query" [--ext cs] [--sub myservice] [--limit 10] [--symbols] [--json]
 
 Modes:
-    Default:         full-text search across filenames, symbols, and content
-    --symbols:       search only C# symbol names (class/interface/method)
-    --implements X:  find types that inherit from or implement X            [T1]
-    --calls X:       find call sites that invoke method X                   [T1]
-    --sig X:         find methods whose signature contains X                [T1]
-    --uses X:        find files that reference type X in declarations       [T2]
-    --attr X:        find files decorated with attribute X                  [T2]
+    Default:         full-text search across filenames, declared names, and tokens
+    --symbols:       search only declared names (class/interface/method)
+    --implements X:  find types that inherit from or implement X
+    --calls X:       find call sites that invoke method X
+    --uses X:        find files that reference type X in declarations
+    --attr X:        find files decorated with attribute X
     --ext EXT:       filter by file extension (e.g. cs, h, py)
     --sub NAME:      filter by subsystem (e.g. myservice, core, myapp)
     --limit N:       max results (default 10)
@@ -23,7 +22,6 @@ Examples:
     search.py "circuit breaker" --sub core --limit 5
     search.py "IStorageProvider" --implements     # find implementors
     search.py "GetItemsAsync" --calls             # find call sites
-    search.py "Task GetItemsAsync" --sig          # find by signature
     search.py "ItemInfo" --uses                   # find type references
     search.py "Obsolete" --attr                   # find by attribute
 """
@@ -66,7 +64,7 @@ def _ts_search(collection: str, params: dict) -> dict:
 
 def search(query, ext=None, sub=None, limit=10,
            symbols_only=False, implements=False, calls=False,
-           sig=False, uses=False, attrs=False, casts=False, collection=None,
+           uses=False, attrs=False, casts=False, accesses_of=False, collection=None,
            symbol_kind=None, uses_kind=""):
     from config import COLLECTION as _DEFAULT_COLLECTION
     coll_name = collection or _DEFAULT_COLLECTION
@@ -79,29 +77,30 @@ def search(query, ext=None, sub=None, limit=10,
     elif uses:
         k = (uses_kind or "all").lower().strip()
         if k == "field":
-            query_by = "type_refs,filename"
+            query_by = "field_types,filename"
         elif k == "param":
             query_by = "param_types,filename"
         elif k == "return":
             query_by = "return_types,filename"
         elif k == "cast":
-            query_by = "cast_sites,filename"
+            query_by = "cast_types,filename"
         elif k == "base":
             query_by = "base_types,class_names,filename"
+        elif k == "locals":
+            query_by = "local_types,filename"
         else:  # "all"
-            query_by = "type_refs,return_types,param_types,cast_sites,base_types,class_names,filename"
+            query_by = "type_refs,cast_types,filename"
     elif attrs:
-        query_by = "attributes,filename"
+        query_by = "attr_names,filename"
     elif casts:
-        query_by = "cast_sites,filename"
+        query_by = "cast_types,filename"
+    elif accesses_of:
+        query_by = "member_accesses,filename"
     elif symbols_only:
         narrowed = symbol_kind_query_by(symbol_kind or "")
-        query_by = narrowed if narrowed else "symbols,class_names,method_names,filename"
-    elif sig:
-        # backward compat — map to uses(kind=all signature positions)
-        query_by = "return_types,param_types,method_sigs,filename"
+        query_by = narrowed if narrowed else "class_names,method_names,filename"
     else:
-        query_by = "filename,symbols,class_names,method_names,content"
+        query_by = "filename,class_names,method_names,tokens"
 
     filter_parts = []
     if ext:
@@ -114,7 +113,7 @@ def search(query, ext=None, sub=None, limit=10,
         "q": query,
         "query_by": query_by,
         "per_page": limit,
-        "highlight_full_fields": "symbols,class_names,method_names,filename,base_types,method_sigs,return_types,param_types",
+        "highlight_full_fields": "class_names,method_names,filename,base_types,member_sigs,return_types,param_types",
         "snippet_threshold": 30,
         "num_typos": "1",
         "prefix": "false",
@@ -122,10 +121,7 @@ def search(query, ext=None, sub=None, limit=10,
     if filter_by:
         params["filter_by"] = filter_by
 
-    params["facet_by"]  = "subsystem,extension"
-    # Prefer .cs files (priority=3) when no explicit extension filter is set
-    if not ext:
-        params["sort_by"] = "_text_match:desc,priority:desc"
+    params["facet_by"]  = "subsystem,language,extension"
 
     try:
         result = _ts_search(coll_name, params)
@@ -212,8 +208,8 @@ def format_results(result, query, query_by, show_facets=False, debug=False):
         class_names = doc.get("class_names", [])
         method_names = doc.get("method_names", [])
         base_types = doc.get("base_types", [])
-        method_sigs = doc.get("method_sigs", [])
-        attributes = doc.get("attributes", [])
+        member_sigs = doc.get("member_sigs", [])
+        attr_names = doc.get("attr_names", [])
         usings = doc.get("usings", [])
 
         # Build highlight map for quick lookup
@@ -223,21 +219,20 @@ def format_results(result, query, query_by, show_facets=False, debug=False):
             print(f"   Classes    : {', '.join(class_names[:5])}")
         if base_types:
             print(f"   Implements : {', '.join(base_types[:5])}")
-        if method_sigs:
+        if member_sigs:
             if debug:
-                print(f"   Signatures ({len(method_sigs)}):")
-                for s in method_sigs:
+                print(f"   Signatures ({len(member_sigs)}):")
+                for s in member_sigs:
                     s = s.encode("ascii", errors="replace").decode("ascii")
                     print(f"     {s}")
             else:
-                # When method_sigs matched, show the matched sigs (not just first 3)
-                matched_sigs = _hl_values(hl_map["method_sigs"]) if "method_sigs" in hl_map else []
-                display = matched_sigs[:3] if matched_sigs else method_sigs[:3]
+                matched_sigs = _hl_values(hl_map["member_sigs"]) if "member_sigs" in hl_map else []
+                display = matched_sigs[:3] if matched_sigs else member_sigs[:3]
                 print(f"   Signatures : {'; '.join(display)}")
         elif method_names:
             print(f"   Members    : {', '.join(method_names[:6])}")
-        if attributes:
-            print(f"   Attributes : {', '.join(attributes[:5])}")
+        if attr_names:
+            print(f"   Attributes : {', '.join(attr_names[:5])}")
         if usings:
             print(f"   Usings     : {', '.join(usings[:4])}")
         if ns:
@@ -260,8 +255,8 @@ def format_results(result, query, query_by, show_facets=False, debug=False):
         else:
             # Show a match snippet for content/semantic fields
             for hl in highlights:
-                if hl.get("field") in ("content", "method_sigs", "base_types", "call_sites",
-                                       "cast_sites", "type_refs", "attributes"):
+                if hl.get("field") in ("tokens", "member_sigs", "base_types", "call_sites",
+                                       "cast_types", "type_refs", "attr_names"):
                     vals = _hl_values(hl)
                     snippet = "; ".join(v.replace("\n", " ") for v in vals if v)
                     snippet = snippet.encode("ascii", errors="replace").decode("ascii")
@@ -284,9 +279,7 @@ def main():
     ap.add_argument("--implements", action="store_true",
                     help="[T1] Find types implementing/inheriting the query")
     ap.add_argument("--calls", action="store_true",
-                    help="[T1] Find files that call the queried method")
-    ap.add_argument("--sig", action="store_true",
-                    help="[T1] Search method signatures (return type + param types)")
+                    help="Find files that call the queried method")
     ap.add_argument("--uses", action="store_true",
                     help="[T2] Find files that reference the queried type")
     ap.add_argument("--attrs", action="store_true",
@@ -309,7 +302,6 @@ def main():
         symbols_only=args.symbols,
         implements=args.implements,
         calls=args.calls,
-        sig=args.sig,
         uses=args.uses,
         attrs=args.attrs,
         casts=args.casts,

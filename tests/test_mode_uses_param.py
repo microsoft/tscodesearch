@@ -131,11 +131,11 @@ namespace Synth {
 
 class TestParamTypeMetadataConsistency(unittest.TestCase):
 
-    def test_param_type_in_method_sigs(self):
-        """When a method has BlobStore param, method_sigs must contain BlobStore."""
+    def test_param_type_in_member_sigs(self):
+        """When a method has BlobStore param, member_sigs must contain BlobStore."""
         meta = extract_cs_metadata(PARAM_TYPED_BLOBSTORE_MULTI.encode())
-        assert any("BlobStore" in s for s in meta["method_sigs"]), \
-            f"method_sigs: {meta['method_sigs']}"
+        assert any("BlobStore" in s for s in meta["member_sigs"]), \
+            f"member_sigs: {meta['member_sigs']}"
 
     def test_param_type_in_type_refs(self):
         meta = extract_cs_metadata(PARAM_TYPED_BLOBSTORE_MULTI.encode())
@@ -143,10 +143,10 @@ class TestParamTypeMetadataConsistency(unittest.TestCase):
 
     def test_field_only_file_no_blobstore_in_sigs(self):
         meta = extract_cs_metadata(FIELD_ONLY_NO_PARAMS.encode())
-        # field type IS in type_refs, but NOT in method_sigs (no param)
+        # field type IS in type_refs, but NOT in member_sigs (no param)
         assert "BlobStore" in meta["type_refs"]
-        assert not any("BlobStore" in s for s in meta["method_sigs"]), \
-            "Field-only file must have no BlobStore in method_sigs"
+        assert not any("BlobStore" in s for s in meta["member_sigs"]), \
+            "Field-only file must have no BlobStore in member_sigs"
 
     def test_field_only_consistency_with_q_param_type(self):
         """q_param_type returns empty for field-only file, but type_refs has BlobStore.

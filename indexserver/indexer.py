@@ -75,30 +75,33 @@ else:
 # ---------------------------------------------------------------------------
 
 _SCHEMA_FIELDS = [
-    {"name": "id",            "type": "string"},
-    {"name": "relative_path", "type": "string"},
-    {"name": "filename",      "type": "string"},
-    {"name": "extension",     "type": "string", "facet": True},
-    {"name": "subsystem",     "type": "string", "facet": True},
-    {"name": "namespace",     "type": "string", "optional": True},
-    {"name": "class_names",   "type": "string[]", "optional": True},
-    {"name": "method_names",  "type": "string[]", "optional": True},
-    {"name": "symbols",       "type": "string[]"},
-    {"name": "content",       "type": "string"},
-    {"name": "mtime",         "type": "int64"},
-    # Tier 1 semantic fields
-    {"name": "base_types",    "type": "string[]", "optional": True},
-    {"name": "call_sites",    "type": "string[]", "optional": True},
-    {"name": "method_sigs",   "type": "string[]", "optional": True},
-    {"name": "cast_sites",    "type": "string[]", "optional": True},
-    # Tier 2 semantic fields
-    {"name": "type_refs",     "type": "string[]", "optional": True},
-    {"name": "attributes",    "type": "string[]", "optional": True, "facet": True},
-    {"name": "usings",        "type": "string[]", "optional": True},
-    {"name": "priority",      "type": "int32"},
-    # Tier 1 expanded fields
-    {"name": "return_types",  "type": "string[]", "optional": True},
-    {"name": "param_types",   "type": "string[]", "optional": True},
+    {"name": "id",               "type": "string"},
+    {"name": "relative_path",    "type": "string"},
+    {"name": "filename",         "type": "string"},
+    {"name": "extension",        "type": "string", "facet": True},
+    {"name": "language",         "type": "string", "facet": True},
+    {"name": "subsystem",        "type": "string", "facet": True},
+    {"name": "namespace",        "type": "string", "optional": True, "facet": True},
+    {"name": "class_names",      "type": "string[]", "optional": True},
+    {"name": "method_names",     "type": "string[]", "optional": True},
+    {"name": "tokens",           "type": "string"},
+    {"name": "mtime",            "type": "int64"},
+    # Declaration fields
+    {"name": "member_sigs",      "type": "string[]", "optional": True},
+    # Type reference fields (each serves a specific uses_kind)
+    {"name": "base_types",       "type": "string[]", "optional": True},
+    {"name": "field_types",      "type": "string[]", "optional": True},
+    {"name": "local_types",      "type": "string[]", "optional": True},
+    {"name": "param_types",      "type": "string[]", "optional": True},
+    {"name": "return_types",     "type": "string[]", "optional": True},
+    {"name": "cast_types",       "type": "string[]", "optional": True},
+    {"name": "type_refs",        "type": "string[]", "optional": True},
+    # Call and access site fields
+    {"name": "call_sites",       "type": "string[]", "optional": True},
+    {"name": "member_accesses",  "type": "string[]", "optional": True},
+    # Other
+    {"name": "attr_names",       "type": "string[]", "optional": True, "facet": True},
+    {"name": "usings",           "type": "string[]", "optional": True},
 ]
 
 
@@ -156,9 +159,10 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
     except Exception:
         return {
             "namespace": "", "class_names": [], "method_names": [],
-            "base_types": [], "call_sites": [], "cast_sites": [], "method_sigs": [],
-            "type_refs": [], "attributes": [], "usings": [],
-            "return_types": [], "param_types": [],
+            "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
+            "type_refs": [], "attr_names": [], "usings": [],
+            "return_types": [], "param_types": [], "field_types": [],
+            "local_types": [], "member_accesses": [],
         }
 
     root = tree.root_node
@@ -167,13 +171,16 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
     method_names = []
     base_types = []
     call_sites = []
-    cast_sites = []
-    method_sigs = []
+    cast_types = []
+    member_sigs = []
     type_refs = []
-    attributes = []
+    attr_names = []
     usings = []
     return_types = []
     param_types = []
+    field_types = []
+    local_types = []
+    member_accesses = []
 
     # Namespace
     ns_nodes = _find_all(root, lambda n: n.type in (
@@ -192,14 +199,14 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
                 usings.append(text.split(".")[0])  # top-level namespace
                 break
 
-    # T2: attributes
+    # attr_names
     for node in _find_all(root, lambda n: n.type == "attribute"):
         name_node = node.child_by_field_name("name")
         if name_node:
             attr_name = _node_text(name_node, src_bytes)
             if attr_name.endswith("Attribute"):
                 attr_name = attr_name[:-len("Attribute")]
-            attributes.append(_unqualify(attr_name))
+            attr_names.append(_unqualify(attr_name))
 
     # Type declarations
     for node in _find_all(root, lambda n: n.type in _TYPE_DECL_NODES):
@@ -225,7 +232,7 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
                 if vname:
                     method_names.append(_node_text(vname, src_bytes))
 
-        # T1: method signatures (methods + constructors)
+        # member_sigs (methods + constructors)
         if node.type in ("method_declaration", "local_function_statement",
                          "constructor_declaration"):
             ret_node = node.child_by_field_name("returns") or node.child_by_field_name("type")
@@ -242,22 +249,25 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
                         sig_param_types.append(ptype_txt)
                         param_types.extend(_expand_type_refs(ptype_txt))
                 sig = f"{ret_txt} {mname}({', '.join(sig_param_types)})".strip()
-                method_sigs.append(sig)
+                member_sigs.append(sig)
                 if ret_txt:
                     return_types.extend(_expand_type_refs(ret_txt))
 
-        # T2: type_refs
+        # field_types + type_refs
         if node.type in ("field_declaration", "event_field_declaration"):
-            # type lives inside the variable_declaration child
             var_decl = next((c for c in node.children if c.type == "variable_declaration"), None)
             if var_decl:
                 type_node = var_decl.child_by_field_name("type")
                 if type_node:
-                    type_refs.extend(_expand_type_refs(_node_text(type_node, src_bytes).strip()))
+                    expanded = _expand_type_refs(_node_text(type_node, src_bytes).strip())
+                    field_types.extend(expanded)
+                    type_refs.extend(expanded)
         elif node.type in ("property_declaration", "event_declaration"):
             type_node = node.child_by_field_name("type")
             if type_node:
-                type_refs.extend(_expand_type_refs(_node_text(type_node, src_bytes).strip()))
+                expanded = _expand_type_refs(_node_text(type_node, src_bytes).strip())
+                field_types.extend(expanded)
+                type_refs.extend(expanded)
         if node.type == "method_declaration":
             ret_node = node.child_by_field_name("returns") or node.child_by_field_name("type")
             if ret_node:
@@ -284,13 +294,15 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
     # T1: call sites (constructor calls — new Foo(...))
     call_sites.extend(_collect_ctor_names(root, src_bytes))
 
-    # T2: local variable declaration types (BlobStore store = ...; inside methods)
+    # local_types + type_refs
     for node in _find_all(root, lambda n: n.type == "local_declaration_statement"):
         var_decl = next((c for c in node.children if c.type == "variable_declaration"), None)
         if var_decl:
             type_node = var_decl.child_by_field_name("type")
             if type_node:
-                type_refs.extend(_expand_type_refs(_node_text(type_node, src_bytes).strip()))
+                expanded = _expand_type_refs(_node_text(type_node, src_bytes).strip())
+                local_types.extend(expanded)
+                type_refs.extend(expanded)
 
     # T2: static call receivers — PascalCase identifier as receiver of .Method(...)
     # e.g. BlobStore.Delete(key) → 'BlobStore' added to type_refs
@@ -303,28 +315,44 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
                 if name and name[0].isupper():
                     type_refs.extend(_expand_type_refs(name))
 
-    # T1: explicit cast target types — (BlobStore)obj → 'BlobStore' in cast_sites
+    # cast_types (explicit cast target types — (Widget)obj)
     for node in _find_all(root, lambda n: n.type == "cast_expression"):
         type_node = node.child_by_field_name("type")
         if type_node:
-            cast_sites.extend(_expand_type_refs(_node_text(type_node, src_bytes).strip()))
+            cast_types.extend(_expand_type_refs(_node_text(type_node, src_bytes).strip()))
+
+    # member_accesses: member_access_expression nodes that are NOT method calls
+    _invocation_fn_ids = {
+        id(node.child_by_field_name("function"))
+        for node in _find_all(root, lambda n: n.type == "invocation_expression")
+        if node.child_by_field_name("function") is not None
+        and node.child_by_field_name("function").type == "member_access_expression"
+    }
+    for node in _find_all(root, lambda n: n.type == "member_access_expression"):
+        if id(node) not in _invocation_fn_ids:
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                member_accesses.append(_node_text(name_node, src_bytes))
 
     # base_types are also type_refs: if you implement IFoo, you're "using" IFoo
     type_refs.extend(base_types)
 
     return {
-        "namespace":    namespace,
-        "class_names":  _dedupe(class_names),
-        "method_names": _dedupe(method_names),
-        "base_types":   _dedupe(base_types),
-        "call_sites":   _dedupe(call_sites),
-        "cast_sites":   _dedupe(cast_sites),
-        "method_sigs":  _dedupe(method_sigs),
-        "type_refs":    _dedupe(type_refs),
-        "attributes":   _dedupe(attributes),
-        "usings":       _dedupe(usings),
-        "return_types": _dedupe(return_types),
-        "param_types":  _dedupe(param_types),
+        "namespace":       namespace,
+        "class_names":     _dedupe(class_names),
+        "method_names":    _dedupe(method_names),
+        "base_types":      _dedupe(base_types),
+        "call_sites":      _dedupe(call_sites),
+        "cast_types":      _dedupe(cast_types),
+        "member_sigs":     _dedupe(member_sigs),
+        "type_refs":       _dedupe(type_refs),
+        "attr_names":      _dedupe(attr_names),
+        "usings":          _dedupe(usings),
+        "return_types":    _dedupe(return_types),
+        "param_types":     _dedupe(param_types),
+        "field_types":     _dedupe(field_types),
+        "local_types":     _dedupe(local_types),
+        "member_accesses": _dedupe(member_accesses),
     }
 
 
@@ -332,9 +360,10 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
     """Extract Python metadata for tier 1+2 semantic indexing."""
     _empty = {
         "namespace": "", "class_names": [], "method_names": [],
-        "base_types": [], "call_sites": [], "cast_sites": [], "method_sigs": [],
-        "type_refs": [], "attributes": [], "usings": [],
-        "return_types": [], "param_types": [],
+        "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
+        "type_refs": [], "attr_names": [], "usings": [],
+        "return_types": [], "param_types": [], "field_types": [],
+        "local_types": [], "member_accesses": [],
     }
     if not _PY_AVAILABLE or _py_parser is None:
         return _empty
@@ -348,9 +377,9 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
     method_names = []
     base_types = []
     call_sites = []
-    method_sigs = []
+    member_sigs = []
     type_refs = []
-    attributes = []
+    attr_names = []
     usings = []
     py_return_types = []
     py_param_types = []
@@ -384,7 +413,7 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
             sig = f"def {mname}{params_txt}"
             if ret_txt:
                 sig += f" -> {ret_txt}"
-            method_sigs.append(sig)
+            member_sigs.append(sig)
         if return_node:
             ret_type_txt = _node_text(return_node, src_bytes).strip()
             type_refs.extend(_expand_type_refs(ret_type_txt))
@@ -398,12 +427,12 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
                         type_refs.extend(_expand_type_refs(ptype_txt))
                         py_param_types.extend(_expand_type_refs(ptype_txt))
 
-    # Decorators (stored in "attributes" field for consistency)
+    # attr_names (decorators)
     for node in _find_all(root, lambda n: n.type == "decorator"):
         full_text = _node_text(node, src_bytes).strip().lstrip("@")
         dname = full_text.split("(")[0].split(".")[-1].strip()
         if dname:
-            attributes.append(dname)
+            attr_names.append(dname)
 
     # Call sites
     for node in _find_all(root, lambda n: n.type == "call"):
@@ -416,7 +445,7 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
                 if attr:
                     call_sites.append(_node_text(attr, src_bytes))
 
-    # Imports (stored in "usings" field for consistency)
+    # usings (imports)
     for node in _find_all(root, lambda n: n.type == "import_statement"):
         for child in node.named_children:
             if child.type == "dotted_name":
@@ -430,18 +459,21 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
             usings.append(_node_text(module_node, src_bytes).lstrip(".").split(".")[0])
 
     return {
-        "namespace":    "",
-        "class_names":  _dedupe(class_names),
-        "method_names": _dedupe(method_names),
-        "base_types":   _dedupe(base_types),
-        "call_sites":   _dedupe(call_sites),
-        "cast_sites":   [],   # Python has no explicit cast syntax
-        "method_sigs":  _dedupe(method_sigs),
-        "type_refs":    _dedupe(type_refs),
-        "attributes":   _dedupe(attributes),
-        "usings":       _dedupe(usings),
-        "return_types": _dedupe(py_return_types),
-        "param_types":  _dedupe(py_param_types),
+        "namespace":       "",
+        "class_names":     _dedupe(class_names),
+        "method_names":    _dedupe(method_names),
+        "base_types":      _dedupe(base_types),
+        "call_sites":      _dedupe(call_sites),
+        "cast_types":      [],   # Python has no explicit cast syntax
+        "member_sigs":     _dedupe(member_sigs),
+        "type_refs":       _dedupe(type_refs),
+        "attr_names":      _dedupe(attr_names),
+        "usings":          _dedupe(usings),
+        "return_types":    _dedupe(py_return_types),
+        "param_types":     _dedupe(py_param_types),
+        "field_types":     [],
+        "local_types":     [],
+        "member_accesses": [],
     }
 
 
@@ -458,19 +490,72 @@ def subsystem_from_path(relative_path: str) -> str:
     return parts[0] if parts else ""
 
 
-def should_skip_dir(dirname: str) -> bool:
-    return dirname in EXCLUDE_DIRS or dirname.startswith(".")
-
-
-_PRIORITY = {
-    ".cs":   3,
-    ".h": 2, ".hpp": 2, ".cpp": 2, ".c": 2, ".idl": 2,
-    ".py": 1, ".ts": 1, ".js": 1, ".ps1": 1, ".sh": 1, ".cmd": 1, ".bat": 1,
+_LANGUAGE: dict[str, str] = {
+    # C#
+    ".cs":    "csharp",
+    # Python
+    ".py":    "python",
+    # TypeScript
+    ".ts":    "typescript",  ".tsx":   "typescript",
+    # JavaScript
+    ".js":    "javascript",  ".jsx":   "javascript",
+    ".mjs":   "javascript",  ".cjs":   "javascript",
+    # Java
+    ".java":  "java",
+    # C / C++
+    ".c":     "cpp",  ".h":     "cpp",
+    ".cpp":   "cpp",  ".cc":    "cpp",  ".cxx":   "cpp",
+    ".hpp":   "cpp",  ".hxx":   "cpp",
+    # Go
+    ".go":    "go",
+    # Rust
+    ".rs":    "rust",
+    # Kotlin
+    ".kt":    "kotlin",  ".kts":   "kotlin",
+    # Swift
+    ".swift": "swift",
+    # PHP
+    ".php":   "php",
+    # Ruby
+    ".rb":    "ruby",
+    # Scala
+    ".scala": "scala",
+    # R
+    ".r":     "r",
+    # Dart
+    ".dart":  "dart",
+    # Lua
+    ".lua":   "lua",
+    # Haskell
+    ".hs":    "haskell",
+    # F#
+    ".fs":    "fsharp",  ".fsx":   "fsharp",  ".fsi":   "fsharp",
+    # Visual Basic
+    ".vb":    "vb",
+    # Objective-C
+    ".m":     "objc",  ".mm":    "objc",
+    # Elixir
+    ".ex":    "elixir",  ".exs":  "elixir",
+    # Shell
+    ".sh":    "shell",  ".bash":  "shell",
+    # PowerShell
+    ".ps1":   "powershell",  ".psm1":  "powershell",  ".psd1":  "powershell",
+    # Batch
+    ".cmd":   "batch",  ".bat":   "batch",
+    # SQL
+    ".sql":   "sql",
+    # IDL
+    ".idl":   "idl",
 }
 
 
-def _file_priority(ext: str) -> int:
-    return _PRIORITY.get(ext, 0)
+def _file_language(ext: str) -> str:
+    return _LANGUAGE.get(ext, "")
+
+
+def should_skip_dir(dirname: str) -> bool:
+    return dirname in EXCLUDE_DIRS or dirname.startswith(".")
+
 
 
 def build_document(full_path: str, relative_path: str, host_root: str = "") -> dict:
@@ -488,16 +573,16 @@ def build_document(full_path: str, relative_path: str, host_root: str = "") -> d
     else:
         meta = {
             "namespace": "", "class_names": [], "method_names": [],
-            "base_types": [], "call_sites": [], "cast_sites": [], "method_sigs": [],
-            "type_refs": [], "attributes": [], "usings": [],
-            "return_types": [], "param_types": [],
+            "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
+            "type_refs": [], "attr_names": [], "usings": [],
+            "return_types": [], "param_types": [], "field_types": [],
+            "local_types": [], "member_accesses": [],
         }
 
-    symbols = list(dict.fromkeys(meta["class_names"] + meta["method_names"]))
     # Store only unique identifier tokens — keeps the index small while
-    # preserving full recall for word-level search (we never phrase-search content).
+    # preserving full recall for word-level search (we never phrase-search tokens).
     _raw = src_bytes.decode("utf-8", errors="replace")
-    content = " ".join(dict.fromkeys(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', _raw)))
+    tokens = " ".join(dict.fromkeys(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', _raw)))
     relative_path_norm = relative_path.replace("\\", "/")
     # If a host root is provided, prefix it so the stored path is the full
     # Windows path (e.g. C:/repos/src/Foo.cs) rather than just Foo.cs.
@@ -505,27 +590,29 @@ def build_document(full_path: str, relative_path: str, host_root: str = "") -> d
     stored_path = (host_root.rstrip("/") + "/" + relative_path_norm) if host_root else relative_path_norm
 
     return {
-        "id":            file_id(stored_path),
-        "relative_path": stored_path,
-        "filename":      os.path.basename(full_path),
-        "extension":     ext.lstrip("."),
-        "subsystem":     subsystem_from_path(relative_path_norm),
-        "namespace":     meta["namespace"],
-        "class_names":   meta["class_names"],
-        "method_names":  meta["method_names"],
-        "symbols":       symbols if symbols else [""],
-        "content":       content,
-        "mtime":         int(stat.st_mtime),
-        "priority":      _file_priority(ext),
-        "base_types":    meta["base_types"],
-        "call_sites":    meta["call_sites"],
-        "cast_sites":    meta["cast_sites"],
-        "method_sigs":   meta["method_sigs"],
-        "type_refs":     meta["type_refs"],
-        "attributes":    meta["attributes"],
-        "usings":        meta["usings"],
-        "return_types":  meta["return_types"],
-        "param_types":   meta["param_types"],
+        "id":               file_id(stored_path),
+        "relative_path":    stored_path,
+        "filename":         os.path.basename(full_path),
+        "extension":        ext.lstrip("."),
+        "language":         _file_language(ext),
+        "subsystem":        subsystem_from_path(relative_path_norm),
+        "namespace":        meta["namespace"],
+        "class_names":      meta["class_names"],
+        "method_names":     meta["method_names"],
+        "tokens":           tokens,
+        "mtime":            int(stat.st_mtime),
+        "member_sigs":      meta["member_sigs"],
+        "base_types":       meta["base_types"],
+        "field_types":      meta["field_types"],
+        "local_types":      meta["local_types"],
+        "param_types":      meta["param_types"],
+        "return_types":     meta["return_types"],
+        "cast_types":       meta["cast_types"],
+        "type_refs":        meta["type_refs"],
+        "call_sites":       meta["call_sites"],
+        "member_accesses":  meta["member_accesses"],
+        "attr_names":       meta["attr_names"],
+        "usings":           meta["usings"],
     }
 
 

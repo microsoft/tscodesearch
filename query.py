@@ -935,9 +935,9 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
     src_root:   Source root directory for constructing absolute paths
                 (defaults to SRC_ROOT from config).
     query_by:   Typesense query_by field list override.  Defaults to broad full-text
-                search ("filename,symbols,class_names,method_names,content").
+                search ("filename,class_names,method_names,tokens").
                 For listing modes (methods/fields/classes) pass a signature-focused
-                string like "method_sigs,class_names,base_types,type_refs,method_names,filename"
+                string like "member_sigs,class_names,base_types,type_refs,method_names,filename"
                 to avoid pulling in files that only mention the term in call sites or
                 comments (which would cause unrelated method/field defs to appear).
     """

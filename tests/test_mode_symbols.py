@@ -1,16 +1,16 @@
 """
-Tests for symbols mode and text (default) mode.
+Tests for text (default) mode and declaration fields.
 
-Typesense fields: symbols = class_names ∪ method_names
-search_code query_by (symbols): symbols,class_names,method_names,filename
-search_code query_by (text):    filename,symbols,class_names,method_names,content
+Typesense fields: class_names, method_names
+search_code query_by (declarations): class_names,method_names,filename
+search_code query_by (text):         filename,class_names,method_names,tokens
 
 Gaps tested:
   - class_names contains only declared type names.
   - method_names contains only declared member names (not call targets).
-  - String literals are NOT in symbols but ARE in content (text mode).
-  - A type used only as a type ref (not declared) is NOT in symbols.
-  - text mode is strictly broader than symbols mode.
+  - String literals are NOT in class_names/method_names but ARE in tokens (text mode).
+  - A type used only as a type ref (not declared) is NOT in class_names/method_names.
+  - text mode is strictly broader than declaration-field mode.
 """
 from __future__ import annotations
 
@@ -64,15 +64,14 @@ class TestSymbolsFields(unittest.TestCase):
         assert "IDataStore" not in meta["class_names"]
         assert "IDataStore" not in meta["method_names"]
 
-    def test_symbols_is_union_of_class_and_method_names(self):
-        """build_document produces symbols = deduplicated class_names + method_names."""
+    def test_build_document_populates_class_and_method_names(self):
+        """build_document populates class_names and method_names correctly."""
         with tempfile.NamedTemporaryFile(suffix=".cs", delete=False, mode="w") as f:
             f.write(CLASS_NAMED_INVENTORYMANAGER)
             tmp = f.name
         try:
             doc = build_document(tmp, "synth/InventoryManager.cs")
-            expected = list(dict.fromkeys(doc["class_names"] + doc["method_names"]))
-            assert doc["symbols"] == expected
+            assert "InventoryManager" in doc["class_names"]
         finally:
             os.unlink(tmp)
 
@@ -177,39 +176,39 @@ class TestSymbolsAndTextModeLive(LiveTestBase):
         _delete_collection(cls.coll)
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
-    def test_symbols_finds_class_name(self):
+    def test_declarations_finds_class_name(self):
         fnames = self._ts_search("InventoryManager",
-                                 "symbols,class_names,method_names,filename")
+                                 "class_names,method_names,filename")
         assert "InventoryManager.cs" in fnames
 
-    def test_symbols_finds_method_name(self):
+    def test_declarations_finds_method_name(self):
         fnames = self._ts_search("ProcessInventory",
-                                 "symbols,class_names,method_names,filename")
+                                 "class_names,method_names,filename")
         assert "WarehouseService.cs" in fnames
 
-    def test_symbols_excludes_string_literal_file(self):
-        """Config.cs has 'InventoryManager' only in a string — must not match symbols."""
+    def test_declarations_excludes_string_literal_file(self):
+        """Config.cs has 'InventoryManager' only in a string — must not match declarations."""
         fnames = self._ts_search("InventoryManager",
-                                 "symbols,class_names,method_names,filename")
+                                 "class_names,method_names,filename")
         assert "Config.cs" not in fnames
 
     def test_text_includes_string_literal_file(self):
-        """Text mode includes content, so Config.cs IS returned."""
+        """Text mode includes tokens, so Config.cs IS returned."""
         fnames = self._ts_search("InventoryManager",
-                                 "filename,symbols,class_names,method_names,content")
+                                 "filename,class_names,method_names,tokens")
         assert "Config.cs" in fnames
 
-    def test_text_returns_more_than_symbols(self):
-        sym  = self._ts_search("InventoryManager",
-                               "symbols,class_names,method_names,filename",
+    def test_text_returns_more_than_declarations(self):
+        decl = self._ts_search("InventoryManager",
+                               "class_names,method_names,filename",
                                per_page=20)
         text = self._ts_search("InventoryManager",
-                               "filename,symbols,class_names,method_names,content",
+                               "filename,class_names,method_names,tokens",
                                per_page=20)
-        assert len(text) >= len(sym), \
-            "text mode must return >= files compared to symbols mode"
+        assert len(text) >= len(decl), \
+            "text mode must return >= files compared to declaration-field mode"
         assert "Config.cs" in text
-        assert "Config.cs" not in sym
+        assert "Config.cs" not in decl
 
 
 if __name__ == "__main__":

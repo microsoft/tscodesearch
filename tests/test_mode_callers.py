@@ -55,15 +55,15 @@ class TestCallSitesField(unittest.TestCase):
         meta = extract_cs_metadata(DEFINES_FETCHWIDGET.encode())
         assert "FetchWidget" in meta["method_names"]
 
-    def test_definition_in_method_sigs(self):
+    def test_definition_in_member_sigs(self):
         meta = extract_cs_metadata(DEFINES_FETCHWIDGET.encode())
-        assert any("FetchWidget" in s for s in meta["method_sigs"])
+        assert any("FetchWidget" in s for s in meta["member_sigs"])
 
-    def test_callers_file_not_in_method_sigs(self):
-        """The caller does not define FetchWidget — must not be in method_sigs."""
+    def test_callers_file_not_in_member_sigs(self):
+        """The caller does not define FetchWidget — must not be in member_sigs."""
         meta = extract_cs_metadata(CALLS_FETCHWIDGET.encode())
-        assert not any("FetchWidget" in s for s in meta["method_sigs"]), \
-            "FetchWidget must not appear in method_sigs of callers file"
+        assert not any("FetchWidget" in s for s in meta["member_sigs"]), \
+            "FetchWidget must not appear in member_sigs of callers file"
 
     def test_duplicate_calls_deduped(self):
         """FetchWidget called twice — should appear once in call_sites."""
@@ -215,21 +215,21 @@ class TestCallersModeLive(LiveTestBase):
         assert "Reporter.cs" not in fnames
 
     def test_text_mode_finds_definition_file(self):
-        """Text mode returns definition file (FetchWidget in method_names/content)."""
+        """Text mode returns definition file (FetchWidget in method_names/tokens)."""
         fnames = self._ts_search("FetchWidget",
-                                 "filename,symbols,class_names,method_names,content")
+                                 "filename,class_names,method_names,tokens")
         assert "WidgetService.cs" in fnames
 
     def test_text_mode_also_finds_caller_file(self):
         fnames = self._ts_search("FetchWidget",
-                                 "filename,symbols,class_names,method_names,content")
+                                 "filename,class_names,method_names,tokens")
         assert "WidgetClient.cs" in fnames
 
     def test_calls_fewer_results_than_text(self):
         """calls mode must return <= files compared to text mode."""
         callers = self._ts_search("FetchWidget", "call_sites,filename", per_page=20)
         text    = self._ts_search("FetchWidget",
-                                  "filename,symbols,class_names,method_names,content",
+                                  "filename,class_names,method_names,tokens",
                                   per_page=20)
         assert len(callers) <= len(text)
 

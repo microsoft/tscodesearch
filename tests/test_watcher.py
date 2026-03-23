@@ -279,7 +279,7 @@ class TestCsChangeHandlerIntegration(unittest.TestCase):
         handler._flush()
         self._drain()
 
-        hits = _search(self.coll, "GadgetNew", query_by="class_names,symbols,content")
+        hits = _search(self.coll, "GadgetNew", query_by="class_names,tokens")
         self.assertIn("Gadget.cs", [h["filename"] for h in hits])
 
     def test_flush_removes_deleted_file(self):

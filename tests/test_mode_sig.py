@@ -2,7 +2,7 @@
 Tests for sig / listing modes.
 
 Covers:
-  - extract_cs_metadata: method_sigs (param types, return types, constructors, locals)
+  - extract_cs_metadata: member_sigs (param types, return types, constructors, locals)
   - q_methods / q_classes / q_fields semantics (declarations only, no call contamination)
   - Narrow pre-filter (Bug 2): listing modes must not include calls-only files
   - Fixed sig search query_by (Bug 1): method_names removed to avoid false positives
@@ -29,41 +29,41 @@ from query import q_methods, q_classes, q_fields
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# extract_cs_metadata — method_sigs field
+# extract_cs_metadata — member_sigs field
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestMethodSigs(unittest.TestCase):
-    """extract_cs_metadata correctly populates method_sigs."""
+class TestMemberSigs(unittest.TestCase):
+    """extract_cs_metadata correctly populates member_sigs."""
 
-    def test_param_type_in_method_sigs(self):
+    def test_param_type_in_member_sigs(self):
         meta = extract_cs_metadata(SIG_HAS_PARAM.encode())
-        assert any("BlobStore" in s for s in meta["method_sigs"]), \
-            f"method_sigs: {meta['method_sigs']}"
+        assert any("BlobStore" in s for s in meta["member_sigs"]), \
+            f"member_sigs: {meta['member_sigs']}"
 
-    def test_return_type_in_method_sigs(self):
+    def test_return_type_in_member_sigs(self):
         """Return type uses child_by_field_name('returns') — must be captured."""
         meta = extract_cs_metadata(SIG_HAS_PARAM.encode())
-        sigs = meta["method_sigs"]
+        sigs = meta["member_sigs"]
         assert any("BlobStore" in s and "Retrieve" in s for s in sigs), \
             f"Return type 'BlobStore' must appear in Retrieve sig. Got: {sigs}"
 
-    def test_calls_only_no_blobstore_in_method_sigs(self):
+    def test_calls_only_no_blobstore_in_member_sigs(self):
         meta = extract_cs_metadata(CALLS_ONLY.encode())
-        assert not any("BlobStore" in s for s in meta["method_sigs"]), \
-            f"calls-only file must have no BlobStore in method_sigs: {meta['method_sigs']}"
+        assert not any("BlobStore" in s for s in meta["member_sigs"]), \
+            f"calls-only file must have no BlobStore in member_sigs: {meta['member_sigs']}"
 
-    def test_call_targets_not_in_method_sigs(self):
+    def test_call_targets_not_in_member_sigs(self):
         meta = extract_cs_metadata(CALLS_ONLY.encode())
-        for sig in meta["method_sigs"]:
+        for sig in meta["member_sigs"]:
             assert "FetchBlob" not in sig and "StoreBlob" not in sig, \
-                f"call target leaked into method_sigs: {sig!r}"
+                f"call target leaked into member_sigs: {sig!r}"
 
-    def test_constructor_in_method_sigs(self):
+    def test_constructor_in_member_sigs(self):
         meta = extract_cs_metadata(LISTING_TARGET.encode())
-        assert any("WidgetProcessor" in s for s in meta["method_sigs"]), \
-            "Constructor must appear in method_sigs"
+        assert any("WidgetProcessor" in s for s in meta["member_sigs"]), \
+            "Constructor must appear in member_sigs"
 
-    def test_local_function_in_method_sigs(self):
+    def test_local_function_in_member_sigs(self):
         src = """\
 namespace Synth {
     public class Worker {
@@ -75,8 +75,8 @@ namespace Synth {
 }
 """
         meta = extract_cs_metadata(src.encode())
-        assert any("LocalHelper" in s for s in meta["method_sigs"]), \
-            f"local function not in method_sigs: {meta['method_sigs']}"
+        assert any("LocalHelper" in s for s in meta["member_sigs"]), \
+            f"local function not in member_sigs: {meta['member_sigs']}"
 
     def test_method_names_field_has_all_names(self):
         meta = extract_cs_metadata(SIG_HAS_PARAM.encode())
@@ -224,31 +224,31 @@ class TestQFieldsSemantics(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestPrefilterFieldSelection(unittest.TestCase):
-    """The narrow pre-filter (method_sigs,class_names,base_types,type_refs,
+    """The narrow pre-filter (member_sigs,class_names,base_types,type_refs,
     method_names,filename) must exclude calls-only files."""
 
     def test_calls_only_absent_from_narrow_prefilter_fields(self):
-        """CALLS_IBLOBSERVICE has BlobStore-adjacent terms only in call_sites/content,
+        """CALLS_IBLOBSERVICE has BlobStore-adjacent terms only in call_sites/tokens,
         not in the narrow pre-filter fields."""
         meta = extract_cs_metadata(CALLS_IBLOBSERVICE.encode())
-        for field in ("method_sigs", "type_refs", "base_types", "class_names"):
+        for field in ("member_sigs", "type_refs", "base_types", "class_names"):
             vals = meta[field]
             assert not any("BlobStore" in v for v in vals), \
                 f"BlobStore found in narrow-prefilter field '{field}': {vals}"
 
     def test_sig_file_present_in_narrow_prefilter_fields(self):
         meta = extract_cs_metadata(SIG_HAS_PARAM.encode())
-        assert any("BlobStore" in s for s in meta["method_sigs"])
+        assert any("BlobStore" in s for s in meta["member_sigs"])
 
     def test_listing_target_present_in_narrow_prefilter_fields(self):
         meta = extract_cs_metadata(LISTING_TARGET.encode())
-        assert any("BlobStore" in s for s in meta["method_sigs"])
+        assert any("BlobStore" in s for s in meta["member_sigs"])
         assert "BlobStore" in meta["type_refs"]
 
     def test_class_name_only_hits_class_names_field(self):
         meta = extract_cs_metadata(NAME_CONTAINS.encode())
         assert "BlobStoreMigrator" in meta["class_names"]
-        assert not any("BlobStore" in s for s in meta["method_sigs"])
+        assert not any("BlobStore" in s for s in meta["member_sigs"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -281,30 +281,30 @@ class TestSigSearchLive(LiveTestBase):
         _delete_collection(cls.coll)
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
-    # ── Bug 1: sig search (method_sigs,filename) must not include method_names-only
+    # ── Bug 1: sig search (member_sigs,filename) must not include method_names-only
     def test_sig_finds_param_typed_blobstore(self):
-        fnames = self._ts_search("BlobStore", "method_sigs,filename")
+        fnames = self._ts_search("BlobStore", "member_sigs,filename")
         assert "DataPipeline.cs" in fnames, \
             f"Expected DataPipeline.cs; got: {fnames}"
 
     def test_sig_finds_listing_target(self):
-        fnames = self._ts_search("BlobStore", "method_sigs,filename")
+        fnames = self._ts_search("BlobStore", "member_sigs,filename")
         assert "ListingTarget.cs" in fnames
 
     def test_sig_excludes_calls_only(self):
         """Bug 1 fix: BlobConsumer.cs (calls only) must not appear in sig results."""
-        fnames = self._ts_search("BlobStore", "method_sigs,filename")
+        fnames = self._ts_search("BlobStore", "member_sigs,filename")
         assert "BlobConsumer.cs" not in fnames, \
             "calls-only file must not appear in sig search"
 
     def test_sig_excludes_reporter(self):
-        fnames = self._ts_search("BlobStore", "method_sigs,filename")
+        fnames = self._ts_search("BlobStore", "member_sigs,filename")
         assert "Reporter.cs" not in fnames
 
     def test_old_query_by_would_include_method_names_hits(self):
         """Regression proof: old query_by included method_names — the fixed one has fewer hits."""
-        old = self._ts_search("BlobStore", "method_sigs,method_names,filename")
-        new = self._ts_search("BlobStore", "method_sigs,filename")
+        old = self._ts_search("BlobStore", "member_sigs,method_names,filename")
+        new = self._ts_search("BlobStore", "member_sigs,filename")
         # True positives must not be lost
         for fname in ("DataPipeline.cs", "ListingTarget.cs"):
             assert fname in new, f"Fixed search dropped true-positive: {fname}"
@@ -313,35 +313,35 @@ class TestSigSearchLive(LiveTestBase):
     def test_narrow_prefilter_finds_sig_files(self):
         fnames = self._ts_search(
             "BlobStore",
-            "method_sigs,class_names,base_types,type_refs,method_names,filename")
+            "member_sigs,class_names,base_types,type_refs,method_names,filename")
         assert "DataPipeline.cs"  in fnames
         assert "ListingTarget.cs" in fnames
 
     def test_narrow_prefilter_excludes_calls_only(self):
         fnames = self._ts_search(
             "BlobStore",
-            "method_sigs,class_names,base_types,type_refs,method_names,filename")
+            "member_sigs,class_names,base_types,type_refs,method_names,filename")
         assert "BlobConsumer.cs" not in fnames, \
             "calls-only file must not appear in narrow pre-filter"
         assert "Reporter.cs"     not in fnames
 
-    def test_broad_prefilter_includes_content_only(self):
-        """Confirm OLD broad pre-filter (with content) included files where BlobStore
-        appears only as a static call target (content hit, no declaration)."""
+    def test_broad_prefilter_includes_tokens_only(self):
+        """Broad pre-filter (with tokens) includes files where BlobStore
+        appears only as a static call target (tokens hit, no declaration)."""
         fnames = self._ts_search(
             "BlobStore",
-            "filename,symbols,class_names,method_names,content")
+            "filename,class_names,method_names,tokens")
         assert "StaticCallOnly.cs" in fnames, \
-            "Old broad pre-filter must include content-only file (BlobStore in content)"
+            "Broad pre-filter must include tokens-only file (BlobStore in tokens)"
 
     def test_narrow_has_fewer_results_than_broad(self):
         narrow = self._ts_search(
             "BlobStore",
-            "method_sigs,class_names,base_types,type_refs,method_names,filename",
+            "member_sigs,class_names,base_types,type_refs,method_names,filename",
             per_page=20)
         broad  = self._ts_search(
             "BlobStore",
-            "filename,symbols,class_names,method_names,content",
+            "filename,class_names,method_names,tokens",
             per_page=20)
         assert len(narrow) <= len(broad), \
             f"Narrow ({len(narrow)}) must not exceed broad ({len(broad)})"
