@@ -5,6 +5,7 @@ HOST = "localhost"
 import json
 import os
 import re as _re
+import sys as _sys
 
 # ── config.json ───────────────────────────────────────────────────────────────
 # Each root entry is an object:
@@ -30,39 +31,13 @@ PORT: int = int(_CONFIG["port"])
 API_PORT: int = PORT + 1   # management API (indexserver/api.py)
 API_KEY: str = _CONFIG.get("api_key", "codesearch-local")
 
-# ── Roots ─────────────────────────────────────────────────────────────────────
-# ROOTS      — path used to find files (local_path if set, otherwise windows_path)
-# HOST_ROOTS — original Windows path stored as relative_path prefix in indexed docs
 
-def _parse_roots(raw: dict) -> tuple[dict, dict]:
-    """Parse roots config.  Each entry must be an object with at least one of:
-      local_path   — path as seen by the current process (WSL or Docker container)
-      windows_path — original Windows path (used as relative_path prefix in indexed docs)
-
-    ROOTS uses local_path when present, otherwise windows_path.
-    HOST_ROOTS is populated only when windows_path is set.
-    """
-    local_paths: dict[str, str] = {}
-    windows_paths: dict[str, str] = {}
-    for name, val in raw.items():
-        lp = val.get("local_path", "").replace("\\", "/").rstrip("/")
-        wp = val.get("windows_path", "").replace("\\", "/").rstrip("/")
-        local_paths[name] = lp or wp
-        if wp:
-            windows_paths[name] = wp
-    return local_paths, windows_paths
-
-ROOTS, HOST_ROOTS = _parse_roots(_CONFIG.get("roots", {}))
-
-SRC_ROOT: str = ROOTS.get("default") or next(iter(ROOTS.values()), "")
-
+# ── Platform helpers (defined before _parse_roots so it can call them) ────────
 
 def _is_wsl() -> bool:
     """Detect if running in WSL (vs native Linux like Docker)."""
-    # WSL sets WSL_DISTRO_NAME environment variable
     if os.environ.get("WSL_DISTRO_NAME"):
         return True
-    # Alternative check: WSL interop file exists
     if os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
         return True
     return False
@@ -76,7 +51,6 @@ def to_native_path(path: str) -> str:
     On Windows: converts /mnt/x/... to X:/..., leaves X:/... unchanged.
     Uses forward slashes on both platforms (valid on Windows too).
     """
-    import sys as _sys
     path = path.replace("\\", "/")
 
     if _sys.platform == "linux":
@@ -94,6 +68,49 @@ def to_native_path(path: str) -> str:
         if m:
             path = f"{m.group(1).upper()}:/{m.group(2)}"
     return path
+
+
+# ── Roots ─────────────────────────────────────────────────────────────────────
+# Each root entry in config.json should have both:
+#   local_path   — path as seen by this process (WSL: /mnt/c/…, Docker: /source/…)
+#   windows_path — Windows-side path (C:/…), stored as relative_path prefix in index
+#
+# ROOTS      — path used to find files (local_path if set, otherwise windows_path)
+# HOST_ROOTS — original Windows path stored as relative_path prefix in indexed docs
+
+def _parse_roots(raw: dict) -> tuple[dict, dict]:
+    """Parse roots config.  Each entry should have both:
+      local_path   — path as seen by the current process (WSL: /mnt/c/…, Docker: /source/…)
+      windows_path — original Windows path (C:/…), stored as relative_path prefix in indexed docs
+
+    If only windows_path is provided, local_path is auto-derived:
+      - In WSL: C:/foo/bar  →  /mnt/c/foo/bar
+      - In Docker/native Linux: cannot auto-derive; falls back to windows_path
+
+    ROOTS uses local_path (the server-side filesystem path for file access).
+    HOST_ROOTS stores windows_path (the Windows-side path used as relative_path prefix).
+    """
+    local_paths: dict[str, str] = {}
+    windows_paths: dict[str, str] = {}
+    for name, val in raw.items():
+        lp = val.get("local_path", "").replace("\\", "/").rstrip("/")
+        wp = val.get("windows_path", "").replace("\\", "/").rstrip("/")
+        if not lp and wp:
+            # Auto-derive local_path from windows_path when not explicitly set.
+            # In WSL, convert the Windows drive path to /mnt/<drive>/... form.
+            m = _re.match(r"^([a-zA-Z]):(.*)", wp)
+            if m and _sys.platform == "linux" and _is_wsl():
+                lp = f"/mnt/{m.group(1).lower()}{m.group(2)}"
+            else:
+                lp = wp  # Docker/native: no conversion; add local_path explicitly
+        local_paths[name] = lp
+        if wp:
+            windows_paths[name] = wp
+    return local_paths, windows_paths
+
+ROOTS, HOST_ROOTS = _parse_roots(_CONFIG.get("roots", {}))
+
+SRC_ROOT: str = ROOTS.get("default") or next(iter(ROOTS.values()), "")
 
 
 def _sanitize_root_name(name: str) -> str:

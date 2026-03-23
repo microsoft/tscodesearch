@@ -595,10 +595,15 @@ function cmdRoot(args) {
     if (args.addName) {
         if (!args.addPath) die('--add requires NAME and PATH');
         const p = args.addPath.replace(/\\/g, '/').replace(/\/+$/, '');
-        roots[args.addName] = { windows_path: p };
+        const entry = { windows_path: p };
+        // In WSL mode, also store the server-local path so the indexserver can
+        // find files without having to auto-derive it at runtime.
+        if (MODE === 'wsl') entry.local_path = winToWsl(p);
+        roots[args.addName] = entry;
         current.roots = roots;
         saveConfig(current);
         log(`Root '${args.addName}' = ${p}`);
+        if (MODE === 'wsl') log(`  local_path = ${entry.local_path}`);
         log('Restart the server for the change to take effect: ts restart');
         return;
     }

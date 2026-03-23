@@ -145,6 +145,34 @@ function toContainerPath(filePath) {
     // Already a container path or unknown — pass through
     return p;
 }
+/**
+ * Normalise any path format to a Windows host path (C:/…) for passing to the
+ * indexserver. The server uses HOST_ROOTS → ROOTS to map it to its native path.
+ *
+ * Accepts:
+ *   - Windows path   C:/repos/src/Foo.cs  → returned as-is (forward slashes)
+ *   - /mnt/c/… WSL   → C:/…
+ *   - $SRC_ROOT/…    → expanded to the default windows_path, then returned
+ *   - Bare relative  → prepended with default windows_path
+ */
+function toWindowsPath(filePath, _srcRoot) {
+    const defaultRootEntry = ROOTS["default"] ?? Object.values(ROOTS)[0];
+    const defaultRoot = (defaultRootEntry?.windows_path ?? "").replace(/\\/g, "/").replace(/\/$/, "");
+    let p = filePath.replace(/\\/g, "/");
+    // Expand $SRC_ROOT
+    p = p.replace(/\$\{SRC_ROOT\}/g, defaultRoot).replace(/\$SRC_ROOT/g, defaultRoot);
+    // /mnt/c/… → C:/…
+    const mntM = p.match(/^\/mnt\/([a-zA-Z])\/(.*)/);
+    if (mntM)
+        return `${mntM[1].toUpperCase()}:/${mntM[2]}`;
+    // Already a Windows drive path — return as-is
+    if (/^[A-Za-z]:/.test(p))
+        return p;
+    // Bare relative path — prefix with default Windows root
+    if (defaultRoot)
+        return `${defaultRoot}/${p}`;
+    return p;
+}
 // ── Queue warning ─────────────────────────────────────────────────────────────
 async function queueWarning() {
     try {
@@ -317,11 +345,11 @@ Examples:
         return { content: [{ type: "text", text: `Error: ${e.message}` }] };
     }
     const m = mode.toLowerCase().trim().replace(/-/g, "_");
-    const containerPath = toContainerPath(file);
+    const windowsPath = toWindowsPath(file, srcRoot);
     let result;
     try {
         result = await httpPost(API_PORT, "/query", {
-            mode: m, pattern: pattern || "", files: [containerPath],
+            mode: m, pattern: pattern || "", files: [windowsPath],
             include_body, symbol_kind: symbol_kind || "", uses_kind: uses_kind || "",
         });
     }
@@ -386,7 +414,7 @@ Args:
     const colInfo = st.collections?.[rootName] ?? {};
     const ndocs = colInfo.num_documents;
     const lines = [];
-    lines.push(`Typesense  : ${st.typesense_loading ? "loading" : (st.typesense_ok !== false ? "ok" : "NOT OK")}`);
+    lines.push(`Typesense  : ${st.typesense_ok !== false ? "ok" : "NOT OK"}`);
     if (ndocs != null) {
         lines.push(`Docs       : ${Number(ndocs).toLocaleString()}  (collection: ${collection})`);
     }

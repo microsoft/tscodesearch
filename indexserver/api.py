@@ -366,7 +366,17 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
 
     results = []
     for file_path in files:
-        native = to_native_path(file_path)
+        # Map Windows host path to native local path using HOST_ROOTS → ROOTS.
+        # Node.js passes Windows-style paths (e.g. Q:/spocore/src/Foo.cs);
+        # the server resolves them to the local filesystem path using config.
+        resolved = file_path.replace("\\", "/")
+        for name, host_root in HOST_ROOTS.items():
+            hr = host_root.replace("\\", "/").rstrip("/")
+            if resolved.lower().startswith(hr.lower() + "/") or resolved.lower() == hr.lower():
+                rel = resolved[len(hr):]  # includes leading /
+                resolved = ROOTS[name].rstrip("/") + rel
+                break
+        native = to_native_path(resolved)
         try:
             src_bytes = open(native, "rb").read()
         except OSError:
@@ -638,11 +648,15 @@ class _Handler(BaseHTTPRequestHandler):
 
             ts_mode_flag, ast_mode = _EXT_TO_TS_AND_AST[mode]
 
+            root_name = root if root else ("default" if "default" in ROOTS else next(iter(ROOTS)))
             try:
-                collection, src_root = get_root(root)
+                collection, src_root = get_root(root_name)
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
+            # Windows path prefix stored in Typesense relative_path (e.g. "C:/repos/src").
+            # Must be stripped before prepending the server-local src_root.
+            host_root_prefix = HOST_ROOTS.get(root_name, "").replace("\\", "/").rstrip("/")
 
             # Import search lazily (on sys.path via _base)
             import search as _search_mod
@@ -692,6 +706,11 @@ class _Handler(BaseHTTPRequestHandler):
             hit_by_path: dict[str, dict] = {}
             for hit in ast_hits:
                 rel = hit["document"].get("relative_path", "").replace("\\", "/")
+                # Strip the Windows host_root prefix (e.g. "C:/repos/src/Foo.cs" →
+                # "Foo.cs") so prepending the server-local src_root produces a valid path.
+                # Without this, Docker produces "/source/default/C:/repos/src/Foo.cs".
+                if host_root_prefix and rel.lower().startswith(host_root_prefix.lower() + "/"):
+                    rel = rel[len(host_root_prefix) + 1:]
                 abs_path = to_native_path(
                     src_root.rstrip("/\\") + "/" + rel
                 )

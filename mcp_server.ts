@@ -174,6 +174,38 @@ function toContainerPath(filePath: string): string {
   return p;
 }
 
+/**
+ * Normalise any path format to a Windows host path (C:/…) for passing to the
+ * indexserver. The server uses HOST_ROOTS → ROOTS to map it to its native path.
+ *
+ * Accepts:
+ *   - Windows path   C:/repos/src/Foo.cs  → returned as-is (forward slashes)
+ *   - /mnt/c/… WSL   → C:/…
+ *   - $SRC_ROOT/…    → expanded to the default windows_path, then returned
+ *   - Bare relative  → prepended with default windows_path
+ */
+function toWindowsPath(filePath: string, _srcRoot?: string): string {
+  const defaultRootEntry = ROOTS["default"] ?? Object.values(ROOTS)[0];
+  const defaultRoot = (defaultRootEntry?.windows_path ?? "").replace(/\\/g, "/").replace(/\/$/, "");
+
+  let p = filePath.replace(/\\/g, "/");
+
+  // Expand $SRC_ROOT
+  p = p.replace(/\$\{SRC_ROOT\}/g, defaultRoot).replace(/\$SRC_ROOT/g, defaultRoot);
+
+  // /mnt/c/… → C:/…
+  const mntM = p.match(/^\/mnt\/([a-zA-Z])\/(.*)/);
+  if (mntM) return `${mntM[1].toUpperCase()}:/${mntM[2]}`;
+
+  // Already a Windows drive path — return as-is
+  if (/^[A-Za-z]:/.test(p)) return p;
+
+  // Bare relative path — prefix with default Windows root
+  if (defaultRoot) return `${defaultRoot}/${p}`;
+
+  return p;
+}
+
 // ── Queue warning ─────────────────────────────────────────────────────────────
 
 async function queueWarning(): Promise<string> {
@@ -353,13 +385,13 @@ Examples:
     try { [, srcRoot] = getRoot(root); }
     catch (e: any) { return { content: [{ type: "text" as const, text: `Error: ${e.message}` }] }; }
 
-    const m             = mode.toLowerCase().trim().replace(/-/g, "_");
-    const containerPath = toContainerPath(file);
+    const m         = mode.toLowerCase().trim().replace(/-/g, "_");
+    const windowsPath = toWindowsPath(file, srcRoot);
 
     let result: HttpResult;
     try {
       result = await httpPost(API_PORT, "/query", {
-        mode: m, pattern: pattern || "", files: [containerPath],
+        mode: m, pattern: pattern || "", files: [windowsPath],
         include_body, symbol_kind: symbol_kind || "", uses_kind: uses_kind || "",
       });
     } catch (e: any) {
