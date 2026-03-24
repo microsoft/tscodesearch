@@ -131,7 +131,7 @@ export class ServerManager {
 
     addRoot(name: string, winPath: string): void {
         const config = this._readConfigFile();
-        config.roots = { ...(config.roots ?? {}), [name]: { windows_path: winPath } };
+        config.roots = { ...(config.roots ?? {}), [name]: { external_path: winPath } };
         this._writeConfigFile(config);
     }
 

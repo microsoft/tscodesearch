@@ -70,34 +70,39 @@ def fetch_live_doc(doc_id: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 # Fields where content is long — print truncated
-_CONTENT_FIELDS = {"content"}
+_TOKEN_FIELDS = {"tokens"}
 
 # Fields that are lists — show count + first N items
 _LIST_FIELDS = {
-    "class_names", "method_names", "symbols", "base_types",
-    "call_sites", "cast_sites", "method_sigs", "type_refs",
-    "attributes", "usings", "return_types", "param_types",
+    "class_names", "method_names", "member_sigs", "base_types",
+    "field_types", "local_types", "param_types", "return_types",
+    "cast_types", "type_refs", "call_sites", "member_accesses",
+    "attr_names", "usings",
 }
 
 # Scalar fields shown as-is
 _SCALAR_FIELDS = {
     "id", "relative_path", "filename", "extension",
-    "subsystem", "namespace", "mtime", "priority",
+    "subsystem", "language", "namespace", "mtime",
 }
 
-_ALL_FIELDS = _SCALAR_FIELDS | _LIST_FIELDS | _CONTENT_FIELDS
+_ALL_FIELDS = _SCALAR_FIELDS | _LIST_FIELDS | _TOKEN_FIELDS
 
 _FIELD_ORDER = [
     # identity
-    "id", "relative_path", "filename", "extension", "subsystem",
-    "namespace", "priority", "mtime",
-    # key semantic fields
-    "class_names", "method_names", "symbols",
-    "base_types", "call_sites", "cast_sites",
-    "method_sigs", "type_refs",
-    "attributes", "usings", "return_types", "param_types",
-    # content last (large)
-    "content",
+    "id", "relative_path", "filename", "extension", "language", "subsystem",
+    "namespace", "mtime",
+    # declaration fields
+    "class_names", "method_names", "member_sigs",
+    # type reference fields
+    "base_types", "field_types", "local_types",
+    "param_types", "return_types", "cast_types", "type_refs",
+    # call and access site fields
+    "call_sites", "member_accesses",
+    # other
+    "attr_names", "usings",
+    # tokens last (large)
+    "tokens",
 ]
 
 TRUNCATE_LIST  = 20   # show at most this many items per list field
@@ -126,11 +131,11 @@ def print_doc(doc: dict, label: str = "", field_filter: str = "") -> None:
                 print(f"  {key}: <not present>")
             continue
         val = doc[key]
-        if key in _CONTENT_FIELDS:
-            tokens = val.split() if isinstance(val, str) else []
+        if key in _TOKEN_FIELDS:
+            token_list = val.split() if isinstance(val, str) else []
             preview = val[:TRUNCATE_CONTENT].replace("\n", " ")
             ellipsis = "…" if len(val) > TRUNCATE_CONTENT else ""
-            print(f"\n  {key}: [{len(tokens)} tokens]")
+            print(f"\n  {key}: [{len(token_list)} tokens]")
             print(f"    {preview}{ellipsis}")
         elif key in _LIST_FIELDS:
             print(f"\n  {key}: {_fmt_list(val)}")
@@ -147,7 +152,7 @@ def diff_docs(extracted: dict, live: dict, field_filter: str = "") -> None:
 
     any_diff = False
     for key in fields:
-        if key in _CONTENT_FIELDS:
+        if key in _TOKEN_FIELDS:
             # compare token counts only
             e_tokens = set(extracted.get(key, "").split())
             l_tokens = set(live.get(key, "").split())
@@ -200,7 +205,7 @@ def main():
     ap.add_argument("--diff", action="store_true",
                     help="Compare extracted doc with what is currently in Typesense")
     ap.add_argument("--field", metavar="NAME", default="",
-                    help="Show only this field (e.g. class_names, symbols, method_sigs)")
+                    help="Show only this field (e.g. class_names, member_sigs, cast_types)")
     ap.add_argument("--live-only", action="store_true",
                     help="Show only the live Typesense doc (no local extraction)")
     args = ap.parse_args()

@@ -83,9 +83,9 @@ namespace Synth {
 }
 """
 
-# ✓ "BlobStore" appears only as a static call target — shows up in content but
-#   NOT in method_sigs, type_refs, class_names, or base_types.
-#   Used to verify that the OLD broad pre-filter (content field) picks it up.
+# ✓ "BlobStore" appears only as a static call target — shows up in tokens but
+#   NOT in member_sigs, type_refs, class_names, or base_types.
+#   Used to verify that the broad pre-filter (tokens field) picks it up.
 CONTENT_ONLY_BLOBSTORE = """\
 namespace Synth {
     public class StaticCallOnly {
@@ -447,7 +447,7 @@ namespace Synth {
 """
 
 # ✗ BlobStore only via 'as' cast — NO explicit (BlobStore)expr cast.
-#   cast_sites must NOT contain BlobStore.
+#   cast_types must NOT contain BlobStore.
 AS_CAST_ONLY_BLOBSTORE = """\
 namespace Synth {
     public class AsCastOnly {

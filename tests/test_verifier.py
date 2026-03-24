@@ -24,7 +24,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from tests.helpers import (
-    _server_ok, _search, _delete_collection, _make_git_repo,
+    _server_ok, _assert_server_ok, _search, _delete_collection, _make_git_repo,
     _FOO_CS, _BAR_CS,
 )
 from indexserver.indexer import run_index, file_id
@@ -187,12 +187,12 @@ class TestRunVerifyUnit(unittest.TestCase):
 
 # ── TestVerifier ──────────────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestVerifier(unittest.TestCase):
     """Integration tests for run_verify against a live Typesense instance."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll = f"test_verify_{stamp}"
         cls.tmpdir = _make_git_repo({
@@ -210,7 +210,7 @@ class TestVerifier(unittest.TestCase):
 
     def _get(self, filename: str) -> dict | None:
         hits = _search(self.coll, os.path.splitext(filename)[0],
-                       query_by="filename,symbols,class_names,method_names,content")
+                       query_by="filename,class_names,method_names,tokens")
         return next((h for h in hits if h["filename"] == filename), None)
 
     # ── no-op: index is already up to date ────────────────────────────────────
@@ -257,7 +257,7 @@ class TestVerifier(unittest.TestCase):
         time.sleep(0.5)
 
         hits = _search(self.coll, "FooModified",
-                       query_by="class_names,content,filename")
+                       query_by="class_names,tokens,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("foo.cs", names, "Modified foo.cs should be re-indexed")
 

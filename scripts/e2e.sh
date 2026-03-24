@@ -53,7 +53,7 @@ CURL="curl -sf --max-time 8"
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _ts_healthy() {
-    $CURL "${TS_URL}/health" 2>/dev/null | grep -q '"ok":true'
+    python3 "$(dirname "$0")/http_ok.py" "${TS_URL}/health" 2>/dev/null
 }
 
 _collection_count() {

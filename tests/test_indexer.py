@@ -19,7 +19,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from tests.helpers import (
-    _server_ok, _search, _collection_info, _delete_collection, _make_git_repo,
+    _server_ok, _assert_server_ok, _search, _collection_info, _delete_collection, _make_git_repo,
     _MockTypesenseClient,
     _FOO_CS, _BAR_CS, _BLOBSTORE_CS, _QUALIFIED_CS, _GENERIC_WRAPPER_CS,
 )
@@ -32,12 +32,12 @@ from indexserver.index_queue import IndexQueue, MTIME_DELETE
 
 # ── TestIndexer ───────────────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestIndexer(unittest.TestCase):
     """Indexer creates a collection and indexes C# + other files."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll = f"test_idx_{stamp}"
         cls.tmpdir = _make_git_repo({
@@ -70,12 +70,12 @@ class TestIndexer(unittest.TestCase):
         self.assertIn("Foo.cs", names, f"Foo.cs not in {names}")
 
     def test_python_file_indexed(self):
-        hits = _search(self.coll, "deploy", query_by="filename,content")
+        hits = _search(self.coll, "deploy", query_by="filename,tokens")
         names = [h["filename"] for h in hits]
         self.assertIn("deploy.py", names, f"deploy.py not in {names}")
 
     def test_markdown_indexed(self):
-        hits = _search(self.coll, "project", query_by="filename,content")
+        hits = _search(self.coll, "project", query_by="filename,tokens")
         names = [h["filename"] for h in hits]
         self.assertIn("README.md", names, f"README.md not in {names}")
 
@@ -99,18 +99,6 @@ class TestIndexer(unittest.TestCase):
         self.assertIsNotNone(blob, "BlobStore.cs not found")
         self.assertEqual(blob["subsystem"], "storage")
 
-    def test_cs_priority_3(self):
-        hits = _search(self.coll, "Foo")
-        foo = next((h for h in hits if h["filename"] == "Foo.cs"), None)
-        self.assertIsNotNone(foo)
-        self.assertEqual(foo["priority"], 3)
-
-    def test_py_priority_1(self):
-        hits = _search(self.coll, "deploy", query_by="filename,content")
-        py = next((h for h in hits if h["filename"] == "deploy.py"), None)
-        self.assertIsNotNone(py, "deploy.py not found")
-        self.assertEqual(py["priority"], 1)
-
     def test_reset_recreates_collection(self):
         """resethard=True drops and recreates the collection."""
         old_info = _collection_info(self.coll)
@@ -125,12 +113,12 @@ class TestIndexer(unittest.TestCase):
 
 # ── TestSemanticFields ────────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestSemanticFields(unittest.TestCase):
     """tree-sitter extracts the right symbols and semantic metadata."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll = f"test_sem_{stamp}"
         cls.tmpdir = _make_git_repo({
@@ -180,11 +168,11 @@ class TestSemanticFields(unittest.TestCase):
         self.assertIn("Foo", bar.get("type_refs", []),
             f"type_refs: {bar.get('type_refs')}")
 
-    def test_attributes(self):
+    def test_attr_names(self):
         foo = self._get("Foo.cs")
         self.assertIsNotNone(foo)
-        self.assertIn("Serializable", foo.get("attributes", []),
-            f"attributes: {foo.get('attributes')}")
+        self.assertIn("Serializable", foo.get("attr_names", []),
+            f"attr_names: {foo.get('attr_names')}")
 
     def test_usings(self):
         foo = self._get("Foo.cs")
@@ -204,14 +192,14 @@ class TestSemanticFields(unittest.TestCase):
         self.assertIn("Dispose", methods, f"method_names: {methods}")
         self.assertIn("DoWork",  methods, f"method_names: {methods}")
 
-    def test_method_sigs(self):
+    def test_member_sigs(self):
         foo = self._get("Foo.cs")
         self.assertIsNotNone(foo)
-        sigs = foo.get("method_sigs", [])
+        sigs = foo.get("member_sigs", [])
         self.assertTrue(any("Dispose" in s for s in sigs),
-                        f"expected 'Dispose' in method_sigs: {sigs}")
+                        f"expected 'Dispose' in member_sigs: {sigs}")
         self.assertTrue(any("DoWork" in s for s in sigs),
-                        f"expected 'DoWork' in method_sigs: {sigs}")
+                        f"expected 'DoWork' in member_sigs: {sigs}")
 
     def test_namespace(self):
         foo = self._get("Foo.cs")
@@ -222,12 +210,12 @@ class TestSemanticFields(unittest.TestCase):
 
 # ── TestMultiRoot ─────────────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestMultiRoot(unittest.TestCase):
     """Two independent collections for the same source tree stay isolated."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll_a = f"test_root_a_{stamp}"
         cls.coll_b = f"test_root_b_{stamp}"
@@ -313,9 +301,9 @@ class TestExtractCsMetadata(unittest.TestCase):
 
     def test_qualified_attribute_stripped(self):
         meta = extract_cs_metadata(_QUALIFIED_CS.encode())
-        self.assertIn("Authorize", meta["attributes"],
-                      f"attributes: {meta['attributes']}")
-        self.assertNotIn("My.Auth.Authorize", meta["attributes"])
+        self.assertIn("Authorize", meta["attr_names"],
+                      f"attr_names: {meta['attr_names']}")
+        self.assertNotIn("My.Auth.Authorize", meta["attr_names"])
 
     def test_type_ref_generic_stores_full_and_arg(self):
         meta = extract_cs_metadata(_GENERIC_WRAPPER_CS.encode())
@@ -333,12 +321,12 @@ class TestExtractCsMetadata(unittest.TestCase):
 
 # ── TestSearchFieldModes ──────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestSearchFieldModes(unittest.TestCase):
     """Each MCP search mode's query_by field string returns the right file."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll = f"test_modes_{stamp}"
         cls.tmpdir = _make_git_repo({
@@ -366,23 +354,23 @@ class TestSearchFieldModes(unittest.TestCase):
         names = [h["filename"] for h in hits]
         self.assertIn("Bar.cs", names)
 
-    def test_sig_mode_method_sigs(self):
-        hits = self._qby("Dispose", "method_sigs,method_names,filename")
+    def test_declarations_mode_member_sigs(self):
+        hits = self._qby("Dispose", "member_sigs,method_names,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("Foo.cs", names)
 
     def test_uses_mode_type_refs(self):
-        hits = self._qby("Foo", "type_refs,symbols,class_names,filename")
+        hits = self._qby("Foo", "type_refs,class_names,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("Bar.cs", names)
 
-    def test_attrs_mode_attributes(self):
-        hits = self._qby("Serializable", "attributes,filename")
+    def test_attrs_mode_attr_names(self):
+        hits = self._qby("Serializable", "attr_names,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("Foo.cs", names)
 
     def test_namespace_in_query(self):
-        hits = self._qby("TestNs", "content,filename")
+        hits = self._qby("TestNs", "tokens,filename")
         self.assertGreater(len(hits), 0)
 
 

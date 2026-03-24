@@ -172,10 +172,10 @@ class TestQueryCs(unittest.TestCase):
         n, out = self._run(self.foo_path, "classes")
         self.assertIn("Foo", out)
 
-    def test_method_sigs_consistent(self):
+    def test_member_sigs_consistent(self):
         meta = extract_cs_metadata(_FOO_CS.encode())
-        sigs = meta["method_sigs"]
-        self.assertTrue(any("Dispose" in s for s in sigs), f"method_sigs: {sigs}")
+        sigs = meta["member_sigs"]
+        self.assertTrue(any("Dispose" in s for s in sigs), f"member_sigs: {sigs}")
         n, out = self._run(self.foo_path, "methods")
         self.assertIn("Dispose", out)
         self.assertIn("DoWork", out)
@@ -198,9 +198,9 @@ class TestQueryCs(unittest.TestCase):
         n, out = self._run(self.bar_path, "uses", "Foo", uses_kind="field")
         self.assertGreater(n, 0)
 
-    def test_attributes_consistent(self):
+    def test_attr_names_consistent(self):
         meta = extract_cs_metadata(_FOO_CS.encode())
-        self.assertIn("Serializable", meta["attributes"])
+        self.assertIn("Serializable", meta["attr_names"])
         n, out = self._run(self.foo_path, "attrs", "Serializable")
         self.assertGreater(n, 0)
 

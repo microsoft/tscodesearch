@@ -257,12 +257,12 @@ class TestAttributesConsistency:
     """CONSISTENT — both systems strip "Attribute" suffix and unqualify."""
 
     def test_indexer_strips_attribute_suffix(self, meta):
-        assert "Serializable" in meta["attributes"], \
-            f"attributes: {meta['attributes']}"
-        assert "SerializableAttribute" not in meta["attributes"]
+        assert "Serializable" in meta["attr_names"], \
+            f"attr_names: {meta['attr_names']}"
+        assert "SerializableAttribute" not in meta["attr_names"]
 
     def test_indexer_strips_obsolete(self, meta):
-        assert "Obsolete" in meta["attributes"]
+        assert "Obsolete" in meta["attr_names"]
 
     def test_query_finds_serializable(self, fx):
         r = q_attrs(*fx, "Serializable")
@@ -273,7 +273,7 @@ class TestAttributesConsistency:
         assert len(r) >= 1
 
     def test_every_indexed_attr_findable_by_query(self, meta, fx):
-        for attr in meta["attributes"]:
+        for attr in meta["attr_names"]:
             r = q_attrs(*fx, attr)
             assert len(r) >= 1, \
                 f"'{attr}' in indexed attributes but q_attrs found nothing"
@@ -282,12 +282,12 @@ class TestAttributesConsistency:
         """[Acme.Auth.AuthorizeAttribute] must be stored as 'Authorize'."""
         src = b"namespace N { [Acme.Auth.AuthorizeAttribute] public class C {} }"
         m = extract_cs_metadata(src)
-        assert "Authorize" in m["attributes"], f"attributes: {m['attributes']}"
-        assert "Acme.Auth.AuthorizeAttribute" not in m["attributes"]
+        assert "Authorize" in m["attr_names"], f"attr_names: {m['attr_names']}"
+        assert "Acme.Auth.AuthorizeAttribute" not in m["attr_names"]
 
 
 # ===========================================================================
-# GAP: method_sigs — indexer uses "returns" field; query uses "type" field
+# GAP: member_sigs — indexer uses "returns" field; query uses "type" field
 # ===========================================================================
 
 class TestMethodSigsFieldNameGap:
@@ -296,7 +296,7 @@ class TestMethodSigsFieldNameGap:
     but tree-sitter-c-sharp 0.23.x exposes the return type on the "type" field of
     method_declaration.  q_methods/_build_sig correctly uses "type".
 
-    Effect: indexer method_sigs omit return types (stored as "MethodName(ParamType)")
+    Effect: indexer member_sigs omit return types (stored as "MethodName(ParamType)")
     while q_methods shows them as "[method] RetType MethodName(ParamType param)".
 
     This test documents the discrepancy.  Fix: change indexer to use
@@ -311,23 +311,23 @@ class TestMethodSigsFieldNameGap:
         assert any("string" in t for t in transform_lines), \
             f"Return type 'string' missing from q_methods output: {transform_lines}"
 
-    def test_indexer_method_sigs_contain_method_name(self, meta):
+    def test_indexer_member_sigs_contain_method_name(self, meta):
         """Sanity: method sigs at minimum contain the method name."""
-        sigs = meta["method_sigs"]
+        sigs = meta["member_sigs"]
         assert any("Transform" in s for s in sigs), \
-            f"Transform not found in method_sigs: {sigs}"
+            f"Transform not found in member_sigs: {sigs}"
 
-    def test_indexer_method_sigs_include_return_type(self, meta):
-        """Indexer method_sigs include return types (uses child_by_field_name('type'))."""
-        sigs = meta["method_sigs"]
+    def test_indexer_member_sigs_include_return_type(self, meta):
+        """Indexer member_sigs include return types (uses child_by_field_name('type'))."""
+        sigs = meta["member_sigs"]
         transform_sigs = [s for s in sigs if "Transform" in s]
         assert transform_sigs, f"no Transform sig found: {sigs}"
         assert any("string" in s for s in transform_sigs), \
-            f"Return type 'string' missing from Transform method_sigs: {transform_sigs}"
+            f"Return type 'string' missing from Transform member_sigs: {transform_sigs}"
 
     def test_constructor_sig_has_no_return_type(self, meta):
         """Constructors correctly have no return type in either system."""
-        sigs = meta["method_sigs"]
+        sigs = meta["member_sigs"]
         ctor_sigs = [s for s in sigs if "ConcreteWidget" in s]
         assert ctor_sigs, f"ConcreteWidget ctor sig missing: {sigs}"
         # Ctor sigs should NOT start with a return type
@@ -350,8 +350,8 @@ class TestTypeRefsVsUsesGap:
       - local variable declaration types — gap CLOSED: indexer now scans local decls
       - PascalCase static call receivers  — gap CLOSED: indexer now extracts these
 
-    SPLIT (explicit casts go to cast_sites, not type_refs):
-      - explicit cast targets — in cast_sites (new T1 field) but NOT in type_refs
+    SPLIT (explicit casts go to cast_types, not type_refs):
+      - explicit cast targets — in cast_types (new T1 field) but NOT in type_refs
     """
 
     # ── items that SHOULD be in type_refs ────────────────────────────────────
@@ -373,10 +373,10 @@ class TestTypeRefsVsUsesGap:
 
     # ── items that q_uses finds but type_refs does NOT ───────────────────────
 
-    def test_cast_target_in_cast_sites_not_type_refs(self):
+    def test_cast_target_in_cast_types_not_type_refs(self):
         """
-        Explicit casts go to cast_sites (T1 field), NOT type_refs.
-        This keeps type_refs for declaration-site usages and cast_sites
+        Explicit casts go to cast_types (T1 field), NOT type_refs.
+        This keeps type_refs for declaration-site usages and cast_types
         for explicit narrowing casts — different query semantics.
         """
         src2 = b"""
@@ -392,8 +392,8 @@ namespace N {
         m2 = extract_cs_metadata(src2)
         assert "CastOnly" not in m2["type_refs"], \
             "Cast-only types must not bleed into type_refs"
-        assert "CastOnly" in m2["cast_sites"], \
-            f"Cast-only types must be in cast_sites: {m2['cast_sites']}"
+        assert "CastOnly" in m2["cast_types"], \
+            f"Cast-only types must be in cast_types: {m2['cast_types']}"
 
     def test_local_variable_type_in_type_refs(self):
         """
@@ -595,27 +595,27 @@ namespace N {
 
 
 # ===========================================================================
-# cast_sites — dedicated T1 field for explicit cast targets
+# cast_types — dedicated T1 field for explicit cast targets
 # ===========================================================================
 
 class TestCastSitesMissing:
     """
-    GAP CLOSED: cast_sites is now a T1 field.
+    GAP CLOSED: cast_types is now a T1 field.
     q_casts finds explicit (TYPE)expr cast expressions; the indexer now extracts
-    the same types into cast_sites for Typesense pre-filtering.
-    Cast targets do NOT bleed into type_refs — they remain in cast_sites only.
+    the same types into cast_types for Typesense pre-filtering.
+    Cast targets do NOT bleed into type_refs — they remain in cast_types only.
     """
 
     def test_q_casts_finds_explicit_cast(self, fx):
         r = q_casts(*fx, "BaseWidget")
         assert len(r) >= 1
 
-    def test_indexer_has_cast_sites_field(self, meta):
-        assert "cast_sites" in meta, \
-            "cast_sites field must be present in indexer metadata"
+    def test_indexer_has_cast_types_field(self, meta):
+        assert "cast_types" in meta, \
+            "cast_types field must be present in indexer metadata"
 
-    def test_cast_target_in_cast_sites_not_type_refs(self):
-        """Cast-only body types are in cast_sites, not type_refs."""
+    def test_cast_target_in_cast_types_not_type_refs(self):
+        """Cast-only body types are in cast_types, not type_refs."""
         src = b"""
 namespace N {
     public class BodyCastOnly {}
@@ -625,8 +625,8 @@ namespace N {
 }
 """
         m = extract_cs_metadata(src)
-        assert "BodyCastOnly" in m["cast_sites"], \
-            f"Cast-only body types must be in cast_sites: {m['cast_sites']}"
+        assert "BodyCastOnly" in m["cast_types"], \
+            f"Cast-only body types must be in cast_types: {m['cast_types']}"
         assert "BodyCastOnly" not in m["type_refs"], \
             "Cast-only body types must not bleed into type_refs"
 
@@ -667,8 +667,8 @@ class TestIdentMissing:
             tmppath = f.name
         try:
             doc = build_document(tmppath, "test/C.cs")
-            assert "content" in doc
-            assert "C" in doc["content"]
+            assert "tokens" in doc
+            assert "C" in doc["tokens"]
         finally:
             os.unlink(tmppath)
 

@@ -36,7 +36,7 @@
 import { spawnSync, spawn }               from 'node:child_process';
 import { existsSync, writeFileSync,
          readFileSync, unlinkSync,
-         mkdirSync,
+         mkdirSync, rmSync,
          createWriteStream }              from 'node:fs';
 import { tmpdir }                         from 'node:os';
 import { join, dirname }                  from 'node:path';
@@ -53,9 +53,10 @@ const toWslPath    = p =>
 
 // ── Output helpers ────────────────────────────────────────────────────────────
 
-/** Create a fresh per-run log directory and print its path once. */
+/** Create (or clear) the fixed log directory and print its path. */
 function mkLogDir() {
-  const dir = join(tmpdir(), `codesearch-run-${process.pid}`);
+  const dir = join(tmpdir(), 'codesearch-logs');
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
   mkdirSync(dir, { recursive: true });
   console.log(`[run] logs → ${dir}`);
   return dir;
@@ -103,8 +104,26 @@ function capture(cmd, args, opts = {}) {
 // ── Summaries extracted from captured output ──────────────────────────────────
 
 function pytestSummary(output) {
-  const m = output.match(/=+ ([\d]+ (?:passed|failed|error)[^=\n]*?) =+/);
-  return m ? m[1].trim() : null;
+  // Take the last match — the final "N passed, M failed in X.Xs" line.
+  const matches = [...output.matchAll(/=+ ([\d]+ \w+[^=\n]*? in [\d.]+s) =+/g)];
+  if (matches.length === 0) return null;
+  return matches.at(-1)[1].trim();
+}
+
+/** Extract the first few FAILED/ERROR test names from the short summary section. */
+function pytestDetail(output, limit = 8) {
+  const lines = output.split('\n');
+  const start = lines.findIndex(l => l.includes('short test summary info'));
+  if (start === -1) return null;
+  const results = [];
+  for (let i = start + 1; i < lines.length && results.length < limit; i++) {
+    const l = lines[i];
+    if (l.startsWith('FAILED ') || l.startsWith('ERROR ')) {
+      const m = l.match(/^(FAILED|ERROR)\s+(\S+)/);
+      if (m) results.push(`    ${m[1]} ${m[2]}`);
+    } else if (l.startsWith('===')) break;
+  }
+  return results.length > 0 ? results.join('\n') : null;
 }
 
 function vscodeSummary(output) {
@@ -122,7 +141,10 @@ function httpHealth(port) {
       res => {
         let body = '';
         res.on('data', d => body += d);
-        res.on('end', () => resolve(body.includes('"ok":true')));
+        res.on('end', () => {
+          try { resolve(JSON.parse(body).ok === true); }
+          catch { resolve(false); }
+        });
       }
     );
     req.on('error',   () => resolve(false));
@@ -191,8 +213,8 @@ async function runDocker() {
   if (runCaptured('docker', ['info', '--format', '{{.ID}}']).status !== 0)
     die('Docker is not running. Start Docker Desktop first.');
 
-  // Build image if needed
-  if (!capture('docker', ['images', '-q', IMAGE])) {
+  // Always rebuild image to pick up latest code changes
+  {
     const s = step('docker/build');
     const buildLog = join(logDir, 'build.log');
     const r = runCaptured('docker', [
@@ -264,6 +286,7 @@ async function runDocker() {
     writeFileSync(suiteLog, r.output);
     if (r.status !== 0) {
       s.fail(suiteLog, pytestSummary(r.output));
+      const d = pytestDetail(r.output); if (d) console.log(d);
       saveContainerLogs(CONTAINER, logDir);
       process.exit(r.status);
     }
@@ -276,7 +299,11 @@ async function runDocker() {
     const s = step('docker/vscode');
     const status = await runVscodeTests({ apiPort: API_PORT, apiKey: API_KEY,
                                           logFile: vscodeLog, container: CONTAINER,
-                                          logDir });
+                                          logDir,
+                                          roots: {
+                                            root1: { external_path: '/app/sample/root1' },
+                                            root2: { external_path: '/app/sample/root2' },
+                                          } });
     if (status !== 0) { s.fail(vscodeLog, vscodeSummary(readFileSync(vscodeLog, 'utf8'))); process.exit(status); }
     s.ok(vscodeSummary(readFileSync(vscodeLog, 'utf8')));
   }
@@ -293,14 +320,15 @@ async function runWsl() {
   const port = parseInt(process.env.CODESEARCH_PORT ?? cfg.port ?? 8108, 10);
   const key  = process.env.CODESEARCH_KEY ?? cfg.api_key ?? 'codesearch-local';
   const TYPESENSE_VERSION = process.env.TYPESENSE_VERSION ?? '27.1';
-  const wslRepo  = toWslPath(REPO);
-  const PYTEST   = process.env.PYTEST ?? '~/.local/indexserver-venv/bin/pytest';
+  const wslRepo = toWslPath(REPO);
+  const PYTEST  = (process.env.PYTEST ?? '~/.local/indexserver-venv/bin/pytest')
+                    .replace(/^~/, '$HOME');
 
   const DATA_DIR    = '/tmp/codesearch-wsl-test';
   const CONFIG_FILE = '/tmp/codesearch-wsl-test-config.json';
   const logDir      = mkLogDir();
 
-  // Minimal test config: same key/port so tests can connect, no roots to index.
+  // Write minimal test config to WSL (same key/port, no roots to index).
   const testConfig = JSON.stringify({ api_key: key, port }, null, 2);
   {
     const r = spawnSync('wsl.exe', ['-e', 'bash', '-c', `cat > '${CONFIG_FILE}'`],
@@ -308,49 +336,24 @@ async function runWsl() {
     if (r.status !== 0) die('Failed to write test config to WSL.');
   }
 
-  function cleanup() {
-    run('wsl.exe', ['-e', 'bash', '-c',
-      `for f in '${DATA_DIR}/typesense.pid' '${DATA_DIR}/api.pid'; do` +
-      `  [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null || true; done`,
-    ], { stdio: 'pipe' });
-  }
-  process.on('exit',    cleanup);
-  process.on('SIGINT',  () => process.exit(130));
-  process.on('SIGTERM', () => process.exit(143));
+  const testTargets = extraArgs.length > 0 ? extraArgs : ['tests/'];
+  const quoted = testTargets.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
 
-  // Phase 1: venv + binary + kill existing + wipe data (own session is fine)
   {
-    const s = step('wsl/setup');
-    const setupLog = join(logDir, 'setup.log');
+    const s = step('wsl/tests');
+    const testsLog = join(logDir, 'pytest.log');
     const r = runCaptured('wsl.exe', ['-e', 'bash', '-lc',
       `TYPESENSE_VERSION='${TYPESENSE_VERSION}' TYPESENSE_DATA='${DATA_DIR}' ` +
-      `CODESEARCH_PORT=${port} bash '${wslRepo}/scripts/wsl-setup.sh' --reset`,
+      `CONFIG_FILE='${CONFIG_FILE}' CODESEARCH_PORT=${port} ` +
+      `APP_ROOT='${wslRepo}' PYTEST="${PYTEST}" ` +
+      `bash '${wslRepo}/scripts/run-wsl-tests.sh' ${quoted}`,
     ]);
-    writeFileSync(setupLog, r.output);
-    if (r.status !== 0) { s.fail(setupLog); process.exit(r.status); }
-    s.ok();
-  }
-
-  // Phase 2: start services + run pytest in ONE session (keeps background procs alive)
-  const testTargets = extraArgs.length > 0 ? extraArgs : ['tests/'];
-  const quoted    = testTargets.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
-  const pytestBin = PYTEST.replace(/^~/, '$HOME');
-
-  const servicesAndTestCmd = [
-    `APP_ROOT='${wslRepo}' PYTHON3="$HOME/.local/indexserver-venv/bin/python3" ` +
-    `TYPESENSE_DATA='${DATA_DIR}' CONFIG_FILE='${CONFIG_FILE}' ` +
-    `CODESEARCH_PORT=${port} CODESEARCH_API_HOST=127.0.0.1 ` +
-    `bash '${wslRepo}/scripts/entrypoint.sh' --background`,
-
-    `cd '${wslRepo}' && "${pytestBin}" -v ${quoted}`,
-  ].join(' && ');
-
-  {
-    const s = step('wsl/pytest');
-    const pytestLog = join(logDir, 'pytest.log');
-    const r = runCaptured('wsl.exe', ['-e', 'bash', '-lc', servicesAndTestCmd]);
-    writeFileSync(pytestLog, r.output);
-    if (r.status !== 0) { s.fail(pytestLog, pytestSummary(r.output)); process.exit(r.status); }
+    writeFileSync(testsLog, r.output);
+    if (r.status !== 0) {
+      s.fail(testsLog, pytestSummary(r.output));
+      const d = pytestDetail(r.output); if (d) console.log(d);
+      process.exit(r.status);
+    }
     s.ok(pytestSummary(r.output));
   }
 
@@ -375,14 +378,19 @@ async function runLinux() {
   const port = parseInt(process.env.CODESEARCH_PORT ?? cfg.port ?? 8108, 10);
   const key  = process.env.CODESEARCH_KEY ?? cfg.api_key ?? 'codesearch-local';
   const PYTEST            = process.env.PYTEST ?? `${process.env.HOME}/.local/indexserver-venv/bin/pytest`;
+  const PYTHON3           = PYTEST.replace(/\/bin\/pytest$/, '/bin/python3');
   const TYPESENSE_VERSION = process.env.TYPESENSE_VERSION ?? '27.1';
   const TS_DIR            = '/tmp/typesense-ci';
   const logDir            = mkLogDir();
 
   if (!existsSync(PYTEST)) die(`pytest not found at ${PYTEST}\nRun setup first.`);
 
-  let tsProc = null;
-  function cleanup() { if (tsProc) { try { tsProc.kill(); } catch {} } }
+  let tsProc  = null;
+  let apiProc = null;
+  function cleanup() {
+    if (tsProc)  { try { tsProc.kill();  } catch {} }
+    if (apiProc) { try { apiProc.kill(); } catch {} }
+  }
   process.on('exit',    cleanup);
   process.on('SIGINT',  () => process.exit(130));
   process.on('SIGTERM', () => process.exit(143));
@@ -395,13 +403,46 @@ async function runLinux() {
     s.ok(`port ${port}`);
   }
 
+  // Start management API (api.py) if not already running.
+  if (!(await httpHealth(port + 1))) {
+    const s = step('linux/api');
+    const apiLog = join(logDir, 'api.log');
+    const apiLogStream = createWriteStream(apiLog);
+    await new Promise((resolve, reject) => {
+      apiLogStream.once('open', resolve);
+      apiLogStream.once('error', reject);
+    });
+    apiProc = spawn(PYTHON3, [
+      join(REPO, 'indexserver', 'api.py'),
+      '--host', '127.0.0.1',
+      '--port', String(port + 1),
+    ], {
+      env: { ...process.env, TYPESENSE_DATA: TS_DIR },
+      cwd: REPO,
+      stdio: ['ignore', apiLogStream, apiLogStream],
+    });
+    for (let i = 0; i < 30; i++) {
+      await sleep(1000);
+      if (await httpHealth(port + 1)) break;
+    }
+    if (!(await httpHealth(port + 1))) {
+      s.fail(apiLog, 'timeout');
+      process.exit(1);
+    }
+    s.ok(`port ${port + 1}`);
+  }
+
   const testTargets = extraArgs.length > 0 ? extraArgs : ['tests/'];
   {
     const s = step('linux/pytest');
     const pytestLog = join(logDir, 'pytest.log');
     const r = runCaptured(PYTEST, ['-v', ...testTargets], { cwd: REPO });
     writeFileSync(pytestLog, r.output);
-    if (r.status !== 0) { s.fail(pytestLog, pytestSummary(r.output)); process.exit(r.status); }
+    if (r.status !== 0) {
+      s.fail(pytestLog, pytestSummary(r.output));
+      const d = pytestDetail(r.output); if (d) console.log(d);
+      process.exit(r.status);
+    }
     s.ok(pytestSummary(r.output));
   }
 
@@ -480,7 +521,7 @@ function saveContainerLogs(container, logDir) {
 // VS Code extension tests
 // =============================================================================
 
-async function runVscodeTests({ apiPort, apiKey, logFile, container = null, logDir = null }) {
+async function runVscodeTests({ apiPort, apiKey, logFile, container = null, logDir = null, roots = {} }) {
   const vscodeDir = join(REPO, 'vscode-codesearch');
   if (!existsSync(join(vscodeDir, 'package.json'))) return 0;
 
@@ -490,7 +531,7 @@ async function runVscodeTests({ apiPort, apiKey, logFile, container = null, logD
 
   const tmpCfg = join(tmpdir(), `e2e-ext-config-${process.pid}.json`);
   writeFileSync(tmpCfg, JSON.stringify(
-    { api_key: apiKey, port: apiPort - 1, roots: {} }, null, 2));
+    { api_key: apiKey, port: apiPort - 1, roots }, null, 2));
 
   const r = runCaptured('node', [
     '--require', 'tsx/cjs', '--test',

@@ -21,7 +21,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from tests.helpers import (
-    _server_ok, _search, _delete_collection, _FakeEvent,
+    _server_ok, _assert_server_ok, _search, _delete_collection, _FakeEvent,
 )
 from indexserver.index_queue import IndexQueue, MTIME_DELETE
 from indexserver.indexer import build_schema
@@ -213,12 +213,12 @@ class TestCsChangeHandlerUnit(unittest.TestCase):
 
 # ── TestCsChangeHandlerIntegration ───────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestCsChangeHandlerIntegration(unittest.TestCase):
     """Integration tests: CsChangeHandler → IndexQueue → real Typesense collection."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         import typesense as _ts
         from indexserver.config import TYPESENSE_CLIENT_CONFIG
         stamp = int(time.time())
@@ -279,7 +279,7 @@ class TestCsChangeHandlerIntegration(unittest.TestCase):
         handler._flush()
         self._drain()
 
-        hits = _search(self.coll, "GadgetNew", query_by="class_names,symbols,content")
+        hits = _search(self.coll, "GadgetNew", query_by="class_names,tokens")
         self.assertIn("Gadget.cs", [h["filename"] for h in hits])
 
     def test_flush_removes_deleted_file(self):

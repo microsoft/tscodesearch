@@ -165,7 +165,7 @@ function rootsMismatch() {
 
     const expected = {};
     for (const [name, entry] of Object.entries(ROOTS)) {
-        const winPath = entry.windows_path ?? '';
+        const winPath = entry.external_path ?? '';
         expected[name] = winToWsl(winPath.replace(/\\/g, '/')).replace(/\/+$/, '');
     }
 
@@ -186,7 +186,7 @@ function rootsMismatch() {
  *
  * Each root entry is an object with:
  *   local_path   — path inside the container (/source/<name>)
- *   windows_path — original Windows path on the host (C:/repos/src)
+ *   external_path — original Windows path on the host (C:/repos/src)
  * This lets the indexer store host-side filenames without needing a
  * separate --root argument or a host_roots lookup table.
  */
@@ -196,7 +196,7 @@ function writeContainerConfig() {
             name,
             {
                 local_path:   `/source/${name}`,
-                windows_path: (entry.windows_path ?? '').replace(/\\/g, '/').replace(/\/+$/, ''),
+                external_path: (entry.external_path ?? '').replace(/\\/g, '/').replace(/\/+$/, ''),
             },
         ])
     );
@@ -218,7 +218,7 @@ function dockerCreate(configFile) {
         '-v', `${__dirname}/scripts:/app/scripts:ro`,
     ];
     for (const [name, entry] of Object.entries(ROOTS)) {
-        args.push('-v', `${entry.windows_path ?? ''}:/source/${name}:ro`);
+        args.push('-v', `${entry.external_path ?? ''}:/source/${name}:ro`);
     }
     args.push(IMAGE);
     return docker(args);
@@ -595,7 +595,7 @@ function cmdRoot(args) {
     if (args.addName) {
         if (!args.addPath) die('--add requires NAME and PATH');
         const p = args.addPath.replace(/\\/g, '/').replace(/\/+$/, '');
-        const entry = { windows_path: p };
+        const entry = { external_path: p };
         // In WSL mode, also store the server-local path so the indexserver can
         // find files without having to auto-derive it at runtime.
         if (MODE === 'wsl') entry.local_path = winToWsl(p);
@@ -626,7 +626,7 @@ function cmdRoot(args) {
     }
     console.log('Configured roots:');
     for (const [name, entry] of Object.entries(roots)) {
-        const p = (entry && typeof entry === 'object') ? (entry.windows_path ?? JSON.stringify(entry)) : entry;
+        const p = (entry && typeof entry === 'object') ? (entry.external_path ?? JSON.stringify(entry)) : entry;
         console.log(`  ${name.padEnd(16)} ${p}`);
     }
 }

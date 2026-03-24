@@ -21,7 +21,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from tests.helpers import (
-    _server_ok, _search, _delete_collection, _make_git_repo,
+    _server_ok, _assert_server_ok, _search, _delete_collection, _make_git_repo,
     _FOO_PY, _BAR_PY,
 )
 from indexserver.indexer import run_index, extract_py_metadata
@@ -64,23 +64,23 @@ class TestExtractPyMetadata(unittest.TestCase):
         meta = self._meta(_FOO_PY)
         self.assertIn("compute", meta["method_names"])
 
-    def test_method_sigs_contains_function_name(self):
+    def test_member_sigs_contains_function_name(self):
         meta = self._meta(_FOO_PY)
-        sigs = meta["method_sigs"]
-        self.assertTrue(any("process" in s for s in sigs), f"method_sigs: {sigs}")
+        sigs = meta["member_sigs"]
+        self.assertTrue(any("process" in s for s in sigs), f"member_sigs: {sigs}")
 
-    def test_method_sigs_include_return_type(self):
+    def test_member_sigs_include_return_type(self):
         meta = self._meta(_FOO_PY)
-        sigs = meta["method_sigs"]
-        self.assertTrue(any("Optional" in s for s in sigs), f"method_sigs: {sigs}")
+        sigs = meta["member_sigs"]
+        self.assertTrue(any("Optional" in s for s in sigs), f"member_sigs: {sigs}")
 
     def test_call_sites(self):
         meta = self._meta(_BAR_PY)
         self.assertIn("process", meta["call_sites"])
 
-    def test_decorators_in_attributes(self):
+    def test_decorators_in_attr_names(self):
         meta = self._meta(_FOO_PY)
-        self.assertIn("dataclass", meta["attributes"])
+        self.assertIn("dataclass", meta["attr_names"])
 
     def test_imports_in_usings(self):
         meta = self._meta(_FOO_PY)
@@ -298,7 +298,7 @@ class TestQueryPy(unittest.TestCase):
 
     def test_decorators_consistent(self):
         meta = extract_py_metadata(_FOO_PY.encode())
-        self.assertIn("dataclass", meta["attributes"])
+        self.assertIn("dataclass", meta["attr_names"])
         n, out = self._run(self.foo_path, "decorators", "dataclass")
         self.assertGreater(n, 0)
 
@@ -308,22 +308,22 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.foo_path, "imports")
         self.assertIn("os", out)
 
-    def test_method_sigs_consistent(self):
+    def test_member_sigs_consistent(self):
         meta = extract_py_metadata(_FOO_PY.encode())
-        sigs = meta["method_sigs"]
-        self.assertTrue(any("process" in s for s in sigs), f"method_sigs: {sigs}")
+        sigs = meta["member_sigs"]
+        self.assertTrue(any("process" in s for s in sigs), f"member_sigs: {sigs}")
         n, out = self._run(self.foo_path, "methods")
         self.assertIn("process", out)
 
 
 # ── TestPySemanticFields ──────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestPySemanticFields(unittest.TestCase):
     """Verify that Python files get their semantic fields indexed by Typesense."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll = f"test_pysem_{stamp}"
         cls.tmpdir = _make_git_repo({
@@ -340,7 +340,7 @@ class TestPySemanticFields(unittest.TestCase):
 
     def _get(self, filename):
         hits = _search(self.coll, os.path.splitext(filename)[0],
-                       query_by="filename,symbols,class_names,method_names,content")
+                       query_by="filename,class_names,method_names,tokens")
         return next((h for h in hits if h["filename"] == filename), None)
 
     def test_py_class_names_indexed(self):
@@ -368,10 +368,10 @@ class TestPySemanticFields(unittest.TestCase):
         self.assertIsNotNone(bar)
         self.assertIn("process", bar.get("call_sites", []))
 
-    def test_py_decorators_in_attributes(self):
+    def test_py_decorators_in_attr_names(self):
         foo = self._get("foo.py")
         self.assertIsNotNone(foo)
-        self.assertIn("dataclass", foo.get("attributes", []))
+        self.assertIn("dataclass", foo.get("attr_names", []))
 
     def test_py_imports_in_usings(self):
         foo = self._get("foo.py")
@@ -388,8 +388,8 @@ class TestPySemanticFields(unittest.TestCase):
         names = [h["filename"] for h in hits]
         self.assertIn("bar.py", names)
 
-    def test_py_method_sigs_searchable_via_typesense(self):
-        hits = _search(self.coll, "process", query_by="method_sigs,method_names,filename")
+    def test_py_member_sigs_searchable_via_typesense(self):
+        hits = _search(self.coll, "process", query_by="member_sigs,method_names,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("foo.py", names)
 

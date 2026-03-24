@@ -22,7 +22,8 @@ build/
 venv/
 env/
 
-# Node (win-watcher, vscode-codesearch)
+# Node (vscode-codesearch)
+mcp_server.js
 node_modules/
 *.vsix
 vscode-codesearch/out/

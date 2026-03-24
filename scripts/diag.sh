@@ -33,7 +33,7 @@ python3 - <<'PYEOF'
 import json, os
 cfg = json.load(open('/app/config.json'))
 for name, val in cfg.get('roots', {}).items():
-    path = (val.get('local_path') or val.get('windows_path', '')) if isinstance(val, dict) else str(val)
+    path = (val.get('local_path') or val.get('external_path', '')) if isinstance(val, dict) else str(val)
     exists = os.path.isdir(path) if path else False
     print(f"  [{name}] {path}  ({'OK' if exists else 'NOT FOUND'})")
 PYEOF

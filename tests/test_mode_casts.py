@@ -2,7 +2,7 @@
 Tests for casts mode.
 
 mode: --casts TYPE (q_casts)
-Typesense field: cast_sites (explicit (TYPE)expr cast target types)
+Typesense field: cast_types (explicit (TYPE)expr cast target types)
 
 Gaps tested (AST):
   - Explicit (TYPE)expr casts are found.
@@ -13,9 +13,9 @@ Gaps tested (AST):
   - Each line is reported at most once even if multiple casts appear.
 
 Gaps tested (metadata / Typesense):
-  - extract_cs_metadata populates cast_sites with explicit cast target types.
-  - as-casts do NOT populate cast_sites.
-  - cast_sites field enables Typesense pre-filter for cast sites.
+  - extract_cs_metadata populates cast_types with explicit cast target types.
+  - as-casts do NOT populate cast_types.
+  - cast_types field enables Typesense pre-filter for cast sites.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from tests.fixtures import (
     CASTS_TO_BLOBSTORE, USES_BLOBSTORE_NO_CAST, CAST_IN_CONDITIONAL,
     AS_CAST_ONLY_BLOBSTORE,
 )
-from tests.helpers import _server_ok, _make_git_repo, _delete_collection
+from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, run_index
 from query import q_casts
 
@@ -144,29 +144,29 @@ namespace Synth {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# cast_sites metadata field
+# cast_types metadata field
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestCastSitesMetadata(unittest.TestCase):
-    """extract_cs_metadata correctly populates the cast_sites field."""
+class TestCastTypesMetadata(unittest.TestCase):
+    """extract_cs_metadata correctly populates the cast_types field."""
 
-    def test_explicit_cast_in_cast_sites(self):
+    def test_explicit_cast_in_cast_types(self):
         meta = extract_cs_metadata(CASTS_TO_BLOBSTORE.encode())
-        assert "BlobStore" in meta["cast_sites"], \
-            f"Explicit cast target must be in cast_sites: {meta['cast_sites']}"
+        assert "BlobStore" in meta["cast_types"], \
+            f"Explicit cast target must be in cast_types: {meta['cast_types']}"
 
-    def test_as_cast_not_in_cast_sites(self):
-        """'obj as BlobStore' must NOT populate cast_sites (only explicit casts)."""
+    def test_as_cast_not_in_cast_types(self):
+        """'obj as BlobStore' must NOT populate cast_types (only explicit casts)."""
         meta = extract_cs_metadata(AS_CAST_ONLY_BLOBSTORE.encode())
-        assert "BlobStore" not in meta["cast_sites"], \
-            f"as-cast must not appear in cast_sites: {meta['cast_sites']}"
+        assert "BlobStore" not in meta["cast_types"], \
+            f"as-cast must not appear in cast_types: {meta['cast_types']}"
 
-    def test_no_cast_file_has_empty_cast_sites(self):
+    def test_no_cast_file_has_empty_cast_types(self):
         meta = extract_cs_metadata(USES_BLOBSTORE_NO_CAST.encode())
-        assert "BlobStore" not in meta["cast_sites"], \
-            f"File with no casts must have empty cast_sites: {meta['cast_sites']}"
+        assert "BlobStore" not in meta["cast_types"], \
+            f"File with no casts must have empty cast_types: {meta['cast_types']}"
 
-    def test_generic_cast_in_cast_sites(self):
+    def test_generic_cast_in_cast_types(self):
         src = """\
 namespace Synth {
     public class C {
@@ -177,29 +177,29 @@ namespace Synth {
 }
 """
         meta = extract_cs_metadata(src.encode())
-        assert "IRepository" in meta["cast_sites"], \
-            f"Generic cast type must be in cast_sites: {meta['cast_sites']}"
-        assert "Widget" in meta["cast_sites"], \
-            f"Generic type argument must also be in cast_sites: {meta['cast_sites']}"
+        assert "IRepository" in meta["cast_types"], \
+            f"Generic cast type must be in cast_types: {meta['cast_types']}"
+        assert "Widget" in meta["cast_types"], \
+            f"Generic type argument must also be in cast_types: {meta['cast_types']}"
 
-    def test_cast_sites_excludes_field_types(self):
-        """Field type declarations must NOT appear in cast_sites."""
+    def test_cast_types_excludes_field_types(self):
+        """Field type declarations must NOT appear in cast_types."""
         meta = extract_cs_metadata(USES_BLOBSTORE_NO_CAST.encode())
         # USES_BLOBSTORE_NO_CAST has BlobStore as field/param/return — not cast
-        assert meta["cast_sites"] == [], \
-            f"Non-cast usages must not pollute cast_sites: {meta['cast_sites']}"
+        assert meta["cast_types"] == [], \
+            f"Non-cast usages must not pollute cast_types: {meta['cast_types']}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Live integration — cast_sites Typesense field
+# Live integration — cast_types Typesense field
 # ══════════════════════════════════════════════════════════════════════════════
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
-class TestCastSitesLive(LiveTestBase):
-    """End-to-end: cast_sites field enables Typesense pre-filter for cast sites."""
+class TestCastTypesLive(LiveTestBase):
+    """End-to-end: cast_types field enables Typesense pre-filter for cast sites."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp      = int(time.time())
         cls.coll   = f"test_casts_{stamp}"
         cls.tmpdir = _make_git_repo({
@@ -216,34 +216,34 @@ class TestCastSitesLive(LiveTestBase):
         _delete_collection(cls.coll)
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
-    def test_explicit_cast_file_found_via_cast_sites(self):
-        fnames = self._ts_search("BlobStore", "cast_sites,filename")
+    def test_explicit_cast_file_found_via_cast_types(self):
+        fnames = self._ts_search("BlobStore", "cast_types,filename")
         assert "Downcast.cs" in fnames, \
-            f"File with explicit cast must be found via cast_sites: {fnames}"
+            f"File with explicit cast must be found via cast_types: {fnames}"
 
     def test_conditional_cast_file_found(self):
-        fnames = self._ts_search("BlobStore", "cast_sites,filename")
+        fnames = self._ts_search("BlobStore", "cast_types,filename")
         assert "CondCast.cs" in fnames, \
             f"File with cast in conditional must be found: {fnames}"
 
     def test_no_cast_file_excluded(self):
-        fnames = self._ts_search("BlobStore", "cast_sites,filename")
+        fnames = self._ts_search("BlobStore", "cast_types,filename")
         assert "NoCast.cs" not in fnames, \
-            "File with no explicit casts must not appear in cast_sites results"
+            "File with no explicit casts must not appear in cast_types results"
 
     def test_as_cast_file_excluded(self):
-        """as-casts must not populate cast_sites, so AsCastOnly must not be found."""
-        fnames = self._ts_search("BlobStore", "cast_sites,filename")
+        """as-casts must not populate cast_types, so AsCastOnly must not be found."""
+        fnames = self._ts_search("BlobStore", "cast_types,filename")
         assert "AsCastOnly.cs" not in fnames, \
-            "as-cast file must not appear in cast_sites search"
+            "as-cast file must not appear in cast_types search"
 
-    def test_cast_sites_narrower_than_uses(self):
-        """cast_sites must return a strict subset of type_refs results."""
-        casts = self._ts_search("BlobStore", "cast_sites,filename", per_page=20)
-        uses  = self._ts_search("BlobStore", "type_refs,symbols,class_names,filename",
+    def test_cast_types_narrower_than_uses(self):
+        """cast_types must return a strict subset of type_refs results."""
+        casts = self._ts_search("BlobStore", "cast_types,filename", per_page=20)
+        uses  = self._ts_search("BlobStore", "type_refs,class_names,filename",
                                 per_page=20)
         assert casts <= uses, \
-            f"cast_sites results must be subset of uses results: {casts - uses}"
+            f"cast_types results must be subset of uses results: {casts - uses}"
 
 
 if __name__ == "__main__":

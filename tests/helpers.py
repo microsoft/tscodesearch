@@ -26,8 +26,18 @@ def _server_ok() -> bool:
         return False
 
 
+def _assert_server_ok() -> None:
+    """Raise RuntimeError if Typesense is not running. Call from setUpClass."""
+    import time
+    for _ in range(5):
+        if _server_ok():
+            return
+        time.sleep(1)
+    raise RuntimeError("Typesense is not running — start with: ts start")
+
+
 def _search(collection: str, q: str,
-            query_by: str = "filename,symbols,class_names,method_names,content",
+            query_by: str = "filename,class_names,method_names,tokens",
             per_page: int = 10) -> list[dict]:
     params = urllib.parse.urlencode({
         "q": q, "query_by": query_by,

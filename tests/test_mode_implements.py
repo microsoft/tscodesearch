@@ -23,7 +23,7 @@ from tests.fixtures import (
     IMPLEMENTS_IDATASTORE, USES_IDATASTORE_PARAM, DECLARES_FIELD_IDATASTORE,
     COMMENT_ONLY_IDATASTORE,
 )
-from tests.helpers import _server_ok, _make_git_repo, _delete_collection
+from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, run_index
 from query import q_implements
 
@@ -158,12 +158,12 @@ namespace Synth {
 # Live integration
 # ══════════════════════════════════════════════════════════════════════════════
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestImplementsModeLive(LiveTestBase):
     """End-to-end implements mode: query_by = base_types,class_names,filename."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp      = int(time.time())
         cls.coll   = f"test_impl_{stamp}"
         cls.tmpdir = _make_git_repo({

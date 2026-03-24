@@ -113,7 +113,7 @@ def write_config(src_dir: str, mode: str, port: int = 8108) -> None:
         "docker_container": "codesearch",
         "docker_image":     "codesearch-mcp",
         "roots": {
-            "default": {"windows_path": src_dir.replace("\\", "/").rstrip("/")}
+            "default": {"external_path": src_dir.replace("\\", "/").rstrip("/")}
         },
     }
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")

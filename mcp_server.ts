@@ -28,7 +28,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ── Config ────────────────────────────────────────────────────────────────────
 
 interface RootEntry {
-  windows_path: string;
+  external_path: string;
   local_path?: string;
 }
 
@@ -128,7 +128,7 @@ function getRoot(name: string): [string, string] {
   if (!effective || !(effective in ROOTS)) {
     throw new Error(`Unknown root '${name}'. Available: ${Object.keys(ROOTS).sort().join(", ")}`);
   }
-  return [collectionForRoot(effective), ROOTS[effective].windows_path];
+  return [collectionForRoot(effective), ROOTS[effective].external_path];
 }
 
 /**
@@ -147,7 +147,7 @@ function toContainerPath(filePath: string): string {
 
   // Expand $SRC_ROOT
   const defaultRootEntry = ROOTS["default"] ?? Object.values(ROOTS)[0];
-  const defaultRoot = defaultRootEntry?.windows_path ?? "";
+  const defaultRoot = defaultRootEntry?.external_path ?? "";
   p = p.replace(/\$\{SRC_ROOT\}/g, defaultRoot).replace(/\$SRC_ROOT/g, defaultRoot);
 
   // /mnt/c/… → C:/…
@@ -156,7 +156,7 @@ function toContainerPath(filePath: string): string {
 
   const pLower = p.toLowerCase();
   for (const [name, entry] of Object.entries(ROOTS)) {
-    const root = entry.windows_path.replace(/\\/g, "/").replace(/\/$/, "");
+    const root = entry.external_path.replace(/\\/g, "/").replace(/\/$/, "");
     if (pLower.startsWith(root.toLowerCase() + "/") || pLower === root.toLowerCase()) {
       const rel = p.slice(root.length); // includes leading /
       return `/source/${name}${rel}`;
@@ -181,12 +181,12 @@ function toContainerPath(filePath: string): string {
  * Accepts:
  *   - Windows path   C:/repos/src/Foo.cs  → returned as-is (forward slashes)
  *   - /mnt/c/… WSL   → C:/…
- *   - $SRC_ROOT/…    → expanded to the default windows_path, then returned
- *   - Bare relative  → prepended with default windows_path
+ *   - $SRC_ROOT/…    → expanded to the default external_path, then returned
+ *   - Bare relative  → prepended with default external_path
  */
 function toWindowsPath(filePath: string, _srcRoot?: string): string {
   const defaultRootEntry = ROOTS["default"] ?? Object.values(ROOTS)[0];
-  const defaultRoot = (defaultRootEntry?.windows_path ?? "").replace(/\\/g, "/").replace(/\/$/, "");
+  const defaultRoot = (defaultRootEntry?.external_path ?? "").replace(/\\/g, "/").replace(/\/$/, "");
 
   let p = filePath.replace(/\\/g, "/");
 
@@ -288,6 +288,9 @@ Examples:
 
     const warn = await queueWarning();
 
+    if (result.status === 503 && result.data?.loading) {
+      return { content: [{ type: "text" as const, text: "Typesense is still starting up — retry in a few seconds.\nUse service_status() to check when it is ready." }] };
+    }
     if (result.status >= 400) {
       const err    = result.data?.error   ?? JSON.stringify(result.data);
       const detail = result.data?.detail  ?? "";
@@ -463,7 +466,13 @@ Args:
     const ndocs     = colInfo.num_documents;
     const lines: string[] = [];
 
-    lines.push(`Typesense  : ${st.typesense_ok !== false ? "ok" : "NOT OK"}`);
+    const tsLine = st.typesense_loading ? "starting up — retry in a few seconds"
+                 : st.typesense_ok !== false ? "ok"
+                 : "NOT OK";
+    lines.push(`Typesense  : ${tsLine}`);
+    if (st.typesense_loading) {
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    }
     if (ndocs != null) {
       lines.push(`Docs       : ${Number(ndocs).toLocaleString()}  (collection: ${collection})`);
     } else {
@@ -676,7 +685,13 @@ Args:
 
     const rootNames      = root ? [root] : Object.keys(ROOTS);
     const indexerRunning = st.indexer?.running ?? false;
-    const lines          = [`Typesense  : ${st.typesense_ok !== false ? "ok" : "NOT OK"}`];
+    const tsLine2 = st.typesense_loading ? "starting up — retry in a few seconds"
+                  : st.typesense_ok !== false ? "ok"
+                  : "NOT OK";
+    const lines          = [`Typesense  : ${tsLine2}`];
+    if (st.typesense_loading) {
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    }
 
     for (const rootName of rootNames) {
       let collName: string;
