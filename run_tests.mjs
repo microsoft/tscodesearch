@@ -141,7 +141,10 @@ function httpHealth(port) {
       res => {
         let body = '';
         res.on('data', d => body += d);
-        res.on('end', () => resolve(body.includes('"ok":true')));
+        res.on('end', () => {
+          try { resolve(JSON.parse(body).ok === true); }
+          catch { resolve(false); }
+        });
       }
     );
     req.on('error',   () => resolve(false));
@@ -415,14 +418,19 @@ async function runLinux() {
   const port = parseInt(process.env.CODESEARCH_PORT ?? cfg.port ?? 8108, 10);
   const key  = process.env.CODESEARCH_KEY ?? cfg.api_key ?? 'codesearch-local';
   const PYTEST            = process.env.PYTEST ?? `${process.env.HOME}/.local/indexserver-venv/bin/pytest`;
+  const PYTHON3           = PYTEST.replace(/\/bin\/pytest$/, '/bin/python3');
   const TYPESENSE_VERSION = process.env.TYPESENSE_VERSION ?? '27.1';
   const TS_DIR            = '/tmp/typesense-ci';
   const logDir            = mkLogDir();
 
   if (!existsSync(PYTEST)) die(`pytest not found at ${PYTEST}\nRun setup first.`);
 
-  let tsProc = null;
-  function cleanup() { if (tsProc) { try { tsProc.kill(); } catch {} } }
+  let tsProc  = null;
+  let apiProc = null;
+  function cleanup() {
+    if (tsProc)  { try { tsProc.kill();  } catch {} }
+    if (apiProc) { try { apiProc.kill(); } catch {} }
+  }
   process.on('exit',    cleanup);
   process.on('SIGINT',  () => process.exit(130));
   process.on('SIGTERM', () => process.exit(143));
@@ -433,6 +441,35 @@ async function runLinux() {
     const s = step('linux/typesense');
     tsProc = await startTypesenseLinux({ port, key, TYPESENSE_VERSION, TS_DIR });
     s.ok(`port ${port}`);
+  }
+
+  // Start management API (api.py) if not already running.
+  if (!(await httpHealth(port + 1))) {
+    const s = step('linux/api');
+    const apiLog = join(logDir, 'api.log');
+    const apiLogStream = createWriteStream(apiLog);
+    await new Promise((resolve, reject) => {
+      apiLogStream.once('open', resolve);
+      apiLogStream.once('error', reject);
+    });
+    apiProc = spawn(PYTHON3, [
+      join(REPO, 'indexserver', 'api.py'),
+      '--host', '127.0.0.1',
+      '--port', String(port + 1),
+    ], {
+      env: { ...process.env, TYPESENSE_DATA: TS_DIR },
+      cwd: REPO,
+      stdio: ['ignore', apiLogStream, apiLogStream],
+    });
+    for (let i = 0; i < 30; i++) {
+      await sleep(1000);
+      if (await httpHealth(port + 1)) break;
+    }
+    if (!(await httpHealth(port + 1))) {
+      s.fail(apiLog, 'timeout');
+      process.exit(1);
+    }
+    s.ok(`port ${port + 1}`);
   }
 
   const testTargets = extraArgs.length > 0 ? extraArgs : ['tests/'];
