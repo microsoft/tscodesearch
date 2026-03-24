@@ -224,32 +224,52 @@ function dockerCreate(configFile) {
     return docker(args);
 }
 
-/** Stream container logs until "Ready for connections" or timeout. */
+/** Stream container logs until "Ready for connections" or timeout.
+ *  On failure or timeout, dumps the full container log to a local file. */
 function waitForReady() {
     return new Promise(resolve => {
         log('Streaming logs until ready...');
         const proc = spawn('docker', ['logs', '-f', CONTAINER], { stdio: 'pipe' });
         let done = false;
+        let allText = '';
 
-        const finish = (msg) => {
+        const dumpLogsOnFailure = (reason) => {
+            const logFile = path.join(__dirname, 'codesearch-start-failure.log');
+            const fullLogs = dockerCapture(['logs', CONTAINER]);
+            const content = [
+                `=== ts start failure: ${reason} ===`,
+                `=== timestamp: ${new Date().toISOString()} ===`,
+                '',
+                '=== container logs ===',
+                (fullLogs.stdout || '') + (fullLogs.stderr || ''),
+            ].join('\n');
+            fs.writeFileSync(logFile, content, 'utf-8');
+            log(`Logs saved to: ${logFile}`);
+        };
+
+        const finish = (msg, failed = false) => {
             if (done) return;
             done = true;
             clearTimeout(timer);
             proc.kill('SIGTERM');
+            if (failed) dumpLogsOnFailure(msg);
             if (msg) log(msg);
             resolve();
         };
 
         const timer = setTimeout(
-            () => finish(`WARNING: Server did not reach ready state within 5 min — check 'docker logs ${CONTAINER}'.`),
+            () => finish(`Server did not reach ready state within 5 min — check 'docker logs ${CONTAINER}'.`, true),
             300_000
         );
 
         const onData = (data) => {
             const text = data.toString();
+            allText += text;
             process.stdout.write(text);
             if (text.includes('Ready for connections')) {
                 finish('Management API is up. Typesense may still be loading — run: ts status');
+            } else if (text.includes('[entrypoint] ERROR:')) {
+                finish(`Entrypoint reported an error — see codesearch-start-failure.log`, true);
             }
         };
 

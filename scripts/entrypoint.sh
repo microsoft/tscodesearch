@@ -156,7 +156,7 @@ MAX_WAIT=30
 WAITED=0
 
 while [ $WAITED -lt $MAX_WAIT ]; do
-    if "$PYTHON3" "$(dirname "$0")/http_ok.py" "$API_HEALTH_URL" 2>/dev/null; then
+    if "$PYTHON3" "${APP_ROOT}/scripts/http_ok.py" "$API_HEALTH_URL" 2>/dev/null; then
         echo " ready"
         break
     fi
