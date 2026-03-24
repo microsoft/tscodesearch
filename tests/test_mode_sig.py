@@ -23,7 +23,7 @@ from tests.fixtures import (
     SIG_HAS_PARAM, FIELD_NAME_ONLY, CALLS_ONLY, NAME_CONTAINS,
     LISTING_TARGET, CALLS_IBLOBSERVICE, CONTENT_ONLY_BLOBSTORE,
 )
-from tests.helpers import _server_ok, _make_git_repo, _delete_collection
+from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, run_index
 from query import q_methods, q_classes, q_fields
 
@@ -255,12 +255,12 @@ class TestPrefilterFieldSelection(unittest.TestCase):
 # Live integration — sig search + listing pre-filter
 # ══════════════════════════════════════════════════════════════════════════════
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestSigSearchLive(LiveTestBase):
     """End-to-end sig search and Bug 2 pre-filter using a real Typesense collection."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         from tests.helpers import _make_git_repo, _delete_collection
         stamp   = int(time.time())
         cls.coll   = f"test_sig_{stamp}"

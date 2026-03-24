@@ -374,6 +374,10 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
         "params":       lambda s, t, l: _q.py_q_params(s, t, l, pattern),
     }
 
+    all_modes = set(cs_dispatch) | set(py_dispatch)
+    if mode not in all_modes:
+        raise ValueError(f"Unknown mode: {mode!r}")
+
     results = []
     for file_path in files:
         # Map Windows host path to native local path using HOST_ROOTS → ROOTS.
@@ -608,7 +612,7 @@ class _Handler(BaseHTTPRequestHandler):
         # ── POST /index/start ─────────────────────────────────────────────────
         if method == "POST" and path == "/index/start":
             if _ts_initializing:
-                self._send_json(503, {"error": "Typesense is still loading, please wait"})
+                self._send_json(503, {"error": "Typesense is still loading, please wait", "loading": True})
                 return
             body = self._read_body()
             root_arg  = body.get("root", "")
@@ -649,7 +653,7 @@ class _Handler(BaseHTTPRequestHandler):
         # ── POST /query-codebase ──────────────────────────────────────────────
         if method == "POST" and path == "/query-codebase":
             if _ts_initializing:
-                self._send_json(503, {"error": "Typesense is still loading, please wait"})
+                self._send_json(503, {"error": "Typesense is still loading, please wait", "loading": True})
                 return
             body    = self._read_body()
             mode         = body.get("mode", "")

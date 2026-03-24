@@ -57,9 +57,9 @@ fi
 
 if [ "${RESET}" = "1" ]; then
     echo "[wsl-setup] Killing existing Typesense and api.py processes..."
-    pkill -f "typesense-server" 2>/dev/null || true
-    pkill -f "indexserver/api.py" 2>/dev/null || true
-    sleep 1
+    pkill -9 -f "typesense-server" 2>/dev/null || true
+    pkill -9 -f "indexserver/api.py" 2>/dev/null || true
+    sleep 2
 
     echo "[wsl-setup] Wiping ${TYPESENSE_DATA}..."
     rm -rf "${TYPESENSE_DATA}"

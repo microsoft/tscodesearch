@@ -1027,6 +1027,10 @@ def _py_base_names(node, src) -> list:
             attr = child.child_by_field_name("attribute")
             if attr:
                 names.append(_text(attr, src).strip())
+        elif child.type == "subscript":
+            val = child.child_by_field_name("value")
+            if val and val.type == "identifier":
+                names.append(_text(val, src).strip())
     return names
 
 
@@ -1121,7 +1125,7 @@ def py_q_ident(src, tree, lines, name):
     return results
 
 
-def py_q_declarations(src, tree, lines, name):
+def py_q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None):
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("function_definition", "class_definition")):

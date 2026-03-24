@@ -28,7 +28,7 @@ from tests.fixtures import (
     CASTS_TO_BLOBSTORE, USES_BLOBSTORE_NO_CAST, CAST_IN_CONDITIONAL,
     AS_CAST_ONLY_BLOBSTORE,
 )
-from tests.helpers import _server_ok, _make_git_repo, _delete_collection
+from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, run_index
 from query import q_casts
 
@@ -194,12 +194,12 @@ namespace Synth {
 # Live integration — cast_types Typesense field
 # ══════════════════════════════════════════════════════════════════════════════
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestCastTypesLive(LiveTestBase):
     """End-to-end: cast_types field enables Typesense pre-filter for cast sites."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp      = int(time.time())
         cls.coll   = f"test_casts_{stamp}"
         cls.tmpdir = _make_git_repo({

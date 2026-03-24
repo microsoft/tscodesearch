@@ -29,7 +29,7 @@ from tests.fixtures import (
     CALLS_FETCHWIDGET, DEFINES_FETCHWIDGET, CALLS_IBLOBSERVICE,
     CALLS_WIDGET_CTOR, DEFINES_WIDGET_CTOR,
 )
-from tests.helpers import _server_ok, _make_git_repo, _delete_collection
+from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, run_index
 from query import q_calls
 
@@ -180,12 +180,12 @@ namespace Synth {
 # Live integration
 # ══════════════════════════════════════════════════════════════════════════════
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestCallersModeLive(LiveTestBase):
     """End-to-end calls mode: query_by = call_sites,filename."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp      = int(time.time())
         cls.coll   = f"test_callers_{stamp}"
         cls.tmpdir = _make_git_repo({

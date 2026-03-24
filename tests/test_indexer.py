@@ -19,7 +19,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from tests.helpers import (
-    _server_ok, _search, _collection_info, _delete_collection, _make_git_repo,
+    _server_ok, _assert_server_ok, _search, _collection_info, _delete_collection, _make_git_repo,
     _MockTypesenseClient,
     _FOO_CS, _BAR_CS, _BLOBSTORE_CS, _QUALIFIED_CS, _GENERIC_WRAPPER_CS,
 )
@@ -32,12 +32,12 @@ from indexserver.index_queue import IndexQueue, MTIME_DELETE
 
 # ── TestIndexer ───────────────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestIndexer(unittest.TestCase):
     """Indexer creates a collection and indexes C# + other files."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll = f"test_idx_{stamp}"
         cls.tmpdir = _make_git_repo({
@@ -113,12 +113,12 @@ class TestIndexer(unittest.TestCase):
 
 # ── TestSemanticFields ────────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestSemanticFields(unittest.TestCase):
     """tree-sitter extracts the right symbols and semantic metadata."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll = f"test_sem_{stamp}"
         cls.tmpdir = _make_git_repo({
@@ -210,12 +210,12 @@ class TestSemanticFields(unittest.TestCase):
 
 # ── TestMultiRoot ─────────────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestMultiRoot(unittest.TestCase):
     """Two independent collections for the same source tree stay isolated."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll_a = f"test_root_a_{stamp}"
         cls.coll_b = f"test_root_b_{stamp}"
@@ -321,12 +321,12 @@ class TestExtractCsMetadata(unittest.TestCase):
 
 # ── TestSearchFieldModes ──────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestSearchFieldModes(unittest.TestCase):
     """Each MCP search mode's query_by field string returns the right file."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll = f"test_modes_{stamp}"
         cls.tmpdir = _make_git_repo({

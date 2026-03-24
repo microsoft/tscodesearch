@@ -288,6 +288,9 @@ Examples:
 
     const warn = await queueWarning();
 
+    if (result.status === 503 && result.data?.loading) {
+      return { content: [{ type: "text" as const, text: "Typesense is still starting up — retry in a few seconds.\nUse service_status() to check when it is ready." }] };
+    }
     if (result.status >= 400) {
       const err    = result.data?.error   ?? JSON.stringify(result.data);
       const detail = result.data?.detail  ?? "";
@@ -463,7 +466,13 @@ Args:
     const ndocs     = colInfo.num_documents;
     const lines: string[] = [];
 
-    lines.push(`Typesense  : ${st.typesense_ok !== false ? "ok" : "NOT OK"}`);
+    const tsLine = st.typesense_loading ? "starting up — retry in a few seconds"
+                 : st.typesense_ok !== false ? "ok"
+                 : "NOT OK";
+    lines.push(`Typesense  : ${tsLine}`);
+    if (st.typesense_loading) {
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    }
     if (ndocs != null) {
       lines.push(`Docs       : ${Number(ndocs).toLocaleString()}  (collection: ${collection})`);
     } else {
@@ -676,7 +685,13 @@ Args:
 
     const rootNames      = root ? [root] : Object.keys(ROOTS);
     const indexerRunning = st.indexer?.running ?? false;
-    const lines          = [`Typesense  : ${st.typesense_ok !== false ? "ok" : "NOT OK"}`];
+    const tsLine2 = st.typesense_loading ? "starting up — retry in a few seconds"
+                  : st.typesense_ok !== false ? "ok"
+                  : "NOT OK";
+    const lines          = [`Typesense  : ${tsLine2}`];
+    if (st.typesense_loading) {
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    }
 
     for (const rootName of rootNames) {
       let collName: string;

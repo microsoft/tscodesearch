@@ -21,7 +21,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from tests.helpers import (
-    _server_ok, _search, _delete_collection, _make_git_repo,
+    _server_ok, _assert_server_ok, _search, _delete_collection, _make_git_repo,
     _FOO_PY, _BAR_PY,
 )
 from indexserver.indexer import run_index, extract_py_metadata
@@ -318,12 +318,12 @@ class TestQueryPy(unittest.TestCase):
 
 # ── TestPySemanticFields ──────────────────────────────────────────────────────
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestPySemanticFields(unittest.TestCase):
     """Verify that Python files get their semantic fields indexed by Typesense."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp = int(time.time())
         cls.coll = f"test_pysem_{stamp}"
         cls.tmpdir = _make_git_repo({

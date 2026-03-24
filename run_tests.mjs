@@ -36,7 +36,7 @@
 import { spawnSync, spawn }               from 'node:child_process';
 import { existsSync, writeFileSync,
          readFileSync, unlinkSync,
-         mkdirSync,
+         mkdirSync, rmSync,
          createWriteStream }              from 'node:fs';
 import { tmpdir }                         from 'node:os';
 import { join, dirname }                  from 'node:path';
@@ -53,9 +53,10 @@ const toWslPath    = p =>
 
 // ── Output helpers ────────────────────────────────────────────────────────────
 
-/** Create a fresh per-run log directory and print its path once. */
+/** Create (or clear) the fixed log directory and print its path. */
 function mkLogDir() {
-  const dir = join(tmpdir(), `codesearch-run-${process.pid}`);
+  const dir = join(tmpdir(), 'codesearch-logs');
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
   mkdirSync(dir, { recursive: true });
   console.log(`[run] logs → ${dir}`);
   return dir;
@@ -103,8 +104,26 @@ function capture(cmd, args, opts = {}) {
 // ── Summaries extracted from captured output ──────────────────────────────────
 
 function pytestSummary(output) {
-  const m = output.match(/=+ ([\d]+ (?:passed|failed|error)[^=\n]*?) =+/);
-  return m ? m[1].trim() : null;
+  // Take the last match — the final "N passed, M failed in X.Xs" line.
+  const matches = [...output.matchAll(/=+ ([\d]+ \w+[^=\n]*? in [\d.]+s) =+/g)];
+  if (matches.length === 0) return null;
+  return matches.at(-1)[1].trim();
+}
+
+/** Extract the first few FAILED/ERROR test names from the short summary section. */
+function pytestDetail(output, limit = 8) {
+  const lines = output.split('\n');
+  const start = lines.findIndex(l => l.includes('short test summary info'));
+  if (start === -1) return null;
+  const results = [];
+  for (let i = start + 1; i < lines.length && results.length < limit; i++) {
+    const l = lines[i];
+    if (l.startsWith('FAILED ') || l.startsWith('ERROR ')) {
+      const m = l.match(/^(FAILED|ERROR)\s+(\S+)/);
+      if (m) results.push(`    ${m[1]} ${m[2]}`);
+    } else if (l.startsWith('===')) break;
+  }
+  return results.length > 0 ? results.join('\n') : null;
 }
 
 function vscodeSummary(output) {
@@ -264,6 +283,7 @@ async function runDocker() {
     writeFileSync(suiteLog, r.output);
     if (r.status !== 0) {
       s.fail(suiteLog, pytestSummary(r.output));
+      const d = pytestDetail(r.output); if (d) console.log(d);
       saveContainerLogs(CONTAINER, logDir);
       process.exit(r.status);
     }
@@ -336,11 +356,27 @@ async function runWsl() {
   const quoted    = testTargets.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
   const pytestBin = PYTEST.replace(/^~/, '$HOME');
 
+  // Wait for Typesense to be healthy before running tests.
+  // Polls the Typesense /health endpoint directly.
+  // This step lives here (not in entrypoint.sh) so that `ts start` stays async.
+  const waitForTs = `
+    echo -n '[run] Waiting for Typesense';
+    WAITED=0;
+    while [ $WAITED -lt 60 ]; do
+      H=$(curl -s http://127.0.0.1:${port}/health 2>/dev/null);
+      if echo "$H" | grep -q '"ok":true'; then echo ' ready'; break; fi;
+      echo -n '.'; sleep 1; WAITED=$((WAITED+1));
+    done;
+    [ $WAITED -lt 60 ] || { echo ' TIMEOUT'; exit 1; }
+  `.trim().replace(/\n\s*/g, ' ');
+
   const servicesAndTestCmd = [
     `APP_ROOT='${wslRepo}' PYTHON3="$HOME/.local/indexserver-venv/bin/python3" ` +
     `TYPESENSE_DATA='${DATA_DIR}' CONFIG_FILE='${CONFIG_FILE}' ` +
     `CODESEARCH_PORT=${port} CODESEARCH_API_HOST=127.0.0.1 ` +
     `bash '${wslRepo}/scripts/entrypoint.sh' --background`,
+
+    waitForTs,
 
     `cd '${wslRepo}' && "${pytestBin}" -v ${quoted}`,
   ].join(' && ');
@@ -350,7 +386,11 @@ async function runWsl() {
     const pytestLog = join(logDir, 'pytest.log');
     const r = runCaptured('wsl.exe', ['-e', 'bash', '-lc', servicesAndTestCmd]);
     writeFileSync(pytestLog, r.output);
-    if (r.status !== 0) { s.fail(pytestLog, pytestSummary(r.output)); process.exit(r.status); }
+    if (r.status !== 0) {
+      s.fail(pytestLog, pytestSummary(r.output));
+      const d = pytestDetail(r.output); if (d) console.log(d);
+      process.exit(r.status);
+    }
     s.ok(pytestSummary(r.output));
   }
 
@@ -401,7 +441,11 @@ async function runLinux() {
     const pytestLog = join(logDir, 'pytest.log');
     const r = runCaptured(PYTEST, ['-v', ...testTargets], { cwd: REPO });
     writeFileSync(pytestLog, r.output);
-    if (r.status !== 0) { s.fail(pytestLog, pytestSummary(r.output)); process.exit(r.status); }
+    if (r.status !== 0) {
+      s.fail(pytestLog, pytestSummary(r.output));
+      const d = pytestDetail(r.output); if (d) console.log(d);
+      process.exit(r.status);
+    }
     s.ok(pytestSummary(r.output));
   }
 

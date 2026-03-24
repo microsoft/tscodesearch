@@ -25,7 +25,7 @@ from tests.fixtures import (
     CLASS_NAMED_INVENTORYMANAGER, METHOD_NAMED_PROCESSINVENTORY, LITERAL_ONLY,
     CALLS_FETCHWIDGET, USES_IDATASTORE_PARAM,
 )
-from tests.helpers import _server_ok, _make_git_repo, _delete_collection
+from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, build_document, run_index
 
 
@@ -155,12 +155,12 @@ namespace Synth {
 # Live integration
 # ══════════════════════════════════════════════════════════════════════════════
 
-@unittest.skipUnless(_server_ok(), "Typesense not running — start with: ts start")
 class TestSymbolsAndTextModeLive(LiveTestBase):
     """End-to-end symbols and text modes."""
 
     @classmethod
     def setUpClass(cls):
+        _assert_server_ok()
         stamp      = int(time.time())
         cls.coll   = f"test_sym_{stamp}"
         cls.tmpdir = _make_git_repo({
