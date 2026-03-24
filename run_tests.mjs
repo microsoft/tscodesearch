@@ -273,6 +273,25 @@ async function runDocker() {
     s.ok(CONTAINER);
   }
 
+  // Wait for management API to report ready (entrypoint health check)
+  {
+    const s = step('docker/ready');
+    const startMs = Date.now();
+    const timeoutMs = 90_000;
+    let ready = false;
+    while (Date.now() - startMs < timeoutMs) {
+      if (await httpHealth(API_PORT)) { ready = true; break; }
+      await sleep(1000);
+    }
+    if (!ready) {
+      const log = join(logDir, 'startup.log');
+      saveContainerLogs(CONTAINER, logDir);
+      s.fail(log, `management API on port ${API_PORT} did not become healthy within 90s`);
+      process.exit(1);
+    }
+    s.ok(`${Math.round((Date.now() - startMs) / 1000)}s`);
+  }
+
   // Run e2e suite (waits for health + collections, then pytest)
   {
     const s = step('docker/pytest');
