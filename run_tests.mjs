@@ -316,14 +316,15 @@ async function runWsl() {
   const port = parseInt(process.env.CODESEARCH_PORT ?? cfg.port ?? 8108, 10);
   const key  = process.env.CODESEARCH_KEY ?? cfg.api_key ?? 'codesearch-local';
   const TYPESENSE_VERSION = process.env.TYPESENSE_VERSION ?? '27.1';
-  const wslRepo  = toWslPath(REPO);
-  const PYTEST   = process.env.PYTEST ?? '~/.local/indexserver-venv/bin/pytest';
+  const wslRepo = toWslPath(REPO);
+  const PYTEST  = (process.env.PYTEST ?? '~/.local/indexserver-venv/bin/pytest')
+                    .replace(/^~/, '$HOME');
 
   const DATA_DIR    = '/tmp/codesearch-wsl-test';
   const CONFIG_FILE = '/tmp/codesearch-wsl-test-config.json';
   const logDir      = mkLogDir();
 
-  // Minimal test config: same key/port so tests can connect, no roots to index.
+  // Write minimal test config to WSL (same key/port, no roots to index).
   const testConfig = JSON.stringify({ api_key: key, port }, null, 2);
   {
     const r = spawnSync('wsl.exe', ['-e', 'bash', '-c', `cat > '${CONFIG_FILE}'`],
@@ -331,66 +332,21 @@ async function runWsl() {
     if (r.status !== 0) die('Failed to write test config to WSL.');
   }
 
-  function cleanup() {
-    run('wsl.exe', ['-e', 'bash', '-c',
-      `for f in '${DATA_DIR}/typesense.pid' '${DATA_DIR}/api.pid'; do` +
-      `  [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null || true; done`,
-    ], { stdio: 'pipe' });
-  }
-  process.on('exit',    cleanup);
-  process.on('SIGINT',  () => process.exit(130));
-  process.on('SIGTERM', () => process.exit(143));
+  const testTargets = extraArgs.length > 0 ? extraArgs : ['tests/'];
+  const quoted = testTargets.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
 
-  // Phase 1: venv + binary + kill existing + wipe data (own session is fine)
   {
-    const s = step('wsl/setup');
-    const setupLog = join(logDir, 'setup.log');
+    const s = step('wsl/tests');
+    const testsLog = join(logDir, 'pytest.log');
     const r = runCaptured('wsl.exe', ['-e', 'bash', '-lc',
       `TYPESENSE_VERSION='${TYPESENSE_VERSION}' TYPESENSE_DATA='${DATA_DIR}' ` +
-      `CODESEARCH_PORT=${port} bash '${wslRepo}/scripts/wsl-setup.sh' --reset`,
+      `CONFIG_FILE='${CONFIG_FILE}' CODESEARCH_PORT=${port} ` +
+      `APP_ROOT='${wslRepo}' PYTEST="${PYTEST}" ` +
+      `bash '${wslRepo}/scripts/run-wsl-tests.sh' ${quoted}`,
     ]);
-    writeFileSync(setupLog, r.output);
-    if (r.status !== 0) { s.fail(setupLog); process.exit(r.status); }
-    s.ok();
-  }
-
-  // Phase 2: start services + run pytest in ONE session (keeps background procs alive)
-  const testTargets = extraArgs.length > 0 ? extraArgs : ['tests/'];
-  const quoted    = testTargets.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
-  const pytestBin = PYTEST.replace(/^~/, '$HOME');
-
-  // Wait for Typesense to be healthy before running tests.
-  // Polls the Typesense /health endpoint directly.
-  // This step lives here (not in entrypoint.sh) so that `ts start` stays async.
-  const waitForTs = `
-    echo -n '[run] Waiting for Typesense';
-    WAITED=0;
-    while [ $WAITED -lt 60 ]; do
-      H=$(curl -s http://127.0.0.1:${port}/health 2>/dev/null);
-      if echo "$H" | grep -q '"ok":true'; then echo ' ready'; break; fi;
-      echo -n '.'; sleep 1; WAITED=$((WAITED+1));
-    done;
-    [ $WAITED -lt 60 ] || { echo ' TIMEOUT'; exit 1; }
-  `.trim().replace(/\n\s*/g, ' ');
-
-  const servicesAndTestCmd = [
-    `APP_ROOT='${wslRepo}' PYTHON3="$HOME/.local/indexserver-venv/bin/python3" ` +
-    `TYPESENSE_DATA='${DATA_DIR}' CONFIG_FILE='${CONFIG_FILE}' ` +
-    `CODESEARCH_PORT=${port} CODESEARCH_API_HOST=127.0.0.1 ` +
-    `bash '${wslRepo}/scripts/entrypoint.sh' --background`,
-
-    waitForTs,
-
-    `cd '${wslRepo}' && "${pytestBin}" -v ${quoted}`,
-  ].join(' && ');
-
-  {
-    const s = step('wsl/pytest');
-    const pytestLog = join(logDir, 'pytest.log');
-    const r = runCaptured('wsl.exe', ['-e', 'bash', '-lc', servicesAndTestCmd]);
-    writeFileSync(pytestLog, r.output);
+    writeFileSync(testsLog, r.output);
     if (r.status !== 0) {
-      s.fail(pytestLog, pytestSummary(r.output));
+      s.fail(testsLog, pytestSummary(r.output));
       const d = pytestDetail(r.output); if (d) console.log(d);
       process.exit(r.status);
     }
