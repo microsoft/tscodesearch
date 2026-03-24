@@ -329,14 +329,15 @@ def _get_query_module():
 
 
 def _run_query(mode: str, pattern: str, files: list, include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
-    """Run a tree-sitter C# AST query against a list of absolute file paths.
+    """Run a tree-sitter AST query against a list of absolute file paths.
 
+    Dispatches to the Python parser for .py files, C# parser otherwise.
     Returns a list of {"file": path, "matches": [{"line": N, "text": "..."}]}
     where line is 1-indexed.  Only files with at least one match are included.
     """
     _q = _get_query_module()
 
-    dispatch = {
+    cs_dispatch = {
         "classes":         lambda s, t, l: _q.q_classes(s, t, l),
         "methods":         lambda s, t, l: _q.q_methods(s, t, l),
         "fields":          lambda s, t, l: _q.q_fields(s, t, l),
@@ -353,19 +354,39 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
         "params":          lambda s, t, l: _q.q_params(s, t, l, pattern),
     }
 
-    fn = dispatch.get(mode)
-    if fn is None:
-        raise ValueError(f"unknown mode: {mode!r}")
+    py_dispatch = {
+        "classes":      lambda s, t, l: _q.py_q_classes(s, t, l),
+        "methods":      lambda s, t, l: _q.py_q_methods(s, t, l),
+        "imports":      lambda s, t, l: _q.py_q_imports(s, t, l),
+        "calls":        lambda s, t, l: _q.py_q_calls(s, t, l, pattern),
+        "implements":   lambda s, t, l: _q.py_q_implements(s, t, l, pattern),
+        "all_refs":     lambda s, t, l: _q.py_q_ident(s, t, l, pattern),
+        "ident":        lambda s, t, l: _q.py_q_ident(s, t, l, pattern),
+        "declarations": lambda s, t, l: _q.py_q_declarations(s, t, l, pattern, include_body=include_body, symbol_kind=symbol_kind),
+        "decorators":   lambda s, t, l: _q.py_q_decorators(s, t, l, pattern),
+        "params":       lambda s, t, l: _q.py_q_params(s, t, l, pattern),
+    }
 
     results = []
     for file_path in files:
         native = to_native_path(file_path)
+        is_py = native.endswith(".py")
+
+        if is_py and not getattr(_q, "_PY_AVAILABLE", False):
+            continue
+
+        dispatch = py_dispatch if is_py else cs_dispatch
+        fn = dispatch.get(mode)
+        if fn is None:
+            continue
+
         try:
             src_bytes = open(native, "rb").read()
         except OSError:
             continue
         try:
-            tree = _q._parser.parse(src_bytes)
+            parser = _q._py_parser if is_py else _q._parser
+            tree = parser.parse(src_bytes)
         except Exception:
             continue
         lines = src_bytes.decode("utf-8", errors="replace").splitlines()
