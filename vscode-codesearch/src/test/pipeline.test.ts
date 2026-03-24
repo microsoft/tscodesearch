@@ -33,6 +33,8 @@ import {
     loadConfig,
     getRoots,
     runSearchPipeline,
+    doQuerySingleFile,
+    resolveFilePath,
     renderTextTree,
     MODES,
 } from '../client';
@@ -268,6 +270,111 @@ describe('pipeline — implements mode (AST-backed, CS_QUERY)', () => {
             assert.ok(hit._matches.length > 0,
                 `${hit.document.relative_path}: empty matches in implements result`);
         }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// doQuerySingleFile E2E — expansion round-trip against the live /query API
+//
+// These tests simulate exactly what the webview does when a file row with
+// ast_expanded=false comes into view: call doQuerySingleFile on the file,
+// then verify the returned matches are usable.
+// ---------------------------------------------------------------------------
+
+// Expansion tests use CS_QUERY if set, otherwise fall back to 'IAbsBlobStore' which
+// exists in the SPO.Core index, or the first symbol findable in the index.
+const EXPANSION_QUERY = LIVE_QUERY || 'IAbsBlobStore';
+
+describe('expansion — doQuerySingleFile round-trip (CS_QUERY or IAbsBlobStore fallback)', () => {
+    it('expanding a file from search results yields valid line-number matches', async (t) => {
+        if (skipIfNoServer(t)) { return; }
+
+        // Step 1: search to get a result set, same as the webview does.
+        const searchResult = await runSearchPipeline(
+            cfg, EXPANSION_QUERY, 'uses', 'cs', LIVE_SUB, '', 10);
+        if (searchResult.hits.length === 0) {
+            t.skip(`no "uses" results for "${EXPANSION_QUERY}" — index may not contain this type`);
+            return;
+        }
+
+        // Step 2: pick the first result and build the absolute path, same as the
+        //         extension's expandFile handler does via resolveFilePath.
+        const hit      = searchResult.hits[0];
+        const relPath  = hit.document.relative_path;
+        const absPath  = resolveFilePath(rootPath, relPath);
+
+        // Step 3: call doQuerySingleFile — this is the call the extension makes.
+        const matches = await doQuerySingleFile(cfg, 'uses', EXPANSION_QUERY, absPath);
+
+        assert.ok(matches.length > 0,
+            `doQuerySingleFile returned no matches for ${relPath} (query: "${EXPANSION_QUERY}")`);
+
+        for (const m of matches) {
+            assert.ok(typeof m.line === 'number' && m.line >= 0,
+                `invalid line ${m.line} in match from ${relPath}`);
+            assert.ok(typeof m.text === 'string' && m.text.length > 0,
+                `empty text in match from ${relPath}`);
+        }
+
+        process.stderr.write(
+            `\n[expansion E2E] ${relPath}: ${matches.length} match(es) via doQuerySingleFile\n`
+            + matches.slice(0, 3).map((m) => `  :${m.line! + 1}  ${m.text.trim().slice(0, 80)}`).join('\n') + '\n',
+        );
+    });
+
+    it('expanding with declarations mode returns signature-like matches', async (t) => {
+        if (skipIfNoServer(t)) { return; }
+
+        const searchResult = await runSearchPipeline(
+            cfg, EXPANSION_QUERY, 'declarations', 'cs', LIVE_SUB, '', 10);
+        if (searchResult.hits.length === 0) {
+            t.skip(`no "declarations" results for "${EXPANSION_QUERY}"`);
+            return;
+        }
+
+        const hit     = searchResult.hits[0];
+        const absPath = resolveFilePath(rootPath, hit.document.relative_path);
+        const matches = await doQuerySingleFile(cfg, 'declarations', EXPANSION_QUERY, absPath);
+
+        assert.ok(matches.length > 0,
+            `doQuerySingleFile(declarations) returned no matches for ${hit.document.relative_path}`);
+        for (const m of matches) {
+            assert.ok(m.line! >= 0, `negative line number: ${m.line}`);
+        }
+    });
+
+    it('expansion result line numbers are consistent with search pipeline line numbers', async (t) => {
+        if (skipIfNoServer(t)) { return; }
+
+        // Both search pipeline and single-file expansion should agree on line numbers
+        // for fully-expanded hits (ast_expanded=true).
+        const searchResult = await runSearchPipeline(
+            cfg, EXPANSION_QUERY, 'uses', 'cs', LIVE_SUB, '', 5);
+        const hit = searchResult.hits.find((h) => h._matches.length > 0 && h.ast_expanded !== false);
+        if (!hit) {
+            t.skip('no fully-expanded hits in search results');
+            return;
+        }
+
+        const absPath       = resolveFilePath(rootPath, hit.document.relative_path);
+        const expandMatches = await doQuerySingleFile(cfg, 'uses', EXPANSION_QUERY, absPath);
+
+        // The expansion must include every line the pipeline already found for this file.
+        const expandLines = new Set(expandMatches.map((m) => m.line));
+        for (const m of hit._matches) {
+            assert.ok(expandLines.has(m.line),
+                `pipeline returned line ${m.line} for ${hit.document.relative_path} `
+                + `but doQuerySingleFile missed it`);
+        }
+    });
+
+    it('expansion on a non-existent file returns empty matches (not an error)', async (t) => {
+        if (skipIfNoServer(t)) { return; }
+
+        // A file path that doesn't exist — server should return empty results gracefully.
+        const fakeAbsPath = resolveFilePath(rootPath, '__nonexistent__/DoesNotExist.cs');
+        const matches = await doQuerySingleFile(cfg, 'calls', EXPANSION_QUERY, fakeAbsPath);
+        assert.deepEqual(matches, [], 'expected empty array for non-existent file');
     });
 });
 

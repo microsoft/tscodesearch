@@ -9,6 +9,7 @@ import {
     loadConfig,
     getRoots,
     runSearchPipeline,
+    doQuerySingleFile,
     resolveFilePath,
 } from './client';
 import { BUILD_DATE } from './buildInfo';
@@ -381,6 +382,16 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
         var el = _createEl(_visRows[i], _offsets[i]);
         resultsEl.appendChild(el);
         _rendered.set(i, el);
+        var row = _visRows[i];
+        if (row.type === 'file' && !row.astExpanded) {
+          var rp = row.hit.document.relative_path;
+          if (!_pendingExpansions[rp]) {
+            _pendingExpansions[rp] = true;
+            vscode.postMessage({ type: 'expandFile', relativePath: rp,
+              root: currentSearch.root, query: currentSearch.query,
+              mode: currentSearch.mode, epoch: _searchEpoch });
+          }
+        }
       }
     }
   }
@@ -439,6 +450,11 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
   var currentSearch  = { query: '', mode: '', ext: '', sub: '', root: '' };
   var currentFacets  = [];
   var subExpansions  = {}; // sub → { state: 'loading'|'loaded', hits, found, capped }
+
+  // ── Per-file lazy expansion (virtual scroll only) ─────────────────────────
+  var _currentHits    = [];   // flat hits array for current virtual-scroll result
+  var _pendingExpansions = Object.create(null); // relative_path → true
+  var _searchEpoch   = 0;    // incremented each search so stale responses are ignored
 
   function renderDirTree(hits) {
     var dirs = {};
@@ -622,6 +638,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     _setMode('virtual');
     _collapsedSubs   = Object.create(null);
     _collapsedDirIds = Object.create(null);
+    _currentHits = hits;
     _rows = _buildRows(hits);
     _computeVis();
     resultsEl.scrollTop = 0;
@@ -641,6 +658,8 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
         return;
       }
       subExpansions = {};
+      _pendingExpansions = Object.create(null);
+      _searchEpoch++;
       statusEl.innerHTML = 'Searching<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>';
       statusEl.className = 'status-bar';
       var params = { type: 'search', query: query, mode: modeEl.value,
@@ -668,7 +687,20 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
   window.addEventListener('message', function(ev) {
     var msg = ev.data;
     if (msg.type === 'results') { showResults(msg); }
-    else if (msg.type === 'subResults') {
+    else if (msg.type === 'fileExpanded') {
+      if (msg.epoch !== _searchEpoch) { return; } // stale response from a previous search
+      var hit = null;
+      for (var hi = 0; hi < _currentHits.length; hi++) {
+        if (_currentHits[hi].document.relative_path === msg.relativePath) { hit = _currentHits[hi]; break; }
+      }
+      if (hit && (msg.matches.length > 0 || !hit.ast_expanded)) {
+        hit._matches = msg.matches || [];
+        hit.ast_expanded = true;
+        _rows = _buildRows(_currentHits);
+        _computeVis();
+        _scheduleRender();
+      }
+    } else if (msg.type === 'subResults') {
       var sub = msg.sub;
       if (msg.error) {
         subExpansions[sub] = { state: 'loaded', hits: [], found: 0, capped: false };
@@ -782,6 +814,25 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
                         error: e instanceof Error ? e.message : String(e),
                     });
                 }
+
+            } else if (msg.type === 'expandFile') {
+                if (!this._config && !this._reloadConfig()) { return; }
+                const rootMap  = getRoots(this._config!);
+                const rootPath = rootMap[msg.root as string] ?? Object.values(rootMap)[0];
+                if (!rootPath) { return; }
+                const fullPath = resolveFilePath(rootPath, msg.relativePath as string);
+                let matches: MatchItem[] = [];
+                try {
+                    matches = await doQuerySingleFile(
+                        this._config!, msg.mode as string, msg.query as string, fullPath,
+                    );
+                } catch { /* return empty matches on failure — file stays as file-only hit */ }
+                webviewView.webview.postMessage({
+                    type: 'fileExpanded',
+                    relativePath: msg.relativePath,
+                    epoch: msg.epoch,
+                    matches,
+                });
 
             } else if (msg.type === 'openFile') {
                 if (!this._config && !this._reloadConfig()) { return; }

@@ -1,13 +1,58 @@
 # codesearch — developer notes for Claude
 
+## CRITICAL: never run --destructive tests without explicit permission
+
+**Never use the `--destructive` flag** when running tests unless the user explicitly says so for that specific run.
+
+- Default: `node run_tests.mjs --wsl` (no `--destructive`)
+- Only add `--destructive` if the user explicitly requests it (e.g. "run destructive tests", "you can use --destructive")
+
+---
+
 ## CRITICAL: running Python scripts from the Bash tool
 
 **Always use the indexserver WSL venv** when running any tscodesearch Python script
-(e.g. `inspect_doc.py`, `smoke_test.py`, utility scripts) via the Bash tool:
+(e.g. `inspect_doc.py`, `smoke_test.py`, `indexserver/query_util.py`, utility scripts) via the Bash tool:
 
 ```bash
 MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/python3 /mnt/q/spocore/tscodesearch/inspect_doc.py <args>"
 ```
+
+To debug AST parsing on a specific file (e.g. why `query_single_file` returns no results):
+```bash
+wsl.exe -- bash -c "~/.local/indexserver-venv/bin/python3 /mnt/q/spocore/tscodesearch/indexserver/query_util.py --methods /mnt/q/spocore/src/path/to/File.cs"
+wsl.exe -- bash -c "~/.local/indexserver-venv/bin/python3 /mnt/q/spocore/tscodesearch/indexserver/query_util.py --declarations MethodName /mnt/q/spocore/src/path/to/File.cs"
+```
+
+To hit the indexserver API directly with curl (read API key + port from config.json — never hard-code them):
+```bash
+# Read key and port from config.json
+API_KEY=$(node -e "const c=require('./config.json'); process.stdout.write(c.api_key)")
+PORT=$(node -e "const c=require('./config.json'); process.stdout.write(String(c.port))")
+API_PORT=$((PORT + 1))
+
+# query_single_file — POST /query
+curl -s -X POST http://localhost:$API_PORT/query \
+  -H "Content-Type: application/json" \
+  -H "X-TYPESENSE-API-KEY: $API_KEY" \
+  -d '{"mode": "methods", "pattern": "", "files": ["/mnt/q/spocore/src/path/to/File.cs"]}' \
+  | python -m json.tool
+
+# query_single_file with a pattern
+curl -s -X POST http://localhost:$API_PORT/query \
+  -H "Content-Type: application/json" \
+  -H "X-TYPESENSE-API-KEY: $API_KEY" \
+  -d '{"mode": "declarations", "pattern": "MethodName", "files": ["/mnt/q/spocore/src/path/to/File.cs"]}' \
+  | python -m json.tool
+
+# query_codebase — POST /query-codebase
+curl -s -X POST http://localhost:$API_PORT/query-codebase \
+  -H "Content-Type: application/json" \
+  -H "X-TYPESENSE-API-KEY: $API_KEY" \
+  -d '{"mode": "declarations", "pattern": "MethodName", "root": ""}' \
+  | python -m json.tool
+```
+Run these from `q:/spocore/tscodesearch/` so the `node -e require('./config.json')` resolves correctly.
 
 - `.venv/Scripts/python.exe` is Windows-only and not accessible from Git Bash / Bash tool
 - `~/.local/indexserver-venv/` has everything: `typesense`, `tree_sitter_c_sharp`, `tree_sitter`, `watchdog`, `pathspec`, `pytest`
@@ -87,6 +132,7 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 | `config.py` | Shared constants: `HOST`, `PORT`, `API_KEY`, `ROOTS`, `COLLECTION`, `INCLUDE_EXTENSIONS`. Reads `config.json`. Provides `get_root(name)` → `(collection, src_path)` and `collection_for_root(name)` → `"codesearch_{name}"`. |
 | `search.py` | Test utility: direct Typesense HTTP search. `search(query, ...)` builds params and calls Typesense; `format_results()` prints human-readable output. Run from WSL. |
 | `query.py` | Tree-sitter AST query functions (`q_classes`, `q_methods`, `q_fields`, `q_calls`, `q_implements`, `q_uses`, `q_casts`, `q_all_refs`, `q_attrs`, `q_usings`, `q_declarations`, `q_params`, `q_accesses_on`, `q_accesses_of`, `q_text`). `process_file(path, mode, mode_arg, uses_kind, ...)` dispatches to them and prints matches. `files_from_search()` resolves Typesense hits to local file paths. |
+| `indexserver/query_util.py` | Thin entry point that adds the tscodesearch root to `sys.path` and delegates to `query.main()`. Run this (not `query.py`) when using the indexserver venv directly, e.g. to debug AST parsing on a specific file. **Must be run via WSL using the indexserver venv** (see below). |
 | `mcp_server.ts` / `mcp_server.js` | Node.js MCP server (TypeScript source, compiled to JS). Exposes `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `manage_service` tools. Runs on Windows; communicates with the indexserver via HTTP. |
 
 ### Server-side (`indexserver/`)

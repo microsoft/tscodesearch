@@ -24,6 +24,7 @@ import {
     collectionForRoot,
     resolveFilePath,
     doQueryCodebase,
+    doQuerySingleFile,
     runSearchPipeline,
     MODES,
     CodesearchConfig,
@@ -50,6 +51,7 @@ let mockPort: number;
 type MockQcHandler = (
     body: object,
     headers: http.IncomingHttpHeaders,
+    url: string,
 ) => { status: number; body?: object; raw?: string };
 
 let mockHandler: MockQcHandler = () => ({
@@ -66,7 +68,7 @@ before(
                 req.on('end', () => {
                     let parsed: object = {};
                     try { parsed = JSON.parse(rawBody); } catch { /* leave empty */ }
-                    const result = mockHandler(parsed, req.headers);
+                    const result = mockHandler(parsed, req.headers, req.url ?? '');
                     res.writeHead(result.status, { 'Content-Type': 'application/json' });
                     res.end(result.raw ?? JSON.stringify(result.body ?? {}));
                 });
@@ -448,6 +450,139 @@ describe('runSearchPipeline', () => {
         await assert.rejects(
             () => runSearchPipeline(makeCfg(), 'x', 'uses', '', '', '', 10),
             /internal error/
+        );
+    });
+});
+
+// ---------------------------------------------------------------------------
+// doQuerySingleFile — HTTP client against mock /query server
+// ---------------------------------------------------------------------------
+
+describe('doQuerySingleFile', () => {
+    it('POSTs to /query (not /query-codebase)', async () => {
+        let capturedUrl = '';
+        mockHandler = (_, __, url) => {
+            capturedUrl = url;
+            return { status: 200, body: { results: [] } };
+        };
+        await doQuerySingleFile(makeCfg(), 'calls', 'Foo', 'C:/src/foo.cs');
+        assert.equal(capturedUrl, '/query');
+    });
+
+    it('sends files as a single-element array containing the absolute path', async () => {
+        let body: Record<string, unknown> = {};
+        mockHandler = (b) => { body = b as Record<string, unknown>; return { status: 200, body: { results: [] } }; };
+        await doQuerySingleFile(makeCfg(), 'calls', 'Foo', 'C:/src/myfile.cs');
+        assert.deepEqual(body['files'], ['C:/src/myfile.cs']);
+    });
+
+    it('sends mode and pattern in body', async () => {
+        let body: Record<string, unknown> = {};
+        mockHandler = (b) => { body = b as Record<string, unknown>; return { status: 200, body: { results: [] } }; };
+        await doQuerySingleFile(makeCfg(), 'calls', 'SaveWidget', 'C:/src/foo.cs');
+        assert.equal(body['mode'], 'calls');
+        assert.equal(body['pattern'], 'SaveWidget');
+    });
+
+    it('resolves mode key to astMode (declarations → declarations)', async () => {
+        let body: Record<string, unknown> = {};
+        mockHandler = (b) => { body = b as Record<string, unknown>; return { status: 200, body: { results: [] } }; };
+        await doQuerySingleFile(makeCfg(), 'declarations', 'Widget', 'C:/src/foo.cs');
+        assert.equal(body['mode'], 'declarations');
+        assert.equal(body['uses_kind'], undefined);
+    });
+
+    it('sends uses_kind=field for uses_field mode', async () => {
+        let body: Record<string, unknown> = {};
+        mockHandler = (b) => { body = b as Record<string, unknown>; return { status: 200, body: { results: [] } }; };
+        await doQuerySingleFile(makeCfg(), 'uses_field', 'IWidget', 'C:/src/foo.cs');
+        assert.equal(body['mode'], 'uses');
+        assert.equal(body['uses_kind'], 'field');
+    });
+
+    it('sends uses_kind=param for uses_param mode', async () => {
+        let body: Record<string, unknown> = {};
+        mockHandler = (b) => { body = b as Record<string, unknown>; return { status: 200, body: { results: [] } }; };
+        await doQuerySingleFile(makeCfg(), 'uses_param', 'IWidget', 'C:/src/foo.cs');
+        assert.equal(body['mode'], 'uses');
+        assert.equal(body['uses_kind'], 'param');
+    });
+
+    it('converts 1-indexed line numbers to 0-indexed', async () => {
+        mockHandler = () => ({
+            status: 200,
+            body: {
+                results: [{
+                    file: 'C:/src/foo.cs',
+                    matches: [
+                        { line: 1,  text: 'first line' },
+                        { line: 10, text: 'tenth line' },
+                        { line: 42, text: 'answer' },
+                    ],
+                }],
+            },
+        });
+        const matches = await doQuerySingleFile(makeCfg(), 'calls', 'Foo', 'C:/src/foo.cs');
+        assert.equal(matches.length, 3);
+        assert.equal(matches[0].line, 0);   // 1  - 1
+        assert.equal(matches[1].line, 9);   // 10 - 1
+        assert.equal(matches[2].line, 41);  // 42 - 1
+        assert.equal(matches[2].text, 'answer');
+    });
+
+    it('returns empty array when results have no matches', async () => {
+        mockHandler = () => ({
+            status: 200,
+            body: { results: [{ file: 'C:/src/foo.cs', matches: [] }] },
+        });
+        const matches = await doQuerySingleFile(makeCfg(), 'calls', 'Foo', 'C:/src/foo.cs');
+        assert.deepEqual(matches, []);
+    });
+
+    it('returns empty array when results array is empty', async () => {
+        mockHandler = () => ({ status: 200, body: { results: [] } });
+        const matches = await doQuerySingleFile(makeCfg(), 'calls', 'Foo', 'C:/src/foo.cs');
+        assert.deepEqual(matches, []);
+    });
+
+    it('sends X-TYPESENSE-API-KEY header', async () => {
+        let capturedKey = '';
+        mockHandler = (_, headers) => {
+            capturedKey = headers['x-typesense-api-key'] as string;
+            return { status: 200, body: { results: [] } };
+        };
+        const cfg = makeCfg();
+        cfg.api_key = 'secret-file-key';
+        await doQuerySingleFile(cfg, 'calls', 'Foo', 'C:/src/foo.cs');
+        assert.equal(capturedKey, 'secret-file-key');
+    });
+
+    it('rejects on HTTP 400 with error message', async () => {
+        mockHandler = () => ({ status: 400, body: { error: 'invalid mode: bad' } });
+        await assert.rejects(
+            () => doQuerySingleFile(makeCfg(), 'bad', 'x', 'C:/src/foo.cs'),
+            /invalid mode/,
+        );
+    });
+
+    it('rejects on HTTP 500', async () => {
+        mockHandler = () => ({ status: 500, body: { error: 'internal server error' } });
+        await assert.rejects(
+            () => doQuerySingleFile(makeCfg(), 'calls', 'Foo', 'C:/src/foo.cs'),
+            /internal server error/,
+        );
+    });
+
+    it('rejects when server is unreachable', async () => {
+        const cfg: CodesearchConfig = { api_key: 'k', port: 1, mode: 'wsl', roots: { default: { windows_path: 'C:/src' } } };
+        await assert.rejects(() => doQuerySingleFile(cfg, 'calls', 'Foo', 'C:/src/foo.cs'));
+    });
+
+    it('rejects on malformed JSON response', async () => {
+        mockHandler = () => ({ status: 200, raw: 'not json at all' });
+        await assert.rejects(
+            () => doQuerySingleFile(makeCfg(), 'calls', 'Foo', 'C:/src/foo.cs'),
+            /Bad JSON/,
         );
     });
 });

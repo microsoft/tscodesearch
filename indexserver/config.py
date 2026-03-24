@@ -29,28 +29,77 @@ PORT: int = int(_CONFIG["port"])
 API_PORT: int = PORT + 1   # management API (indexserver/api.py)
 API_KEY: str = _CONFIG.get("api_key", "codesearch-local")
 
+
+# ── Platform helpers (defined before _parse_roots so it can call them) ────────
+
+def _is_wsl() -> bool:
+    """Detect if running in WSL (vs native Linux like Docker)."""
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    if os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
+        return True
+    return False
+
+
+def to_native_path(path: str) -> str:
+    """Convert a path (Windows or WSL) to the native format for the current process.
+
+    On native Linux (Docker): paths are used as-is (no /mnt/ conversion needed).
+    On WSL:    converts X:/... or X:\\... to /mnt/x/...
+    On Windows: converts /mnt/x/... to X:/..., leaves X:/... unchanged.
+    Uses forward slashes on both platforms (valid on Windows too).
+    """
+    path = path.replace("\\", "/")
+
+    if _sys.platform == "linux":
+        # Native Linux (Docker) - paths already correct, no conversion
+        if not _is_wsl():
+            return path
+
+        # WSL - convert Windows paths to /mnt/x/... format
+        m = _re.match(r"^([a-zA-Z]):(.*)", path)
+        if m:
+            path = f"/mnt/{m.group(1).lower()}{m.group(2)}"
+    else:
+        # Windows - convert /mnt/x/... to X:/...
+        m = _re.match(r"^/mnt/([a-zA-Z])/(.*)", path)
+        if m:
+            path = f"{m.group(1).upper()}:/{m.group(2)}"
+    return path
+
+
 # ── Roots ─────────────────────────────────────────────────────────────────────
-# Supports two formats for each root entry in config.json:
-#   Old (string): "default": "/source/default"
-#   New (object): "default": {"local_path": "/source/default", "windows_path": "C:/repos/src"}
-#
-# ROOTS      — path used to find files (local_path in container, string value in WSL)
-# HOST_ROOTS — original Windows path stored as relative_path prefix in indexed docs
+# Each root entry in config.json should have both:
+#   local_path   — path as seen by this process (WSL: /mnt/c/…, Docker: /source/…)
+#   windows_path — Windows-side path (C:/…), stored as relative_path prefix in index
 
 def _parse_roots(raw: dict) -> tuple[dict, dict]:
-    """Parse roots config.  Each entry must be an object with at least one of:
-      local_path   — path as seen by the current process (container or WSL)
-      windows_path — original Windows path (used as the relative_path prefix in indexed docs)
+    """Parse roots config.  Each entry should have both:
+      local_path   — path as seen by the current process (WSL: /mnt/c/…, Docker: /source/…)
+      windows_path — original Windows path (C:/…), stored as relative_path prefix in indexed docs
 
-    ROOTS uses local_path when present, otherwise windows_path.
-    HOST_ROOTS is populated only when windows_path is set.
+    If only windows_path is provided, local_path is auto-derived:
+      - In WSL: C:/foo/bar  →  /mnt/c/foo/bar
+      - In Docker/native Linux: cannot auto-derive; falls back to windows_path (add local_path
+        explicitly in config.json when running Docker with non-standard mount points)
+
+    ROOTS uses local_path (the server-side filesystem path to use for file access).
+    HOST_ROOTS stores windows_path (the Windows-side path used as relative_path prefix).
     """
     local_paths: dict[str, str] = {}
     windows_paths: dict[str, str] = {}
     for name, val in raw.items():
         lp = val.get("local_path", "").replace("\\", "/").rstrip("/")
         wp = val.get("windows_path", "").replace("\\", "/").rstrip("/")
-        local_paths[name] = lp or wp
+        if not lp and wp:
+            # Auto-derive local_path from windows_path when not explicitly set.
+            # In WSL, convert the Windows drive path to /mnt/<drive>/... form.
+            m = _re.match(r"^([a-zA-Z]):(.*)", wp)
+            if m and _sys.platform == "linux" and _is_wsl():
+                lp = f"/mnt/{m.group(1).lower()}{m.group(2)}"
+            else:
+                lp = wp  # Docker/native: no conversion; add local_path explicitly
+        local_paths[name] = lp
         if wp:
             windows_paths[name] = wp
     return local_paths, windows_paths
@@ -109,39 +158,3 @@ TYPESENSE_CLIENT_CONFIG = {
 }
 
 
-def _is_wsl() -> bool:
-    """Detect if running in WSL (vs native Linux like Docker)."""
-    # WSL sets WSL_DISTRO_NAME environment variable
-    if os.environ.get("WSL_DISTRO_NAME"):
-        return True
-    # Alternative check: WSL interop file exists
-    if os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop"):
-        return True
-    return False
-
-
-def to_native_path(path: str) -> str:
-    """Convert a path (Windows or WSL) to the native format for the current process.
-
-    On native Linux (Docker): paths are used as-is (no /mnt/ conversion needed).
-    On WSL:    converts X:/... or X:\\... to /mnt/x/...
-    On Windows: converts /mnt/x/... to X:/..., leaves X:/... unchanged.
-    Uses forward slashes on both platforms (valid on Windows too).
-    """
-    path = path.replace("\\", "/")
-
-    if _sys.platform == "linux":
-        # Native Linux (Docker) - paths already correct, no conversion
-        if not _is_wsl():
-            return path
-
-        # WSL - convert Windows paths to /mnt/x/... format
-        m = _re.match(r"^([a-zA-Z]):(.*)", path)
-        if m:
-            path = f"/mnt/{m.group(1).lower()}{m.group(2)}"
-    else:
-        # Windows - convert /mnt/x/... to X:/...
-        m = _re.match(r"^/mnt/([a-zA-Z])/(.*)", path)
-        if m:
-            path = f"{m.group(1).upper()}:/{m.group(2)}"
-    return path

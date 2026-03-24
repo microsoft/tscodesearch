@@ -128,6 +128,13 @@ _ts_client = None
 # Last known Typesense health; updated every heartbeat interval.
 _ts_healthy: bool = True
 
+# True from startup until the Typesense client is ready and all init is done.
+_ts_initializing: bool = True
+
+# Stop event for the heartbeat thread; set here so shutdown can reach it even
+# if the init thread hasn't started the heartbeat yet.
+_hb_stop: threading.Event = threading.Event()
+
 # Set to True by POST /watcher/pause (Windows watcher running — polling not needed).
 # Suppresses heartbeat auto-revival of the watcher thread.
 _watcher_paused = False
@@ -369,7 +376,17 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
 
     results = []
     for file_path in files:
-        native = to_native_path(file_path)
+        # Map Windows host path to native local path using HOST_ROOTS → ROOTS.
+        # Node.js passes Windows-style paths (e.g. Q:/spocore/src/Foo.cs);
+        # the server resolves them to the local filesystem path using config.
+        resolved = file_path.replace("\\", "/")
+        for name, host_root in HOST_ROOTS.items():
+            hr = host_root.replace("\\", "/").rstrip("/")
+            if resolved.lower().startswith(hr.lower() + "/") or resolved.lower() == hr.lower():
+                rel = resolved[len(hr):]  # includes leading /
+                resolved = ROOTS[name].rstrip("/") + rel
+                break
+        native = to_native_path(resolved)
         is_py = native.endswith(".py")
 
         if is_py and not getattr(_q, "_PY_AVAILABLE", False):
@@ -379,7 +396,6 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
         fn = dispatch.get(mode)
         if fn is None:
             continue
-
         try:
             src_bytes = open(native, "rb").read()
         except OSError:
@@ -493,11 +509,12 @@ class _Handler(BaseHTTPRequestHandler):
                 coll = collection_for_root(root_name)
                 schema = _schema_status.get(root_name, {})
                 ndocs: int | None = None
-                try:
-                    info = _ts_client.collections[coll].retrieve()
-                    ndocs = info.get("num_documents")
-                except Exception:
-                    pass
+                if _ts_client is not None:
+                    try:
+                        info = _ts_client.collections[coll].retrieve()
+                        ndocs = info.get("num_documents")
+                    except Exception:
+                        pass
                 # Use the live Typesense retrieve() as the authoritative existence check;
                 # the cached _schema_status may be stale (e.g. collection just created).
                 col_live_exists = ndocs is not None
@@ -513,12 +530,17 @@ class _Handler(BaseHTTPRequestHandler):
                 }
             result["collections"] = collections
             result["typesense_ok"] = _ts_healthy
+            result["typesense_loading"] = _ts_initializing
 
             self._send_json(200, result)
             return
 
         # ── POST /check-ready ─────────────────────────────────────────────────
         if method == "POST" and path == "/check-ready":
+            if _ts_initializing:
+                self._send_json(200, {"ready": False, "loading": True,
+                                      "error": "Typesense is still loading"})
+                return
             body = self._read_body()
             try:
                 collection, src_root = get_root(body.get("root", ""))
@@ -585,6 +607,9 @@ class _Handler(BaseHTTPRequestHandler):
 
         # ── POST /index/start ─────────────────────────────────────────────────
         if method == "POST" and path == "/index/start":
+            if _ts_initializing:
+                self._send_json(503, {"error": "Typesense is still loading, please wait"})
+                return
             body = self._read_body()
             root_arg  = body.get("root", "")
             root_name = root_arg if root_arg else ("default" if "default" in ROOTS else next(iter(ROOTS)))
@@ -623,6 +648,9 @@ class _Handler(BaseHTTPRequestHandler):
 
         # ── POST /query-codebase ──────────────────────────────────────────────
         if method == "POST" and path == "/query-codebase":
+            if _ts_initializing:
+                self._send_json(503, {"error": "Typesense is still loading, please wait"})
+                return
             body    = self._read_body()
             mode         = body.get("mode", "")
             pattern      = body.get("pattern", "")
@@ -640,11 +668,15 @@ class _Handler(BaseHTTPRequestHandler):
 
             ts_mode_flag, ast_mode = _EXT_TO_TS_AND_AST[mode]
 
+            root_name = root if root else ("default" if "default" in ROOTS else next(iter(ROOTS)))
             try:
-                collection, src_root = get_root(root)
+                collection, src_root = get_root(root_name)
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
+            # Windows path prefix stored in Typesense relative_path (e.g. "C:/repos/src").
+            # Must be stripped before prepending the server-local src_root.
+            host_root_prefix = HOST_ROOTS.get(root_name, "").replace("\\", "/").rstrip("/")
 
             # Import search lazily (on sys.path via _base)
             import search as _search_mod
@@ -694,6 +726,11 @@ class _Handler(BaseHTTPRequestHandler):
             hit_by_path: dict[str, dict] = {}
             for hit in ast_hits:
                 rel = hit["document"].get("relative_path", "").replace("\\", "/")
+                # Strip the Windows host_root prefix (e.g. "C:/repos/src/Foo.cs" →
+                # "Foo.cs") so prepending the server-local src_root produces a valid path.
+                # Without this, Docker produces "/source/default/C:/repos/src/Foo.cs".
+                if host_root_prefix and rel.lower().startswith(host_root_prefix.lower() + "/"):
+                    rel = rel[len(host_root_prefix) + 1:]
                 abs_path = to_native_path(
                     src_root.rstrip("/\\") + "/" + rel
                 )
@@ -803,6 +840,64 @@ class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
+# ── Async Typesense init (runs in background after HTTP server is up) ──────────
+
+def _ts_init_loop(stop_event: threading.Event) -> None:
+    """Poll until Typesense is healthy, then finish all init work.
+
+    Runs as a daemon thread so the management API HTTP server can start
+    (and answer /health) before Typesense is ready.  Sets _ts_initializing=False
+    once the client, queue, schemas, watcher, and heartbeat are all up.
+    """
+    global _ts_client, _schema_status, _ts_initializing, _sync_thread, _sync_pending
+
+    print("[api] Waiting for Typesense to become ready…", flush=True)
+    while not stop_event.is_set():
+        if _ts_health():
+            break
+        stop_event.wait(2)
+
+    if stop_event.is_set():
+        return
+
+    print("[api] Typesense ready — finishing initialization.", flush=True)
+
+    _ts_client = get_client()
+    _index_queue.start(_ts_client)
+    _schema_status = verify_all_schemas(_ts_client)
+
+    # Auto-sync roots that have no completion marker (first run or interrupted)
+    with _sync_lock:
+        for root_name in ROOTS:
+            try:
+                collection, src_root = get_root(root_name)
+            except ValueError:
+                continue
+            if _read_marker(collection) is None:
+                _sync_pending.append({
+                    "root_name": root_name,
+                    "src_root":  src_root,
+                    "collection": collection,
+                    "resethard":  False,
+                    "host_root":  HOST_ROOTS.get(root_name, ""),
+                })
+        if _sync_pending:
+            _sync_thread = threading.Thread(
+                target=_drain_sync_queue, name="syncer", daemon=True
+            )
+            _sync_thread.start()
+
+    _start_watcher()
+
+    _hb_thread = threading.Thread(
+        target=_heartbeat_loop, args=(_hb_stop,), name="heartbeat", daemon=True
+    )
+    _hb_thread.start()
+
+    _ts_initializing = False
+    print("[api] Initialization complete.", flush=True)
+
+
 # ── main ───────────────────────────────────────────────────────────────────────
 
 def run(host: str = "127.0.0.1", port: int = API_PORT) -> None:
@@ -816,51 +911,24 @@ def run(host: str = "127.0.0.1", port: int = API_PORT) -> None:
         _shutdown_event.set()
     signal.signal(signal.SIGTERM, _on_sigterm)
 
-    # Start the index queue worker (needs a Typesense client — server must be up first)
-    global _ts_client, _schema_status
-    _ts_client = get_client()
-    _index_queue.start(_ts_client)
-
-    # Verify collection schemas match the expected definition; cache for /status
-    _schema_status = verify_all_schemas(_ts_client)
-
-    # Auto-sync roots that have no completion marker (first run or interrupted)
-    global _sync_thread, _sync_pending
-    for root_name in ROOTS:
-        try:
-            collection, src_root = get_root(root_name)
-        except ValueError:
-            continue
-        if _read_marker(collection) is None:
-            _sync_pending.append({
-                "root_name": root_name,
-                "src_root":  src_root,
-                "collection": collection,
-                "resethard":  False,
-                "host_root":  HOST_ROOTS.get(root_name, ""),
-            })
-    if _sync_pending:
-        _sync_thread = threading.Thread(target=_drain_sync_queue, name="syncer", daemon=True)
-        _sync_thread.start()
-
-    # Start watcher thread
-    _start_watcher()
-
-    # Start heartbeat thread
-    _hb_stop = threading.Event()
-    _hb_thread = threading.Thread(
-        target=_heartbeat_loop, args=(_hb_stop,), name="heartbeat", daemon=True
-    )
-    _hb_thread.start()
-
-    # Start HTTP server in background thread
+    # Start HTTP server immediately — before Typesense is ready
     server = _ThreadedHTTPServer((host, port), _Handler)
     srv_thread = threading.Thread(target=server.serve_forever, name="http", daemon=True)
     srv_thread.start()
     print(f"[api] Listening on http://{host}:{port}", flush=True)
 
+    # Kick off Typesense init in the background so callers don't have to wait
+    _init_stop = threading.Event()
+    _init_thread = threading.Thread(
+        target=_ts_init_loop, args=(_init_stop,), name="ts-init", daemon=True
+    )
+    _init_thread.start()
+
     # Wait for shutdown signal
     _shutdown_event.wait()
+
+    # Stop background init if still running
+    _init_stop.set()
 
     # Stop all threads
     # server.shutdown() blocks until serve_forever() returns — run it with a timeout
@@ -876,7 +944,8 @@ def run(host: str = "127.0.0.1", port: int = API_PORT) -> None:
         if _sync_stop:
             _sync_stop.set()
         _sync_thread.join(timeout=5)
-    _index_queue.stop(timeout=5)
+    if _ts_client is not None:
+        _index_queue.stop(timeout=5)
 
     if _API_PID.exists():
         _API_PID.unlink()

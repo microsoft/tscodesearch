@@ -266,6 +266,66 @@ export async function doQueryCodebase(
 }
 
 /**
+ * Run a tree-sitter AST query on a single file via the /query endpoint.
+ * absolutePath must be a Windows path (e.g. q:/spocore/src/foo.cs).
+ */
+export async function doQuerySingleFile(
+    config: CodesearchConfig,
+    modeKey: string,
+    pattern: string,
+    absolutePath: string,
+): Promise<MatchItem[]> {
+    const modeEntry  = MODES.find((m) => m.key === modeKey);
+    const serverMode = modeEntry?.astMode ?? modeKey;
+    const port   = config.port + 1;
+    const apiKey = config.api_key;
+    const bodyObj: Record<string, unknown> = { mode: serverMode, pattern, files: [absolutePath] };
+    if (modeEntry?.uses_kind) { bodyObj['uses_kind'] = modeEntry.uses_kind; }
+    const body = JSON.stringify(bodyObj);
+
+    return new Promise((resolve, reject) => {
+        const req = http.request(
+            {
+                hostname: 'localhost', port, path: '/query', method: 'POST',
+                headers: {
+                    'X-TYPESENSE-API-KEY': apiKey,
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                },
+            },
+            (res) => {
+                let data = '';
+                res.on('data', (chunk) => (data += chunk));
+                res.on('end', () => {
+                    try {
+                        const parsed = JSON.parse(data) as {
+                            results?: Array<{ matches?: Array<{ line: number; text: string }> }>;
+                            error?: string;
+                        };
+                        if (res.statusCode && res.statusCode >= 400) {
+                            reject(new Error(`Query API ${res.statusCode}: ${parsed.error ?? data.slice(0, 200)}`));
+                        } else {
+                            const fileResult = (parsed.results ?? [])[0];
+                            const matches: MatchItem[] = (fileResult?.matches ?? []).map((m) => ({
+                                text: m.text,
+                                line: m.line - 1,  // 1-indexed → 0-indexed
+                            }));
+                            resolve(matches);
+                        }
+                    } catch {
+                        reject(new Error(`Bad JSON from query API: ${data.slice(0, 200)}`));
+                    }
+                });
+            },
+        );
+        req.setTimeout(10000, () => req.destroy(new Error('Query API timed out')));
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+/**
  * Run a full search using the server's /query-codebase endpoint.
  * The server handles Typesense pre-filter + AST post-filter in one call.
  */
