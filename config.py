@@ -10,9 +10,9 @@ import sys as _sys
 # ── config.json ───────────────────────────────────────────────────────────────
 # Each root entry is an object:
 #   {"api_key": "...", "port": 8108, "roots": {
-#       "default": {"windows_path": "C:/myproject/src", "local_path": "/mnt/c/myproject/src"}
+#       "default": {"external_path": "C:/myproject/src", "local_path": "/mnt/c/myproject/src"}
 #   }}
-# windows_path: original Windows path (used for display and path resolution on Windows)
+# external_path: original Windows path (used for display and path resolution on Windows)
 # local_path:   path as seen by this process (WSL or Docker container)
 _CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
@@ -73,30 +73,30 @@ def to_native_path(path: str) -> str:
 # ── Roots ─────────────────────────────────────────────────────────────────────
 # Each root entry in config.json should have both:
 #   local_path   — path as seen by this process (WSL: /mnt/c/…, Docker: /source/…)
-#   windows_path — Windows-side path (C:/…), stored as relative_path prefix in index
+#   external_path — Windows-side path (C:/…), stored as relative_path prefix in index
 #
-# ROOTS      — path used to find files (local_path if set, otherwise windows_path)
+# ROOTS      — path used to find files (local_path if set, otherwise external_path)
 # HOST_ROOTS — original Windows path stored as relative_path prefix in indexed docs
 
 def _parse_roots(raw: dict) -> tuple[dict, dict]:
     """Parse roots config.  Each entry should have both:
       local_path   — path as seen by the current process (WSL: /mnt/c/…, Docker: /source/…)
-      windows_path — original Windows path (C:/…), stored as relative_path prefix in indexed docs
+      external_path — original Windows path (C:/…), stored as relative_path prefix in indexed docs
 
-    If only windows_path is provided, local_path is auto-derived:
+    If only external_path is provided, local_path is auto-derived:
       - In WSL: C:/foo/bar  →  /mnt/c/foo/bar
-      - In Docker/native Linux: cannot auto-derive; falls back to windows_path
+      - In Docker/native Linux: cannot auto-derive; falls back to external_path
 
     ROOTS uses local_path (the server-side filesystem path for file access).
-    HOST_ROOTS stores windows_path (the Windows-side path used as relative_path prefix).
+    HOST_ROOTS stores external_path (the Windows-side path used as relative_path prefix).
     """
     local_paths: dict[str, str] = {}
-    windows_paths: dict[str, str] = {}
+    external_paths: dict[str, str] = {}
     for name, val in raw.items():
         lp = val.get("local_path", "").replace("\\", "/").rstrip("/")
-        wp = val.get("windows_path", "").replace("\\", "/").rstrip("/")
+        wp = val.get("external_path", "").replace("\\", "/").rstrip("/")
         if not lp and wp:
-            # Auto-derive local_path from windows_path when not explicitly set.
+            # Auto-derive local_path from external_path when not explicitly set.
             # In WSL, convert the Windows drive path to /mnt/<drive>/... form.
             m = _re.match(r"^([a-zA-Z]):(.*)", wp)
             if m and _sys.platform == "linux" and _is_wsl():
@@ -105,8 +105,8 @@ def _parse_roots(raw: dict) -> tuple[dict, dict]:
                 lp = wp  # Docker/native: no conversion; add local_path explicitly
         local_paths[name] = lp
         if wp:
-            windows_paths[name] = wp
-    return local_paths, windows_paths
+            external_paths[name] = wp
+    return local_paths, external_paths
 
 ROOTS, HOST_ROOTS = _parse_roots(_CONFIG.get("roots", {}))
 
@@ -137,7 +137,7 @@ def get_root(name: str = "") -> tuple[str, str]:
 
 
 def get_host_root(name: str = "") -> str:
-    """Return the Windows path for a root, or the local path if no windows_path is set."""
+    """Return the Windows path for a root, or the local path if no external_path is set."""
     if not name:
         name = "default" if "default" in ROOTS else next(iter(ROOTS), "")
     return HOST_ROOTS.get(name) or ROOTS.get(name, "")

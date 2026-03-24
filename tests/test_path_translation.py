@@ -15,7 +15,7 @@ Path contract:
                                               /source/default/Widget.cs   (Docker)
 
   config.json should always have both:
-    windows_path — Windows-side path for the MCP client
+    external_path — Windows-side path for the MCP client
     local_path   — server-side path for WSL / Docker (auto-derived in WSL if absent)
 
 Covered here (no Typesense server required):
@@ -84,7 +84,7 @@ class TestToNativePath(unittest.TestCase):
 
     # ── Docker / native Linux ─────────────────────────────────────────────────
 
-    def test_docker_windows_path_unchanged(self):
+    def test_docker_external_path_unchanged(self):
         # On native Linux (no WSL), paths are used as-is
         self.assertEqual(
             self._call("C:/repos/src/Widget.cs", "linux", wsl=False),
@@ -112,23 +112,23 @@ class TestParseRoots(unittest.TestCase):
 
     def test_both_paths_explicit_uses_local_path(self):
         local, windows = self._parse({
-            "default": {"local_path": "/source/default", "windows_path": "C:/repos/src"}
+            "default": {"local_path": "/source/default", "external_path": "C:/repos/src"}
         })
         self.assertEqual(local["default"], "/source/default")
         self.assertEqual(windows["default"], "C:/repos/src")
 
-    def test_only_windows_path_wsl_derives_local(self):
+    def test_only_external_path_wsl_derives_local(self):
         local, windows = self._parse(
-            {"default": {"windows_path": "C:/repos/src"}},
+            {"default": {"external_path": "C:/repos/src"}},
             platform="linux", wsl=True,
         )
         self.assertEqual(local["default"], "/mnt/c/repos/src")
         self.assertEqual(windows["default"], "C:/repos/src")
 
-    def test_only_windows_path_docker_falls_back_to_windows(self):
+    def test_only_external_path_docker_falls_back_to_windows(self):
         # Docker mode: cannot auto-derive — must be explicit in config.json
         local, windows = self._parse(
-            {"default": {"windows_path": "C:/repos/src"}},
+            {"default": {"external_path": "C:/repos/src"}},
             platform="linux", wsl=False,
         )
         self.assertEqual(local["default"], "C:/repos/src")
@@ -143,15 +143,15 @@ class TestParseRoots(unittest.TestCase):
 
     def test_trailing_slashes_stripped(self):
         local, windows = self._parse({
-            "default": {"local_path": "/source/default/", "windows_path": "C:/repos/src/"}
+            "default": {"local_path": "/source/default/", "external_path": "C:/repos/src/"}
         })
         self.assertEqual(local["default"], "/source/default")
         self.assertEqual(windows["default"], "C:/repos/src")
 
     def test_multiple_roots(self):
         local, windows = self._parse({
-            "app":  {"local_path": "/source/app",  "windows_path": "C:/app/src"},
-            "libs": {"local_path": "/source/libs", "windows_path": "D:/libs/src"},
+            "app":  {"local_path": "/source/app",  "external_path": "C:/app/src"},
+            "libs": {"local_path": "/source/libs", "external_path": "D:/libs/src"},
         })
         self.assertEqual(local["app"],  "/source/app")
         self.assertEqual(local["libs"], "/source/libs")
@@ -160,14 +160,14 @@ class TestParseRoots(unittest.TestCase):
     def test_local_path_not_overridden_when_both_set(self):
         # explicit local_path must always win over auto-derived
         local, _ = self._parse(
-            {"default": {"local_path": "/custom/local", "windows_path": "C:/repos/src"}},
+            {"default": {"local_path": "/custom/local", "external_path": "C:/repos/src"}},
             platform="linux", wsl=True,
         )
         self.assertEqual(local["default"], "/custom/local")
 
     def test_wsl_drive_letter_lowercase_in_mnt(self):
         local, _ = self._parse(
-            {"default": {"windows_path": "Q:/spocore/src"}},
+            {"default": {"external_path": "Q:/spocore/src"}},
             platform="linux", wsl=True,
         )
         self.assertEqual(local["default"], "/mnt/q/spocore/src")
@@ -233,7 +233,7 @@ class TestRunQueryPathResolution(unittest.TestCase):
         self.assertEqual(len(opened), 1)
         self.assertIn("Widget.cs", opened[0])
 
-    def test_result_file_key_is_original_windows_path(self):
+    def test_result_file_key_is_original_external_path(self):
         """_run_query returns the original Windows path as 'file' key."""
         import indexserver.api as _api
         import tree_sitter_c_sharp as tscsharp
@@ -245,7 +245,7 @@ class TestRunQueryPathResolution(unittest.TestCase):
             tmp_path = f.name
 
         try:
-            windows_path = "C:/repos/src/Widget.cs"
+            external_path = "C:/repos/src/Widget.cs"
             # Map the fake Windows path to our real temp file
             local_dir = os.path.dirname(tmp_path).replace("\\", "/")
             fname = os.path.basename(tmp_path)
@@ -253,13 +253,13 @@ class TestRunQueryPathResolution(unittest.TestCase):
                             {"default": "C:/repos/src"}, clear=True), \
                  patch.dict("indexserver.api.ROOTS",
                             {"default": local_dir}, clear=True):
-                results = _api._run_query("classes", "", [windows_path])
+                results = _api._run_query("classes", "", [external_path])
         finally:
             os.unlink(tmp_path)
 
         # If tree-sitter found something, the result must use the original path
         for r in results:
-            self.assertEqual(r["file"], windows_path)
+            self.assertEqual(r["file"], external_path)
 
 
 # ── /query-codebase host_root stripping ──────────────────────────────────────
@@ -342,7 +342,7 @@ class TestToWindowsPathLogic(unittest.TestCase):
             return f"{default_root}/{p}"
         return p
 
-    def test_windows_path_unchanged(self):
+    def test_external_path_unchanged(self):
         self.assertEqual(
             self._to_windows("C:/repos/src/Widget.cs", "C:/repos/src"),
             "C:/repos/src/Widget.cs",
@@ -446,7 +446,7 @@ class TestPathIntegration(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read())
 
-    def _windows_path_for(self, rel: str, root_name: str = "default") -> str:
+    def _external_path_for(self, rel: str, root_name: str = "default") -> str:
         """Build a Windows path for a file relative to a root."""
         wp = self.host_roots.get(root_name, "")
         if not wp:
@@ -458,7 +458,7 @@ class TestPathIntegration(unittest.TestCase):
         lp = self.roots.get(root_name, "")
         return to_native_path(f"{lp.rstrip('/')}/{rel}")
 
-    def test_query_accepts_windows_path_and_returns_it(self):
+    def test_query_accepts_external_path_and_returns_it(self):
         """/query: Windows path sent → same Windows path in result 'file' key."""
         root_name = "default"
         local = self.local_root = self.roots.get(root_name, "")
@@ -486,21 +486,21 @@ class TestPathIntegration(unittest.TestCase):
             # e.g. /mnt/c/repos/src/sub/Foo.cs → C:/repos/src/sub/Foo.cs
             lp = to_native_path(local)
             rel = cs_file[len(lp.rstrip("/")) + 1:]
-            windows_path = host_root.rstrip("/") + "/" + rel
+            external_path = host_root.rstrip("/") + "/" + rel
         else:
-            windows_path = cs_file
+            external_path = cs_file
 
-        result = self._post("/query", {"mode": "methods", "pattern": "", "files": [windows_path]})
+        result = self._post("/query", {"mode": "methods", "pattern": "", "files": [external_path]})
         self.assertIn("results", result)
         for r in result["results"]:
             # Each result must echo back the original Windows path
-            self.assertEqual(r["file"], windows_path,
+            self.assertEqual(r["file"], external_path,
                              "result 'file' must match the Windows path sent in the request")
 
-    def test_query_codebase_relative_path_is_windows_path(self):
+    def test_query_codebase_relative_path_is_external_path(self):
         """/query-codebase: relative_path in results must be a Windows path."""
         if not self.host_roots.get("default"):
-            self.skipTest("no windows_path configured for default root")
+            self.skipTest("no external_path configured for default root")
 
         result = self._post("/query-codebase", {
             "mode": "declarations", "pattern": "Widget",

@@ -213,8 +213,8 @@ async function runDocker() {
   if (runCaptured('docker', ['info', '--format', '{{.ID}}']).status !== 0)
     die('Docker is not running. Start Docker Desktop first.');
 
-  // Build image if needed
-  if (!capture('docker', ['images', '-q', IMAGE])) {
+  // Always rebuild image to pick up latest code changes
+  {
     const s = step('docker/build');
     const buildLog = join(logDir, 'build.log');
     const r = runCaptured('docker', [
@@ -299,7 +299,11 @@ async function runDocker() {
     const s = step('docker/vscode');
     const status = await runVscodeTests({ apiPort: API_PORT, apiKey: API_KEY,
                                           logFile: vscodeLog, container: CONTAINER,
-                                          logDir });
+                                          logDir,
+                                          roots: {
+                                            root1: { external_path: '/app/sample/root1' },
+                                            root2: { external_path: '/app/sample/root2' },
+                                          } });
     if (status !== 0) { s.fail(vscodeLog, vscodeSummary(readFileSync(vscodeLog, 'utf8'))); process.exit(status); }
     s.ok(vscodeSummary(readFileSync(vscodeLog, 'utf8')));
   }
@@ -517,7 +521,7 @@ function saveContainerLogs(container, logDir) {
 // VS Code extension tests
 // =============================================================================
 
-async function runVscodeTests({ apiPort, apiKey, logFile, container = null, logDir = null }) {
+async function runVscodeTests({ apiPort, apiKey, logFile, container = null, logDir = null, roots = {} }) {
   const vscodeDir = join(REPO, 'vscode-codesearch');
   if (!existsSync(join(vscodeDir, 'package.json'))) return 0;
 
@@ -527,7 +531,7 @@ async function runVscodeTests({ apiPort, apiKey, logFile, container = null, logD
 
   const tmpCfg = join(tmpdir(), `e2e-ext-config-${process.pid}.json`);
   writeFileSync(tmpCfg, JSON.stringify(
-    { api_key: apiKey, port: apiPort - 1, roots: {} }, null, 2));
+    { api_key: apiKey, port: apiPort - 1, roots }, null, 2));
 
   const r = runCaptured('node', [
     '--require', 'tsx/cjs', '--test',

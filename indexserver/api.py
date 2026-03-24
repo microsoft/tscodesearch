@@ -21,7 +21,7 @@ Endpoints (all require X-TYPESENSE-API-KEY header):
   POST /watcher/resume      → restart PollingObserver thread (clears pause flag)
   POST /file-events         → body {"events": [{"path": "Q:/src/foo.cs", "action": "upsert"|"delete"}]}
                               Receives real-time change notifications from the Windows watcher
-                              (win-watcher/watcher.mjs). Paths are Windows drive-letter style;
+                              (VS Code extension). Paths are Windows drive-letter style;
                               converted to native WSL/Linux paths before indexing.
   POST /query               → body {"mode": "calls", "pattern": "MethodName", "files": ["/abs/path.cs"]}
                               Run a tree-sitter C# AST query against the given files.
