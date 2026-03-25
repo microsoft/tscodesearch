@@ -43,19 +43,28 @@ import json as _json
 import urllib.request
 import urllib.parse
 
-# ── C# parser (required) ──────────────────────────────────────────────────────
+# ── base tree-sitter (required) ───────────────────────────────────────────────
 
-import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
+
+# ── C# parser (optional) ──────────────────────────────────────────────────────
+
+try:
+    import tree_sitter_c_sharp as tscsharp
+    _CS_AVAILABLE = True
+    CS = Language(tscsharp.language())
+    _parser = Parser(CS)
+except ImportError:
+    _CS_AVAILABLE = False
+    tscsharp = None
+    _parser = None
+
 from ..ast.cs import (
     _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
     _find_all, _text, _unqualify, _unqualify_type,
     _base_type_names, _collect_ctor_names,
     SYMBOL_KIND_TO_NODES,
 )
-
-CS = Language(tscsharp.language())
-_parser = Parser(CS)
 
 # ── C# query functions (imported from cs.py) ─────────────────────────────────
 
@@ -210,55 +219,38 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
 
 # ── Per-file process functions ────────────────────────────────────────────────
 # These use module-level parsers for efficiency (api.py accesses _q._parser etc.)
+#
+# All process_*_file functions return list[{"line": N, "text": "..."}].
+# Display (path prefix, count_only, context lines) is the caller's responsibility.
 
-def _print_results(results, path, lines, show_path, count_only, context, src_root, mode):
-    from .config import SRC_ROOT as _SRC_ROOT
-    _effective_root = (src_root or _SRC_ROOT).rstrip("/").replace("\\", "/")
-    _path_norm = path.replace("\\", "/")
-    if _effective_root and _path_norm.lower().startswith(_effective_root.lower() + "/"):
-        _disp_base = _path_norm[len(_effective_root) + 1:]
-    else:
-        _disp_base = _path_norm
-
-    if count_only:
-        print(f"{len(results):4d}  {_disp_base}")
-        return len(results)
-
+def _make_matches(results):
+    """Convert raw (line_str, text) tuples from query functions to match dicts."""
+    out = []
     for line_num_str, text in results:
-        if show_path:
-            print(f"{_disp_base}:{line_num_str}: {text}")
-        else:
-            print(f"{line_num_str}: {text}")
-
-        if context > 0 and mode != "declarations":
-            try:
-                row = int(line_num_str) - 1
-                start = max(0, row - context)
-                end   = min(len(lines), row + context + 1)
-                for i, ln in enumerate(lines[start:end], start):
-                    if i == row:
-                        continue
-                    prefix = f"  {_disp_base}:{i + 1}-" if show_path else f"  {i + 1}-"
-                    print(f"{prefix} {ln}")
-                print()
-            except (ValueError, IndexError):
-                pass
-    return len(results)
+        try:
+            line_int = int(line_num_str)
+        except (ValueError, TypeError):
+            line_int = 0
+        out.append({"line": line_int, "text": (text or "").rstrip()})
+    return out
 
 
-def process_cs_file(path, mode, mode_arg, show_path, count_only, context=0,
-                    src_root=None, include_body=False, symbol_kind=None, uses_kind=None):
-    """Process a C# file with the given query mode."""
+def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
+    """Process a C# file. Returns list[{"line": N, "text": "..."}]."""
+    if not _CS_AVAILABLE or _parser is None:
+        print("ERROR: tree-sitter and tree-sitter-c-sharp are required. "
+              "Run: pip install tree-sitter tree-sitter-c-sharp", file=sys.stderr)
+        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = _parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -281,32 +273,25 @@ def process_cs_file(path, mode, mode_arg, show_path, count_only, context=0,
     }
 
     fn = dispatch.get(mode)
-    if not fn:
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
+    return _make_matches(fn() or []) if fn else []
 
 
-def process_py_file(path, mode, mode_arg, show_path, count_only, context=0,
-                    src_root=None, include_body=False, symbol_kind=None, uses_kind=None):
-    """Process a Python file with the given query mode."""
+def process_py_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
+    """Process a Python file. Returns list[{"line": N, "text": "..."}]."""
     if not _PY_AVAILABLE or _py_parser is None:
         print("ERROR: tree-sitter-python not installed. "
               "Run: pip install tree-sitter-python", file=sys.stderr)
-        return 0
+        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = _py_parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -325,31 +310,26 @@ def process_py_file(path, mode, mode_arg, show_path, count_only, context=0,
     fn = dispatch.get(mode)
     if not fn:
         print(f"Unknown mode: {mode!r}", file=sys.stderr)
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
+        return []
+    return _make_matches(fn() or [])
 
 
-def process_rust_file(path, mode, mode_arg, show_path, count_only, context=0,
-                      src_root=None, include_body=False, **kwargs):
-    """Process a Rust file with the given query mode."""
+def process_rust_file(path, mode, mode_arg, include_body=False, **kwargs):
+    """Process a Rust file. Returns list[{"line": N, "text": "..."}]."""
     if not _RUST_AVAILABLE or _rust_parser is None:
         print("ERROR: tree-sitter-rust not installed. "
               "Run: pip install tree-sitter-rust", file=sys.stderr)
-        return 0
+        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = _rust_parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -368,41 +348,36 @@ def process_rust_file(path, mode, mode_arg, show_path, count_only, context=0,
     fn = dispatch.get(mode)
     if not fn:
         print(f"Unknown mode for Rust: {mode!r}", file=sys.stderr)
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
+        return []
+    return _make_matches(fn() or [])
 
 
-def process_js_file(path, mode, mode_arg, show_path, count_only, context=0,
-                    src_root=None, include_body=False, **kwargs):
-    """Process a JS/TS file with the given query mode."""
+def process_js_file(path, mode, mode_arg, include_body=False, **kwargs):
+    """Process a JS/TS file. Returns list[{"line": N, "text": "..."}]."""
     ext = os.path.splitext(path)[1].lower()
     if ext in (".ts", ".tsx"):
         if not _TS_AVAILABLE:
             print("ERROR: tree-sitter-typescript not installed. "
                   "Run: pip install tree-sitter-typescript", file=sys.stderr)
-            return 0
+            return []
         parser = _tsx_parser if ext == ".tsx" else _ts_parser
     else:
         if not _JS_AVAILABLE:
             print("ERROR: tree-sitter-javascript not installed. "
                   "Run: pip install tree-sitter-javascript", file=sys.stderr)
-            return 0
+            return []
         parser = _js_parser
 
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -422,31 +397,26 @@ def process_js_file(path, mode, mode_arg, show_path, count_only, context=0,
     fn = dispatch.get(mode)
     if not fn:
         print(f"Unknown mode for JS/TS: {mode!r}", file=sys.stderr)
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
+        return []
+    return _make_matches(fn() or [])
 
 
-def process_cpp_file(path, mode, mode_arg, show_path, count_only, context=0,
-                     src_root=None, include_body=False, **kwargs):
-    """Process a C/C++ file with the given query mode."""
+def process_cpp_file(path, mode, mode_arg, include_body=False, **kwargs):
+    """Process a C/C++ file. Returns list[{"line": N, "text": "..."}]."""
     if not _CPP_AVAILABLE or _cpp_parser is None:
         print("ERROR: tree-sitter-cpp not installed. "
               "Run: pip install tree-sitter-cpp", file=sys.stderr)
-        return 0
+        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = _cpp_parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -465,12 +435,8 @@ def process_cpp_file(path, mode, mode_arg, show_path, count_only, context=0,
     fn = dispatch.get(mode)
     if not fn:
         print(f"Unknown mode for C/C++: {mode!r}", file=sys.stderr)
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
+        return []
+    return _make_matches(fn() or [])
 
 
 # ── Extension → process function routing ─────────────────────────────────────
@@ -488,13 +454,11 @@ _EXT_TO_PROCESSOR = {
     ".hxx":  process_cpp_file,
 }
 
-def process_any_file(path, mode, mode_arg, show_path, count_only, context=0,
-                     src_root=None, include_body=False, symbol_kind=None, uses_kind=None):
-    """Dispatch to the correct language processor based on file extension."""
+def process_any_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
+    """Dispatch to the correct language processor. Returns list[{"line": N, "text": "..."}]."""
     ext = os.path.splitext(path)[1].lower()
     fn = _EXT_TO_PROCESSOR.get(ext, process_cs_file)
-    return fn(path, mode, mode_arg, show_path, count_only, context=context,
-              src_root=src_root, include_body=include_body,
+    return fn(path, mode, mode_arg, include_body=include_body,
               symbol_kind=symbol_kind, uses_kind=uses_kind)
 
 
@@ -531,6 +495,40 @@ def expand_files(patterns, exts=None):
     return files
 
 
+# ── CLI display helpers ───────────────────────────────────────────────────────
+
+def _print_file_matches(matches, disp, show_path, count_only, context, mode, path):
+    """Print matches for one file to stdout. Returns match count."""
+    if not matches:
+        return 0
+    if count_only:
+        print(f"{len(matches):4d}  {disp}")
+        return len(matches)
+    lines = None
+    if context > 0 and mode != "declarations":
+        try:
+            lines = open(path, "rb").read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            pass
+    for m in matches:
+        ln, text = m["line"], m["text"]
+        print(f"{disp}:{ln}: {text}" if show_path else f"{ln}: {text}")
+        if context > 0 and mode != "declarations" and lines is not None:
+            try:
+                row   = ln - 1
+                start = max(0, row - context)
+                end   = min(len(lines), row + context + 1)
+                for i, cl in enumerate(lines[start:end], start):
+                    if i == row:
+                        continue
+                    prefix = f"  {disp}:{i + 1}-" if show_path else f"  {i + 1}-"
+                    print(f"{prefix} {cl}")
+                print()
+            except (ValueError, IndexError):
+                pass
+    return len(matches)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -564,6 +562,8 @@ def main():
     ap.add_argument("--no-path", action="store_true")
     ap.add_argument("--count",   action="store_true")
     ap.add_argument("--context", metavar="N", type=int, default=0)
+    ap.add_argument("--json",    action="store_true",
+                    help="Output results as JSON: {\"results\": [{\"file\": ..., \"matches\": [{\"line\": N, \"text\": ...}]}]}")
     args = ap.parse_args()
 
     if not args.files and not args.search:
@@ -620,17 +620,27 @@ def main():
 
     has_glob  = any(c in p for p in (args.files or []) for c in ("*", "?"))
     show_path = not args.no_path and (len(files) > 1 or has_glob or bool(args.search))
-
     uses_kind = getattr(args, "uses_kind", "") or ""
-    total = 0
-    for f in files:
-        total += process_any_file(f, mode, mode_arg, show_path, args.count,
-                                  context=args.context, uses_kind=uses_kind)
+    context   = args.context
 
-    if args.count:
-        print(f"\nTotal: {total}")
-    elif len(files) > 1:
-        print(f"\n({total} matches across {len(files)} files)", file=sys.stderr)
+    if args.json:
+        all_results = []
+        for f in files:
+            matches = process_any_file(f, mode, mode_arg, uses_kind=uses_kind)
+            if matches:
+                all_results.append({"file": f, "matches": matches})
+        print(_json.dumps({"results": all_results}))
+    else:
+        total = 0
+        for f in files:
+            matches  = process_any_file(f, mode, mode_arg, uses_kind=uses_kind)
+            disp     = f.replace("\\", "/")
+            total   += _print_file_matches(matches, disp, show_path, args.count,
+                                           context, mode, f)
+        if args.count:
+            print(f"\nTotal: {total}")
+        elif len(files) > 1:
+            print(f"\n({total} matches across {len(files)} files)", file=sys.stderr)
 
 
 if __name__ == "__main__":

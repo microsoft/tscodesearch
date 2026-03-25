@@ -249,18 +249,14 @@ class TestProcessRustFile(unittest.TestCase):
 
     def _run(self, mode, mode_arg=None):
         from src.query.dispatch import process_rust_file
-        buf = io.StringIO()
-        old = sys.stdout
-        sys.stdout = buf
-        try:
-            n = process_rust_file(
-                path=self.path, mode=mode, mode_arg=mode_arg,
-                show_path=True, count_only=False, context=0,
-                src_root=self.tmpdir,
-            )
-        finally:
-            sys.stdout = old
-        return n or 0, buf.getvalue()
+        matches = process_rust_file(path=self.path, mode=mode, mode_arg=mode_arg)
+        path_norm = self.path.replace("\\", "/")
+        root_norm = self.tmpdir.replace("\\", "/").rstrip("/")
+        disp = (path_norm[len(root_norm) + 1:]
+                if path_norm.lower().startswith(root_norm.lower() + "/")
+                else path_norm)
+        out = "\n".join(f"{disp}:{m['line']}: {m['text']}" for m in (matches or []))
+        return len(matches or []), out
 
     def test_classes_output(self):
         n, out = self._run("classes")
