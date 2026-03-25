@@ -23,7 +23,7 @@ const path = require('path');
 // ── Config loading ────────────────────────────────────────────────────────────
 function loadConfig() {
     const candidates = [
-        path.join('Q:/spocore/tscodesearch/config.json'),
+        path.join('C:/repos/tscodesearch/config.json'),
         path.join(__dirname, '../config.json'),
         path.join(__dirname, 'config.json'),
     ];

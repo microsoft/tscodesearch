@@ -62,12 +62,12 @@ class TestToNativePath(unittest.TestCase):
 
     def test_wsl_lower_drive_letter(self):
         self.assertEqual(
-            self._call("Q:/spocore/src/Widget.cs", "linux", wsl=True),
-            "/mnt/q/spocore/src/Widget.cs",
+            self._call("Q:/myproject/src/Widget.cs", "linux", wsl=True),
+            "/mnt/q/myproject/src/Widget.cs",
         )
 
     def test_wsl_uppercase_drive_downcased(self):
-        result = self._call("Q:/spocore/src/Widget.cs", "linux", wsl=True)
+        result = self._call("Q:/myproject/src/Widget.cs", "linux", wsl=True)
         self.assertTrue(result.startswith("/mnt/q/"))
 
     def test_wsl_already_mnt_path_unchanged(self):
@@ -167,10 +167,10 @@ class TestParseRoots(unittest.TestCase):
 
     def test_wsl_drive_letter_lowercase_in_mnt(self):
         local, _ = self._parse(
-            {"default": {"external_path": "Q:/spocore/src"}},
+            {"default": {"external_path": "Q:/myproject/src"}},
             platform="linux", wsl=True,
         )
-        self.assertEqual(local["default"], "/mnt/q/spocore/src")
+        self.assertEqual(local["default"], "/mnt/q/myproject/src")
 
 
 # ── _run_query path resolution ────────────────────────────────────────────────
@@ -380,8 +380,8 @@ class TestToWindowsPathLogic(unittest.TestCase):
 
     def test_mnt_drive_letter_uppercased(self):
         self.assertEqual(
-            self._to_windows("/mnt/q/spocore/src/Widget.cs", "Q:/spocore/src"),
-            "Q:/spocore/src/Widget.cs",
+            self._to_windows("/mnt/q/myproject/src/Widget.cs", "Q:/myproject/src"),
+            "Q:/myproject/src/Widget.cs",
         )
 
     def test_different_drive(self):

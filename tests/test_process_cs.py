@@ -1,5 +1,5 @@
 """
-Tests for process_file() — the C# structural query API (no server needed).
+Tests for process_cs_file() — the C# structural query API (no server needed).
 
 Verifies each query mode and consistency between query.py and indexer.py.
 
@@ -23,12 +23,12 @@ from tests.helpers import (
 )
 from indexserver.api import _run_query
 from indexserver.indexer import extract_cs_metadata
-from query import process_file as _query_process_file
+from query import process_cs_file as _query_process_file
 import query as _q
 
 
 class TestQueryCs(unittest.TestCase):
-    """Unit tests for process_file() from query — no server needed.
+    """Unit tests for process_cs_file() from query — no server needed.
 
     Verifies:
     1. Each query mode extracts the expected output from sample C# files.

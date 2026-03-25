@@ -267,7 +267,7 @@ export async function doQueryCodebase(
 
 /**
  * Run a tree-sitter AST query on a single file via the /query endpoint.
- * absolutePath must be a Windows path (e.g. q:/spocore/src/foo.cs).
+ * absolutePath must be a Windows path (e.g. c:/myproject/src/foo.cs).
  */
 export async function doQuerySingleFile(
     config: CodesearchConfig,

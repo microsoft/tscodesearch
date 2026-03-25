@@ -1,11 +1,13 @@
 # codesearch — developer notes for Claude
 
-## CRITICAL: never run --destructive tests without explicit permission
+## Running tests
 
-**Never use the `--destructive` flag** when running tests unless the user explicitly says so for that specific run.
+WSL tests are **non-destructive** — they start an isolated Typesense on port 18108
+(override: `CODESEARCH_TEST_PORT`) using `/tmp/codesearch-wsl-test/` as data dir.
+The production instance on port 8108 is never touched.
 
-- Default: `node run_tests.mjs --wsl` (no `--destructive`)
-- Only add `--destructive` if the user explicitly requests it (e.g. "run destructive tests", "you can use --destructive")
+- Default: `node run_tests.mjs --wsl`
+- Filter: `node run_tests.mjs --wsl -k TestVerifier`
 
 ---
 
@@ -15,13 +17,13 @@
 (e.g. `inspect_doc.py`, `smoke_test.py`, `indexserver/query_util.py`, utility scripts) via the Bash tool:
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/python3 /mnt/q/spocore/tscodesearch/inspect_doc.py <args>"
+MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/python3 /mnt/c/repos/tscodesearch/inspect_doc.py <args>"
 ```
 
 To debug AST parsing on a specific file (e.g. why `query_single_file` returns no results):
 ```bash
-wsl.exe -- bash -c "~/.local/indexserver-venv/bin/python3 /mnt/q/spocore/tscodesearch/indexserver/query_util.py --methods /mnt/q/spocore/src/path/to/File.cs"
-wsl.exe -- bash -c "~/.local/indexserver-venv/bin/python3 /mnt/q/spocore/tscodesearch/indexserver/query_util.py --declarations MethodName /mnt/q/spocore/src/path/to/File.cs"
+wsl.exe -- bash -c "~/.local/indexserver-venv/bin/python3 /mnt/c/repos/tscodesearch/indexserver/query_util.py --methods /mnt/c/myproject/src/path/to/File.cs"
+wsl.exe -- bash -c "~/.local/indexserver-venv/bin/python3 /mnt/c/repos/tscodesearch/indexserver/query_util.py --declarations MethodName /mnt/c/myproject/src/path/to/File.cs"
 ```
 
 To hit the indexserver API directly with curl (read API key + port from config.json — never hard-code them):
@@ -35,14 +37,14 @@ API_PORT=$((PORT + 1))
 curl -s -X POST http://localhost:$API_PORT/query \
   -H "Content-Type: application/json" \
   -H "X-TYPESENSE-API-KEY: $API_KEY" \
-  -d '{"mode": "methods", "pattern": "", "files": ["/mnt/q/spocore/src/path/to/File.cs"]}' \
+  -d '{"mode": "methods", "pattern": "", "files": ["/mnt/c/myproject/src/path/to/File.cs"]}' \
   | python -m json.tool
 
 # query_single_file with a pattern
 curl -s -X POST http://localhost:$API_PORT/query \
   -H "Content-Type: application/json" \
   -H "X-TYPESENSE-API-KEY: $API_KEY" \
-  -d '{"mode": "declarations", "pattern": "MethodName", "files": ["/mnt/q/spocore/src/path/to/File.cs"]}' \
+  -d '{"mode": "declarations", "pattern": "MethodName", "files": ["/mnt/c/myproject/src/path/to/File.cs"]}' \
   | python -m json.tool
 
 # query_codebase — POST /query-codebase
@@ -52,11 +54,11 @@ curl -s -X POST http://localhost:$API_PORT/query-codebase \
   -d '{"mode": "declarations", "pattern": "MethodName", "root": ""}' \
   | python -m json.tool
 ```
-Run these from `q:/spocore/tscodesearch/` so the `node -e require('./config.json')` resolves correctly.
+Run these from the repo root so the `node -e require('./config.json')` resolves correctly.
 
 - `.venv/Scripts/python.exe` is Windows-only and not accessible from Git Bash / Bash tool
 - `~/.local/indexserver-venv/` has everything: `typesense`, `tree_sitter_c_sharp`, `tree_sitter`, `watchdog`, `pathspec`, `pytest`
-- For tests: `MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/pytest /mnt/q/spocore/tscodesearch/tests/ [args]"`
+- For tests: `MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/pytest /mnt/c/repos/tscodesearch/tests/ [args]"`
 
 ---
 
@@ -131,7 +133,17 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 |------|---------------|
 | `config.py` | Shared constants: `HOST`, `PORT`, `API_KEY`, `ROOTS`, `COLLECTION`, `INCLUDE_EXTENSIONS`. Reads `config.json`. Provides `get_root(name)` → `(collection, src_path)` and `collection_for_root(name)` → `"codesearch_{name}"`. |
 | `search.py` | Test utility: direct Typesense HTTP search. `search(query, ...)` builds params and calls Typesense; `format_results()` prints human-readable output. Run from WSL. |
-| `query.py` | Tree-sitter AST query functions (`q_classes`, `q_methods`, `q_fields`, `q_calls`, `q_implements`, `q_uses`, `q_casts`, `q_all_refs`, `q_attrs`, `q_usings`, `q_declarations`, `q_params`, `q_accesses_on`, `q_accesses_of`, `q_text`). `process_file(path, mode, mode_arg, uses_kind, ...)` dispatches to them and prints matches. `files_from_search()` resolves Typesense hits to local file paths. |
+| `ast_cs.py` | C# tree-sitter AST helpers: node type sets, `_find_all`, `_text`, `symbol_kind_query_by`. Used by both `indexer.py` and `query_cs.py` to keep extraction consistent. |
+| `ast_py.py` | Python tree-sitter AST helpers: `_line`, `_py_in_literal`, `_py_enclosing_class`, `_py_base_names`. Also re-exports `_find_all`/`_text` from `ast_cs` (shared traversal helpers). |
+| `ast_js.py` | JavaScript/TypeScript tree-sitter AST helpers: node type sets, `_find_all`, `_text`, `_line`, `_in_literal`. |
+| `ast_rust.py` | Rust tree-sitter AST helpers: node type sets, `_find_all`, `_text`, `_line`. |
+| `ast_cpp.py` | C/C++ tree-sitter AST helpers: node type sets, `_find_all`, `_text`, `_line`. |
+| `query_cs.py` | C# AST query functions (`q_classes`, `q_methods`, `q_fields`, `q_calls`, `q_implements`, `q_uses`, `q_casts`, `q_all_refs`, `q_attrs`, `q_usings`, `q_declarations`, `q_params`, `q_accesses_on`, `q_accesses_of`, `q_text`) + `process_cs_file()`. |
+| `query_py.py` | Python AST query functions (`py_q_classes`, `py_q_methods`, `py_q_calls`, etc.) + `process_py_file()`. |
+| `query_js.py` | JavaScript/TypeScript AST query functions + `process_js_file()`. |
+| `query_rust.py` | Rust AST query functions + `process_rust_file()`. |
+| `query_cpp.py` | C/C++ AST query functions + `process_cpp_file()`. |
+| `query.py` | Dispatcher: imports all language modules, defines `process_any_file()` (routes by extension), `files_from_search()` (resolves Typesense hits to local paths), and the CLI `main()`. |
 | `indexserver/query_util.py` | Thin entry point that adds the tscodesearch root to `sys.path` and delegates to `query.main()`. Run this (not `query.py`) when using the indexserver venv directly, e.g. to debug AST parsing on a specific file. **Must be run via WSL using the indexserver venv** (see below). |
 | `mcp_server.ts` / `mcp_server.js` | Node.js MCP server (TypeScript source, compiled to JS). Exposes `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `manage_service` tools. Runs on Windows; communicates with the indexserver via HTTP. |
 
@@ -158,7 +170,7 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 | `setup.cmd [--wsl]` | Thin wrapper: checks Node.js 20+, then calls `node setup.mjs`. |
 | `setup.mjs [--wsl]` | Full setup: build MCP server, register with Claude Code, WSL environment (if --wsl), create config.json, start service, install VS Code extension. |
 | `run_tests.cmd [args]` | Thin wrapper: `node run_tests.mjs %*`. |
-| `run_tests.mjs --docker\|--wsl\|--linux` | Full test runner. `--wsl` requires `--destructive`. |
+| `run_tests.mjs --docker\|--wsl\|--linux` | Full test runner. |
 
 ## Venvs
 
@@ -240,7 +252,7 @@ T2 fields (`type_refs`, `attributes`, `usings`) are broader and may have minor f
 
 ## tree-sitter query modes (query.py / query_codebase MCP tool)
 
-`process_file(path, mode, mode_arg, uses_kind, show_path, count_only, context, src_root)` dispatches to:
+`process_cs_file(path, mode, mode_arg, uses_kind, show_path, count_only, context, src_root)` dispatches to:
 
 ### C# modes (`.cs` files)
 
@@ -283,7 +295,7 @@ T2 fields (`type_refs`, `attributes`, `usings`) are broader and may have minor f
 74 tests covering all 15 `query_cs` modes. **No Typesense required** — calls query functions directly against `tests/query_fixture.cs` (a synthetic C# file with no project-specific references).
 
 ```bash
-node run_tests.mjs --wsl --destructive tests/test_query_cs.py
+node run_tests.mjs --wsl tests/test_query_cs.py
 # or directly in WSL:
 ~/.local/indexserver-venv/bin/pytest tests/test_query_cs.py -v
 ```
@@ -297,13 +309,13 @@ Tests are split into thematic files. Some require Typesense running (`ts start`)
 **From the Claude Code Bash tool** (the correct way — Windows Node.js, no `wsl.exe node`):
 ```bash
 # WSL mode (Windows host, pytest runs in WSL)
-node run_tests.mjs --wsl --destructive
+node run_tests.mjs --wsl
 
 # Filter by test name or class
-node run_tests.mjs --wsl --destructive -k TestQCasts
+node run_tests.mjs --wsl -k TestQCasts
 
 # Single file
-node run_tests.mjs --wsl --destructive tests/test_mode_casts.py
+node run_tests.mjs --wsl tests/test_mode_casts.py
 
 # Docker mode
 node run_tests.mjs --docker
@@ -311,8 +323,8 @@ node run_tests.mjs --docker
 
 From Windows CMD/PowerShell:
 ```
-node run_tests.mjs --wsl --destructive
-node run_tests.mjs --wsl --destructive -k TestVerifier
+node run_tests.mjs --wsl
+node run_tests.mjs --wsl -k TestVerifier
 node run_tests.mjs --docker
 ```
 
@@ -334,7 +346,7 @@ node run_tests.mjs --linux -k TestVerifier
 | `test_indexer_query_consistency.py` | all classes | **no** | Consistency tests verifying indexer and query extract the same values from the same source |
 | `test_watcher.py` | `TestCsChangeHandlerUnit` | **no** | Unit tests for watcher event handler logic |
 | `test_watcher.py` | `TestCsChangeHandlerIntegration` | yes | Watcher integration: create/modify/delete files, verify index reflects changes |
-| `test_process_cs.py` | `TestQueryCs` | **no** | `process_file()` C# structural query modes + consistency with indexer |
+| `test_process_cs.py` | `TestQueryCs` | **no** | `process_cs_file()` C# structural query modes + consistency with indexer |
 | `test_python.py` | `TestExtractPyMetadata` | **no** | Unit tests for Python tree-sitter extractor |
 | `test_python.py` | `TestQueryPy` | **no** | `process_py_file()` Python query modes |
 | `test_python.py` | `TestPySemanticFields` | yes | Python semantic fields indexed correctly in Typesense |
@@ -358,7 +370,7 @@ Both read the same `codesearch/config.json`. If you update config logic, update 
 
 **Windows file system watcher lives in the VS Code extension (`vscode-codesearch/src/watcher.ts`), not in the indexserver.** When VS Code is open, `FileWatcher` calls `POST /watcher/pause` to stop the indexserver's `PollingObserver`, then uses VS Code's native `createFileSystemWatcher` (backed by `ReadDirectoryChangesW`) to detect changes and forward batched events to `POST /file-events`. On extension deactivation it calls `POST /watcher/resume` to hand back to the `PollingObserver`. Only Windows-style drive paths (`C:/…`) are watched this way; native Linux/WSL paths stay with the `PollingObserver`.
 
-**stdout capture in mcp_server.js.** `format_results()` and `process_file()` in Python print to stdout; `mcp_server.js` captures that output by spawning the Python helpers as subprocesses. Don't refactor the Python side to return strings — the CLI entry points in `query.py` depend on the print-based interface.
+**stdout capture in mcp_server.js.** `format_results()` and `process_cs_file()` in Python print to stdout; `mcp_server.js` captures that output by spawning the Python helpers as subprocesses. Don't refactor the Python side to return strings — the CLI entry points in `query.py` depend on the print-based interface.
 
 **PID files live in WSL.** `~/.local/typesense/typesense.pid` (Typesense server) and `~/.local/typesense/api.pid` (indexserver — watcher + heartbeat + verifier threads). `~/.local/typesense/indexer.pid` is shared by `ts index` (subprocess) and the verifier thread (written by `api.py`). They are not in the Windows repo directory. `service.py` uses `os.kill(pid, 0)` (WSL-native) to check liveness.
 

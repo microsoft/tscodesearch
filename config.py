@@ -14,7 +14,10 @@ import sys as _sys
 #   }}
 # external_path: original Windows path (used for display and path resolution on Windows)
 # local_path:   path as seen by this process (WSL or Docker container)
-_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+_CONFIG_FILE = (
+    os.environ.get("CODESEARCH_CONFIG")
+    or os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+)
 
 def _read_config() -> dict:
     try:

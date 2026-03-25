@@ -39,7 +39,7 @@ _root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _root)
 
 from config import HOST, PORT, API_KEY, COLLECTION
-from cs_ast import symbol_kind_query_by
+from ast_cs import symbol_kind_query_by
 
 
 def _ts_search(collection: str, params: dict) -> dict:

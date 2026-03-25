@@ -135,25 +135,25 @@ ts verify --root other               # verify a specific named root
 Three modes, all via `run_tests.mjs` (or the `run_tests.cmd` wrapper):
 
 ```
-node run_tests.mjs --docker                            # Docker mode (default)
-node run_tests.mjs --wsl --destructive                 # WSL mode (erases + resets WSL index)
-node run_tests.mjs --linux                             # Linux/CI
+node run_tests.mjs --docker                    # Docker mode (default)
+node run_tests.mjs --wsl                       # WSL mode (isolated, non-destructive)
+node run_tests.mjs --linux                     # Linux/CI
 ```
 
 Filter by test name, class, or file:
 ```
-node run_tests.mjs --wsl --destructive -k TestVerifier
+node run_tests.mjs --wsl -k TestVerifier
 node run_tests.mjs --docker tests/test_query_cs.py
 ```
 
-The full suite is ~697 tests. Docker E2E mounts `tests/` as a volume — test changes don't require rebuilding the image.
+The full suite is ~899 tests. Docker E2E mounts `tests/` as a volume — test changes don't require rebuilding the image.
 
 ### Structural query tests (no server needed)
 
 74 tests covering all 15 `query_cs` modes against a synthetic C# fixture:
 
 ```
-node run_tests.mjs --wsl --destructive tests/test_query_cs.py
+node run_tests.mjs --wsl tests/test_query_cs.py
 ```
 
 | File | What it tests |
@@ -162,7 +162,7 @@ node run_tests.mjs --wsl --destructive tests/test_query_cs.py
 | `test_indexer.py` | Indexer, semantic fields, multi-root, `extract_cs_metadata`, `index_file_list` pipeline |
 | `test_indexer_query_consistency.py` | Cross-checks that indexer and query extract the same values from identical source |
 | `test_watcher.py` | File watcher event handler (unit + integration) |
-| `test_process_cs.py` | `process_file()` C# structural query API |
+| `test_process_cs.py` | `process_cs_file()` C# structural query API |
 | `test_python.py` | Python metadata extraction (`extract_py_metadata`), `process_py_file()`, Python semantic fields |
 | `test_verifier.py` | `_export_index()` (mock HTTP), `run_verify()` diff logic, full verify integration |
 
@@ -272,7 +272,17 @@ Typical flow: Typesense narrows the haystack to ~50 candidate files → tree-sit
 |------|---------|
 | `config.py` | Shared constants: HOST, PORT, API_KEY, ROOTS, collection names. Reads `config.json`. |
 | `search.py` | Typesense HTTP search; `search()` + `format_results()` |
-| `query.py` | tree-sitter AST query functions + `process_file()` + `files_from_search()` |
+| `ast_cs.py` | C# tree-sitter AST helpers (node sets, `_find_all`, `_text`, `symbol_kind_query_by`) |
+| `ast_py.py` | Python tree-sitter AST helpers (`_line`, `_py_in_literal`, `_py_base_names`, etc.) |
+| `ast_js.py` | JavaScript/TypeScript tree-sitter AST helpers |
+| `ast_rust.py` | Rust tree-sitter AST helpers |
+| `ast_cpp.py` | C/C++ tree-sitter AST helpers |
+| `query_cs.py` | C# AST query functions (`q_classes`, `q_methods`, `q_calls`, etc.) + `process_cs_file()` |
+| `query_py.py` | Python AST query functions + `process_py_file()` |
+| `query_js.py` | JavaScript/TypeScript AST query functions + `process_js_file()` |
+| `query_rust.py` | Rust AST query functions + `process_rust_file()` |
+| `query_cpp.py` | C/C++ AST query functions + `process_cpp_file()` |
+| `query.py` | Dispatcher: imports all language modules, `process_any_file()`, `files_from_search()` |
 | `mcp_server.ts` / `mcp_server.js` | Node.js MCP server: `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `manage_service` tools |
 | `mcp.cmd` | Windows launcher: `node mcp_server.js` (Linux/WSL: run directly) |
 | `ts.cmd` | Thin wrapper: `node ts.mjs %*` |
@@ -280,7 +290,7 @@ Typical flow: Typesense narrows the haystack to ~50 candidate files → tree-sit
 | `setup.cmd` | Thin wrapper: checks Node.js 20+, calls `node setup.mjs %*` |
 | `setup.mjs` | Full one-time setup: build MCP, register with Claude Code, WSL env (if --wsl), config.json, start service, VS Code extension |
 | `run_tests.cmd` | Thin wrapper: `node run_tests.mjs %*` |
-| `run_tests.mjs` | Test runner: `--docker`, `--wsl --destructive`, or `--linux` mode |
+| `run_tests.mjs` | Test runner: `--docker`, `--wsl`, or `--linux` mode |
 
 **Server-side (`indexserver/`)**
 

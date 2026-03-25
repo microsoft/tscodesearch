@@ -8,8 +8,11 @@ import sys as _sys
 HOST = "localhost"
 
 # config.json lives one level up (codesearch/config.json)
-_CONFIG_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json"
+_CONFIG_FILE = (
+    os.environ.get("CODESEARCH_CONFIG")
+    or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json"
+    )
 )
 
 
@@ -133,10 +136,12 @@ TYPESENSE_VERSION = "27.1"
 
 INCLUDE_EXTENSIONS = {
     ".cs",
-    ".cpp", ".c", ".h", ".hpp", ".idl",
+    ".cpp", ".c", ".cc", ".cxx", ".h", ".hpp", ".hxx", ".idl",
     ".dsc", ".inc", ".props", ".targets", ".csproj",
     ".py", ".sh", ".cmd", ".bat", ".ps1",
-    ".ts", ".js", ".json", ".xml", ".yaml", ".yml",
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".json", ".xml", ".yaml", ".yml",
+    ".rs",
     ".md", ".txt",
     ".sql",
 }

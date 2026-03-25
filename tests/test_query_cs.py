@@ -29,7 +29,7 @@ from query import (
 
 _CS = Language(tscsharp.language())
 _PARSER = Parser(_CS)
-_FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "query_fixture.cs")
+_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sample", "root1", "query_fixture.cs")
 
 
 @pytest.fixture(scope="module")
