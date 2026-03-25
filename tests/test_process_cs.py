@@ -50,19 +50,16 @@ class TestQueryCs(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, path, mode, mode_arg=None, uses_kind=None):
-        buf = io.StringIO()
-        old = sys.stdout
-        sys.stdout = buf
-        try:
-            n = _query_process_file(
-                path=path, mode=mode, mode_arg=mode_arg,
-                show_path=True, count_only=False, context=0,
-                src_root=self.tmpdir,
-                uses_kind=uses_kind,
-            )
-        finally:
-            sys.stdout = old
-        return n or 0, buf.getvalue()
+        matches = _query_process_file(
+            path=path, mode=mode, mode_arg=mode_arg, uses_kind=uses_kind,
+        )
+        path_norm = path.replace("\\", "/")
+        root_norm = self.tmpdir.replace("\\", "/").rstrip("/")
+        disp = (path_norm[len(root_norm) + 1:]
+                if path_norm.lower().startswith(root_norm.lower() + "/")
+                else path_norm)
+        out = "\n".join(f"{disp}:{m['line']}: {m['text']}" for m in (matches or []))
+        return len(matches or []), out
 
     # ── mode: classes ──────────────────────────────────────────────────────────
 

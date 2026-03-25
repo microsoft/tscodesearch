@@ -143,8 +143,8 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 | `src/query/js.py` | JavaScript/TypeScript AST query functions + `process_js_file()`. |
 | `src/query/rust.py` | Rust AST query functions + `process_rust_file()`. |
 | `src/query/cpp.py` | C/C++ AST query functions + `process_cpp_file()`. |
-| `src/query/dispatch.py` | Dispatcher: imports all language modules, defines `process_any_file()` (routes by extension), `files_from_search()` (resolves Typesense hits to local paths), and the CLI `main()`. |
-| `indexserver/query_util.py` | Thin entry point that adds the tscodesearch root to `sys.path` and delegates to `src.query.main()`. Run this when using the indexserver venv directly, e.g. to debug AST parsing on a specific file. **Must be run via WSL using the indexserver venv** (see below). |
+| `src/query/dispatch.py` | Pure query layer. Imports all language modules, defines `_make_matches()`, `process_*_file()` functions, `process_any_file()` (routes by extension), and `_ALL_EXTS`. No CLI, no Typesense, no config dependency — importable standalone. |
+| `indexserver/query_util.py` | Full CLI entry point. Adds the tscodesearch root to `sys.path`, imports `process_any_file` and `_ALL_EXTS` from `src.query.dispatch`, and provides the complete argparse CLI (all modes, `--json`, `--search`, `--count`, `--context`, etc.). Contains `files_from_search()` (Typesense → local paths) and `expand_files()` (glob expansion). Run this when using the indexserver venv directly, e.g. to debug AST parsing on a specific file. **Must be run via WSL using the indexserver venv** (see below). |
 | `mcp_server.ts` / `mcp_server.js` | Node.js MCP server (TypeScript source, compiled to JS). Exposes `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `manage_service` tools. Runs on Windows; communicates with the indexserver via HTTP. |
 
 ### `sample/` directory

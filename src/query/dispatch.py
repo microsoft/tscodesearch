@@ -1,61 +1,35 @@
 """
-Structural AST query tool — supports C#, Python, Rust, JavaScript, TypeScript, C/C++.
+AST query dispatch — pure query layer, no CLI.
 
-Use instead of grep when you need semantically precise searches that understand
-syntax: distinguishes type references from method calls, skips comments and
-string literals, understands inheritance hierarchies.
-
-Usage:
-    query.py MODE [OPTIONS] FILE [FILE ...] [GLOB_PATTERN ...]
-
-Modes (C#):
-    --classes              List all type declarations with their base types
-    --methods              List all method/constructor/property/field signatures
-    --fields               List all field and property declarations with types
-    --calls    METHOD      Find every call site of METHOD
-    --implements TYPE      Find type declarations that inherit or implement TYPE
-    --uses     TYPE        Find every place TYPE is referenced as a type
-    --casts    TYPE        Find every explicit cast expression (TYPE)expr
-    --all-refs         NAME   Find every identifier occurrence
-    --accesses-of      MEMBER Find every access site of property/field MEMBER
-    --attrs           [NAME]  List [Attribute] decorators, optionally filter by NAME
-    --usings               List all using/using-alias directives
-    --declarations     NAME   Print declaration(s) named NAME
-    --params           METHOD Show the full parameter list of METHOD
-
-Modes (Python / Rust / JS / TS / C++):
-    --classes / --methods / --calls / --implements / --declarations
-    --all-refs / --imports / --params
-    TypeScript also supports: --attrs (decorators)
-    C/C++ also supports: --includes
-
-Options:
-    --no-path              Don't prefix output with file path
-    --count                Print only match counts per file + total
+All process_*_file functions return list[{"line": N, "text": "..."}].
+For the CLI entry point see indexserver/query_util.py.
 """
 
 import os
-import re
 import sys
-import glob as _glob
-import argparse
-import json as _json
-import urllib.request
-import urllib.parse
 
-# ── C# parser (required) ──────────────────────────────────────────────────────
+# ── base tree-sitter (required) ───────────────────────────────────────────────
 
-import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
+
+# ── C# parser (optional) ──────────────────────────────────────────────────────
+
+try:
+    import tree_sitter_c_sharp as tscsharp
+    _CS_AVAILABLE = True
+    CS = Language(tscsharp.language())
+    _parser = Parser(CS)
+except ImportError:
+    _CS_AVAILABLE = False
+    tscsharp = None
+    _parser = None
+
 from ..ast.cs import (
     _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
     _find_all, _text, _unqualify, _unqualify_type,
     _base_type_names, _collect_ctor_names,
     SYMBOL_KIND_TO_NODES,
 )
-
-CS = Language(tscsharp.language())
-_parser = Parser(CS)
 
 # ── C# query functions (imported from cs.py) ─────────────────────────────────
 
@@ -150,115 +124,40 @@ from .cpp import (
 )
 
 
-# ── Typesense file resolver ───────────────────────────────────────────────────
-
-def _ts_search(collection: str, params: dict) -> dict:
-    from .config import HOST, PORT, API_KEY
-    qs = urllib.parse.urlencode({k: str(v) for k, v in params.items()})
-    url = f"http://{HOST}:{PORT}/collections/{collection}/documents/search?{qs}"
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": API_KEY})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return _json.loads(r.read())
-
-
-def files_from_search(query, sub=None, ext="cs", limit=50,
-                      collection=None, src_root=None, query_by=None):
-    """Run a Typesense search and return the local file paths of matching documents."""
-    from .config import COLLECTION, SRC_ROOT, to_native_path
-    coll_name = collection or COLLECTION
-    root = src_root or SRC_ROOT
-    src_root_native = to_native_path(root)
-
-    filter_parts = [f"extension:={ext.lstrip('.')}"] if ext else []
-    if sub:
-        filter_parts.append(f"subsystem:={sub}")
-
-    params = {
-        "q":         query,
-        "query_by":  query_by or "filename,symbols,class_names,method_names,content",
-        "per_page":  limit,
-        "prefix":    "false",
-        "num_typos": "1",
-    }
-    if filter_parts:
-        params["filter_by"] = " && ".join(filter_parts)
-
-    try:
-        result = _ts_search(coll_name, params)
-    except Exception as e:
-        print(f"Typesense search error: {e}", file=sys.stderr)
-        print("Is the server running? Try: ts start", file=sys.stderr)
-        return []
-
-    paths = []
-    seen  = set()
-    for hit in result.get("hits", []):
-        doc = hit["document"]
-        rel = doc.get("relative_path", "")
-        if not rel:
-            continue
-        path = os.path.join(src_root_native, rel.replace("/", os.sep))
-        if path not in seen and os.path.isfile(path):
-            seen.add(path)
-            paths.append(path)
-
-    found = result.get("found", len(paths))
-    print(f"[search] '{query}' → {found} index hits, {len(paths)} local files",
-          file=sys.stderr)
-    return paths
-
-
 # ── Per-file process functions ────────────────────────────────────────────────
 # These use module-level parsers for efficiency (api.py accesses _q._parser etc.)
+#
+# All process_*_file functions return list[{"line": N, "text": "..."}].
+# Display (path prefix, count_only, context lines) is the caller's responsibility.
 
-def _print_results(results, path, lines, show_path, count_only, context, src_root, mode):
-    from .config import SRC_ROOT as _SRC_ROOT
-    _effective_root = (src_root or _SRC_ROOT).rstrip("/").replace("\\", "/")
-    _path_norm = path.replace("\\", "/")
-    if _effective_root and _path_norm.lower().startswith(_effective_root.lower() + "/"):
-        _disp_base = _path_norm[len(_effective_root) + 1:]
-    else:
-        _disp_base = _path_norm
-
-    if count_only:
-        print(f"{len(results):4d}  {_disp_base}")
-        return len(results)
-
+def _make_matches(results):
+    """Convert raw (line_str, text) tuples from query functions to match dicts."""
+    out = []
     for line_num_str, text in results:
-        if show_path:
-            print(f"{_disp_base}:{line_num_str}: {text}")
-        else:
-            print(f"{line_num_str}: {text}")
-
-        if context > 0 and mode != "declarations":
-            try:
-                row = int(line_num_str) - 1
-                start = max(0, row - context)
-                end   = min(len(lines), row + context + 1)
-                for i, ln in enumerate(lines[start:end], start):
-                    if i == row:
-                        continue
-                    prefix = f"  {_disp_base}:{i + 1}-" if show_path else f"  {i + 1}-"
-                    print(f"{prefix} {ln}")
-                print()
-            except (ValueError, IndexError):
-                pass
-    return len(results)
+        try:
+            line_int = int(line_num_str)
+        except (ValueError, TypeError):
+            line_int = 0
+        out.append({"line": line_int, "text": (text or "").rstrip()})
+    return out
 
 
-def process_cs_file(path, mode, mode_arg, show_path, count_only, context=0,
-                    src_root=None, include_body=False, symbol_kind=None, uses_kind=None):
-    """Process a C# file with the given query mode."""
+def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
+    """Process a C# file. Returns list[{"line": N, "text": "..."}]."""
+    if not _CS_AVAILABLE or _parser is None:
+        print("ERROR: tree-sitter and tree-sitter-c-sharp are required. "
+              "Run: pip install tree-sitter tree-sitter-c-sharp", file=sys.stderr)
+        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = _parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -281,32 +180,25 @@ def process_cs_file(path, mode, mode_arg, show_path, count_only, context=0,
     }
 
     fn = dispatch.get(mode)
-    if not fn:
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
+    return _make_matches(fn() or []) if fn else []
 
 
-def process_py_file(path, mode, mode_arg, show_path, count_only, context=0,
-                    src_root=None, include_body=False, symbol_kind=None, uses_kind=None):
-    """Process a Python file with the given query mode."""
+def process_py_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
+    """Process a Python file. Returns list[{"line": N, "text": "..."}]."""
     if not _PY_AVAILABLE or _py_parser is None:
         print("ERROR: tree-sitter-python not installed. "
               "Run: pip install tree-sitter-python", file=sys.stderr)
-        return 0
+        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = _py_parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -316,6 +208,7 @@ def process_py_file(path, mode, mode_arg, show_path, count_only, context=0,
         "calls":        lambda: py_q_calls(src_bytes, tree, lines, mode_arg),
         "implements":   lambda: py_q_implements(src_bytes, tree, lines, mode_arg),
         "ident":        lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
+        "all_refs":     lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
         "declarations": lambda: py_q_declarations(src_bytes, tree, lines, mode_arg),
         "decorators":   lambda: py_q_decorators(src_bytes, tree, lines, mode_arg),
         "imports":      lambda: py_q_imports(src_bytes, tree, lines),
@@ -325,31 +218,26 @@ def process_py_file(path, mode, mode_arg, show_path, count_only, context=0,
     fn = dispatch.get(mode)
     if not fn:
         print(f"Unknown mode: {mode!r}", file=sys.stderr)
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
+        return []
+    return _make_matches(fn() or [])
 
 
-def process_rust_file(path, mode, mode_arg, show_path, count_only, context=0,
-                      src_root=None, include_body=False, **kwargs):
-    """Process a Rust file with the given query mode."""
+def process_rust_file(path, mode, mode_arg, include_body=False, **kwargs):
+    """Process a Rust file. Returns list[{"line": N, "text": "..."}]."""
     if not _RUST_AVAILABLE or _rust_parser is None:
         print("ERROR: tree-sitter-rust not installed. "
               "Run: pip install tree-sitter-rust", file=sys.stderr)
-        return 0
+        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = _rust_parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -368,41 +256,36 @@ def process_rust_file(path, mode, mode_arg, show_path, count_only, context=0,
     fn = dispatch.get(mode)
     if not fn:
         print(f"Unknown mode for Rust: {mode!r}", file=sys.stderr)
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
+        return []
+    return _make_matches(fn() or [])
 
 
-def process_js_file(path, mode, mode_arg, show_path, count_only, context=0,
-                    src_root=None, include_body=False, **kwargs):
-    """Process a JS/TS file with the given query mode."""
+def process_js_file(path, mode, mode_arg, include_body=False, **kwargs):
+    """Process a JS/TS file. Returns list[{"line": N, "text": "..."}]."""
     ext = os.path.splitext(path)[1].lower()
     if ext in (".ts", ".tsx"):
         if not _TS_AVAILABLE:
             print("ERROR: tree-sitter-typescript not installed. "
                   "Run: pip install tree-sitter-typescript", file=sys.stderr)
-            return 0
+            return []
         parser = _tsx_parser if ext == ".tsx" else _ts_parser
     else:
         if not _JS_AVAILABLE:
             print("ERROR: tree-sitter-javascript not installed. "
                   "Run: pip install tree-sitter-javascript", file=sys.stderr)
-            return 0
+            return []
         parser = _js_parser
 
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -422,31 +305,26 @@ def process_js_file(path, mode, mode_arg, show_path, count_only, context=0,
     fn = dispatch.get(mode)
     if not fn:
         print(f"Unknown mode for JS/TS: {mode!r}", file=sys.stderr)
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
+        return []
+    return _make_matches(fn() or [])
 
 
-def process_cpp_file(path, mode, mode_arg, show_path, count_only, context=0,
-                     src_root=None, include_body=False, **kwargs):
-    """Process a C/C++ file with the given query mode."""
+def process_cpp_file(path, mode, mode_arg, include_body=False, **kwargs):
+    """Process a C/C++ file. Returns list[{"line": N, "text": "..."}]."""
     if not _CPP_AVAILABLE or _cpp_parser is None:
         print("ERROR: tree-sitter-cpp not installed. "
               "Run: pip install tree-sitter-cpp", file=sys.stderr)
-        return 0
+        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = _cpp_parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -465,12 +343,8 @@ def process_cpp_file(path, mode, mode_arg, show_path, count_only, context=0,
     fn = dispatch.get(mode)
     if not fn:
         print(f"Unknown mode for C/C++: {mode!r}", file=sys.stderr)
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
+        return []
+    return _make_matches(fn() or [])
 
 
 # ── Extension → process function routing ─────────────────────────────────────
@@ -488,150 +362,12 @@ _EXT_TO_PROCESSOR = {
     ".hxx":  process_cpp_file,
 }
 
-def process_any_file(path, mode, mode_arg, show_path, count_only, context=0,
-                     src_root=None, include_body=False, symbol_kind=None, uses_kind=None):
-    """Dispatch to the correct language processor based on file extension."""
+def process_any_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
+    """Dispatch to the correct language processor. Returns list[{"line": N, "text": "..."}]."""
     ext = os.path.splitext(path)[1].lower()
     fn = _EXT_TO_PROCESSOR.get(ext, process_cs_file)
-    return fn(path, mode, mode_arg, show_path, count_only, context=context,
-              src_root=src_root, include_body=include_body,
+    return fn(path, mode, mode_arg, include_body=include_body,
               symbol_kind=symbol_kind, uses_kind=uses_kind)
 
 
-# ── Glob expansion ────────────────────────────────────────────────────────────
-
 _ALL_EXTS = set(_EXT_TO_PROCESSOR.keys())
-
-def expand_files(patterns, exts=None):
-    if exts is None:
-        exts = {".cs"}  # backward compat: default to C# only
-    files = []
-    seen  = set()
-    for pat in patterns:
-        pat = pat.replace("\\", "/")
-        if any(c in pat for c in ("*", "?")):
-            for f in sorted(_glob.glob(pat, recursive=True)):
-                f = f.replace("\\", "/")
-                ext = os.path.splitext(f)[1].lower()
-                if ext in exts and f not in seen:
-                    seen.add(f)
-                    files.append(f)
-        elif os.path.isdir(pat):
-            for root, _, fnames in os.walk(pat):
-                for fn in sorted(fnames):
-                    ext = os.path.splitext(fn)[1].lower()
-                    if ext in exts:
-                        fp = os.path.join(root, fn).replace("\\", "/")
-                        if fp not in seen:
-                            seen.add(fp)
-                            files.append(fp)
-        elif os.path.isfile(pat) and pat not in seen:
-            seen.add(pat)
-            files.append(pat)
-    return files
-
-
-# ── Entry point ───────────────────────────────────────────────────────────────
-
-def main():
-    ap = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    mg = ap.add_mutually_exclusive_group(required=True)
-    mg.add_argument("--classes",    action="store_true")
-    mg.add_argument("--methods",    action="store_true")
-    mg.add_argument("--fields",     action="store_true")
-    mg.add_argument("--calls",      metavar="METHOD")
-    mg.add_argument("--implements", metavar="TYPE")
-    mg.add_argument("--uses",       metavar="TYPE")
-    mg.add_argument("--casts",      metavar="TYPE")
-    mg.add_argument("--all-refs",         metavar="NAME")
-    mg.add_argument("--accesses-of",      metavar="MEMBER")
-    mg.add_argument("--attrs",            metavar="NAME", nargs="?", const="")
-    mg.add_argument("--usings",     action="store_true")
-    mg.add_argument("--declarations", metavar="NAME")
-    mg.add_argument("--params",     metavar="METHOD")
-    mg.add_argument("--imports",    action="store_true")
-    mg.add_argument("--includes",   action="store_true")
-
-    ap.add_argument("files", nargs="*", metavar="FILE_OR_PATTERN")
-    ap.add_argument("--search",       metavar="QUERY")
-    ap.add_argument("--search-sub",   metavar="SUBSYSTEM")
-    ap.add_argument("--search-ext",   metavar="EXT", default="cs")
-    ap.add_argument("--search-limit", metavar="N", type=int, default=50)
-    ap.add_argument("--uses-kind", metavar="KIND", default="")
-    ap.add_argument("--no-path", action="store_true")
-    ap.add_argument("--count",   action="store_true")
-    ap.add_argument("--context", metavar="N", type=int, default=0)
-    args = ap.parse_args()
-
-    if not args.files and not args.search:
-        ap.error("Provide FILE_OR_PATTERN arguments or use --search QUERY")
-
-    if args.classes:
-        mode, mode_arg = "classes",    None
-    elif args.methods:
-        mode, mode_arg = "methods",    None
-    elif args.fields:
-        mode, mode_arg = "fields",     None
-    elif args.calls:
-        mode, mode_arg = "calls",      args.calls
-    elif args.implements:
-        mode, mode_arg = "implements", args.implements
-    elif args.uses:
-        mode, mode_arg = "uses",       args.uses
-    elif args.casts:
-        mode, mode_arg = "casts",      args.casts
-    elif args.all_refs:
-        mode, mode_arg = "all_refs",   args.all_refs
-    elif args.accesses_of:
-        mode, mode_arg = "accesses_of", args.accesses_of
-    elif args.attrs is not None:
-        mode, mode_arg = "attrs",      args.attrs or None
-    elif args.usings:
-        mode, mode_arg = "usings",     None
-    elif args.declarations:
-        mode, mode_arg = "declarations", args.declarations
-    elif args.params:
-        mode, mode_arg = "params",     args.params
-    elif args.imports:
-        mode, mode_arg = "imports",    None
-    elif args.includes:
-        mode, mode_arg = "includes",   None
-    else:
-        ap.print_help(); sys.exit(1)
-
-    if args.search:
-        files = files_from_search(
-            query=args.search,
-            sub=getattr(args, "search_sub", None),
-            ext=getattr(args, "search_ext", "cs"),
-            limit=getattr(args, "search_limit", 50),
-        )
-        if not files:
-            print("No matching files found in index.", file=sys.stderr)
-            sys.exit(1)
-    else:
-        files = expand_files(args.files, exts=_ALL_EXTS)
-        if not files:
-            print(f"No supported files found: {' '.join(args.files)}", file=sys.stderr)
-            sys.exit(1)
-
-    has_glob  = any(c in p for p in (args.files or []) for c in ("*", "?"))
-    show_path = not args.no_path and (len(files) > 1 or has_glob or bool(args.search))
-
-    uses_kind = getattr(args, "uses_kind", "") or ""
-    total = 0
-    for f in files:
-        total += process_any_file(f, mode, mode_arg, show_path, args.count,
-                                  context=args.context, uses_kind=uses_kind)
-
-    if args.count:
-        print(f"\nTotal: {total}")
-    elif len(files) > 1:
-        print(f"\n({total} matches across {len(files)} files)", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
