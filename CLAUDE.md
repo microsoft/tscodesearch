@@ -14,10 +14,10 @@ The production instance on port 8108 is never touched.
 ## CRITICAL: running Python scripts from the Bash tool
 
 **Always use the indexserver WSL venv** when running any tscodesearch Python script
-(e.g. `inspect_doc.py`, `smoke_test.py`, `indexserver/query_util.py`, utility scripts) via the Bash tool:
+(e.g. `tests/inspect_doc.py`, `smoke_test.py`, `indexserver/query_util.py`, utility scripts) via the Bash tool:
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/python3 /mnt/c/repos/tscodesearch/inspect_doc.py <args>"
+MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/python3 /mnt/c/repos/tscodesearch/tests/inspect_doc.py <args>"
 ```
 
 To debug AST parsing on a specific file (e.g. why `query_single_file` returns no results):
@@ -147,6 +147,12 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 | `indexserver/query_util.py` | Thin entry point that adds the tscodesearch root to `sys.path` and delegates to `src.query.main()`. Run this when using the indexserver venv directly, e.g. to debug AST parsing on a specific file. **Must be run via WSL using the indexserver venv** (see below). |
 | `mcp_server.ts` / `mcp_server.js` | Node.js MCP server (TypeScript source, compiled to JS). Exposes `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `manage_service` tools. Runs on Windows; communicates with the indexserver via HTTP. |
 
+### `sample/` directory
+
+Checked-in source tree used by `test_sample_e2e.py` for end-to-end indexer tests. Two roots:
+- `sample/root1/` — Python and JS/TS fixture files
+- `sample/root2/` — additional Python fixture files
+
 ### Server-side (`indexserver/`)
 
 | File | Responsibility |
@@ -156,6 +162,8 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 | `indexer.py` | One-shot full index. `run_index(src_root, collection, reset, verbose)` walks the source tree via `os.walk` + `.gitignore` parsing (`pathspec`), calls tree-sitter via `extract_cs_metadata()` / `extract_py_metadata()`, batches upserts via the shared `index_file_list(client, file_pairs, coll_name, batch_size, on_progress, stop_event)` pipeline. `build_schema(name)` returns the collection schema. `walk_source_files(src_root)` is a generator yielding `(full_path, rel)` pairs. |
 | `verifier.py` | Index repair. `run_verify(src_root, collection, delete_orphans, stop_event)` does a two-phase diff: Phase 1 exports the index + walks the FS inline to classify files as missing/stale/orphaned; Phase 2 calls `index_file_list()` for only changed files and removes orphans. Writes progress to `verifier_progress.json`. `check_ready(src_root, collection)` runs Phase 1 synchronously and returns `{ready, poll_ok, index_ok, missing, stale, orphaned, fs_files, indexed, duration_s, error}` without modifying the index. |
 | `watcher.py` | Incremental updates. `run_watcher(src_root, collection, stop_event)` — started as a daemon thread by `api.py`. `PollingObserver` monitors source root and upserts changed files. Uses `PollingObserver` (not inotify) because source is on a Windows-backed `/mnt/` path. Poll interval is 10 s; detection latency is up to ~12 s (poll + 2 s debounce). |
+| `heartbeat.py` | Standalone heartbeat watchdog process (alternative to the inline heartbeat thread in `api.py`). Polls `/health` every 30 s; after 3 consecutive failures restarts Typesense via `entrypoint.sh`. Also revives the watcher process if it dies while the server is healthy. Writes `~/.local/typesense/heartbeat.pid`. |
+| `index_queue.py` | Centralised, deduplicating index queue. All Typesense writes — from the full-index walk, the WSL watcher, and the Windows native watcher — flow through a single `IndexQueue` instance. Deduplicates by `(collection, file_id)`; a background worker thread batches writes and skips upserts whose mtime hasn't changed since last index. |
 | `start_server.py` | Downloads the Typesense Linux binary to `~/.local/typesense/` on first run, starts the process, writes PID to `~/.local/typesense/typesense.pid`. |
 | `service.py` | CLI: `start` (Typesense + `api.py`), `stop`, `status` (queries `GET /status` on management API), `restart`, `index [--resethard]`, `verify [--root NAME]` (calls `POST /verify/start`), `log`. All process management is WSL-native using `os.kill`. |
 | `smoke_test.py` | Quick sanity check that the server is up and basic queries work. |
@@ -355,6 +363,36 @@ node run_tests.mjs --linux -k TestVerifier
 | `test_verifier.py` | `TestExportIndex` | **no** | Unit tests for `_export_index()` (mock HTTP) |
 | `test_verifier.py` | `TestRunVerifyUnit` | **no** | Unit tests for `run_verify()` diff logic (mocked pipeline) |
 | `test_verifier.py` | `TestVerifier` | yes | Integration tests: missing files added, stale files reindexed, orphan deletion |
+| `test_cpp.py` | all classes | **no** | C/C++ extractor and query functions against `query_fixture.cpp` |
+| `test_js_ts.py` | all classes | **no** | JS/TS extractor and query functions against `query_fixture.js` / `.ts` |
+| `test_rust.py` | all classes | **no** | Rust extractor and query functions against `query_fixture.rs` |
+| `test_mode_callers.py` | unit classes | **no** | `call_sites` field and `q_calls` AST function |
+| `test_mode_callers.py` | `TestCallersModeLive` | yes | `calls` mode end-to-end via Typesense |
+| `test_mode_symbols.py` | unit classes | **no** | `class_names`/`method_names` fields and text-mode content |
+| `test_mode_symbols.py` | `TestSymbolsAndTextModeLive` | yes | `text`/`declarations` mode end-to-end |
+| `test_mode_sig.py` | unit classes | **no** | `member_sigs` field, `q_methods`/`q_classes`/`q_fields` semantics, prefilter field selection |
+| `test_mode_sig.py` | `TestSigSearchLive` | yes | Signature search end-to-end |
+| `test_mode_casts.py` | unit classes | **no** | `q_casts` AST function and cast_types metadata |
+| `test_mode_casts.py` | `TestCastTypesLive` | yes | `casts` mode end-to-end |
+| `test_mode_attr.py` | unit classes | **no** | `attributes` field and `q_attrs` AST function |
+| `test_mode_attr.py` | `TestAttrModeLive` | yes | `attrs` mode end-to-end |
+| `test_mode_implements.py` | unit classes | **no** | `base_types` field and `q_implements` AST function |
+| `test_mode_implements.py` | `TestImplementsModeLive` | yes | `implements` mode end-to-end |
+| `test_mode_uses.py` | unit classes | **no** | `type_refs` field and `q_uses` AST function |
+| `test_mode_uses.py` | `TestUsesModeLive` | yes | `uses` mode end-to-end |
+| `test_mode_uses_field.py` | all classes | **no** | `uses` with `uses_kind=field` and metadata consistency |
+| `test_mode_uses_param.py` | all classes | **no** | `uses` with `uses_kind=param` and metadata consistency |
+| `test_mode_accesses_of.py` | `TestQAccessesOf` | **no** | `q_accesses_of` AST function |
+| `test_mode_accesses_on.py` | `TestQMemberAccesses` | **no** | `q_accesses_on` AST function |
+| `test_mode_all_refs.py` | `TestQIdent` | **no** | `q_all_refs` / `ident` AST function |
+| `test_mode_declarations.py` | `TestQFind` | **no** | `q_declarations` AST function |
+| `test_mode_params.py` | `TestQParams` | **no** | `q_params` AST function |
+| `test_mode_usings.py` | all classes | **no** | `q_usings` AST function and usings field |
+| `test_api_dispatch_tables.py` | `TestDispatchConsistency` | **no** | `_EXT_TO_TS_AND_AST` routing table and `_run_query` dispatch table are consistent |
+| `test_path_translation.py` | all classes | **no** | `to_native_path`, root parsing, path strip/resolution, Windows↔WSL path logic |
+| `test_http_ok.py` | all classes | **no** | `scripts/http_ok.py` health-check helper and entrypoint path |
+| `test_sample_e2e.py` | all classes | yes | End-to-end tests against `sample/root1` and `sample/root2`; multi-root, new languages, pre-configured roots, Python AST queries |
+| `test_e2e_modes.py` | — | yes | Standalone smoke test script (not pytest); takes a source directory as an argument |
 
 ## Common gotchas
 
