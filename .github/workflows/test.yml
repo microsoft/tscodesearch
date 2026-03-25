@@ -29,6 +29,8 @@ jobs:
           python3 -m venv ~/.local/indexserver-venv
           ~/.local/indexserver-venv/bin/pip install -q \
             typesense tree-sitter tree-sitter-c-sharp tree-sitter-python \
+            tree-sitter-javascript tree-sitter-typescript \
+            tree-sitter-rust tree-sitter-cpp \
             watchdog pathspec pytest
 
       - name: Write config.json
