@@ -258,9 +258,10 @@ def _restart_typesense() -> None:
     subprocess.run([_VENV_PY, _SERVER_PY, "--stop"], capture_output=True)
     time.sleep(2)
     env = os.environ.copy()
+    _config_file = env.get("CODESEARCH_CONFIG") or str(_THIS_DIR.parent / "config.json")
     env.update({
         "TYPESENSE_DATA":      str(_RUN_DIR),
-        "CONFIG_FILE":         str(_THIS_DIR.parent / "config.json"),
+        "CONFIG_FILE":         _config_file,
         "APP_ROOT":            str(_THIS_DIR.parent),
         "PYTHON3":             _VENV_PY,
         "PYTHONPATH":          str(_THIS_DIR.parent),
@@ -374,14 +375,67 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
         "params":       lambda s, t, l: _q.py_q_params(s, t, l, pattern),
     }
 
-    all_modes = set(cs_dispatch) | set(py_dispatch)
+    rust_dispatch = {
+        "classes":      lambda s, t, l: _q.rust_q_classes(s, t, l),
+        "methods":      lambda s, t, l: _q.rust_q_methods(s, t, l),
+        "calls":        lambda s, t, l: _q.rust_q_calls(s, t, l, pattern),
+        "implements":   lambda s, t, l: _q.rust_q_implements(s, t, l, pattern),
+        "all_refs":     lambda s, t, l: _q.rust_q_all_refs(s, t, l, pattern),
+        "declarations": lambda s, t, l: _q.rust_q_declarations(s, t, l, pattern, include_body=include_body),
+        "imports":      lambda s, t, l: _q.rust_q_imports(s, t, l),
+        "params":       lambda s, t, l: _q.rust_q_params(s, t, l, pattern),
+    }
+
+    js_dispatch = {
+        "classes":      lambda s, t, l: _q.js_q_classes(s, t, l),
+        "methods":      lambda s, t, l: _q.js_q_methods(s, t, l),
+        "calls":        lambda s, t, l: _q.js_q_calls(s, t, l, pattern),
+        "implements":   lambda s, t, l: _q.js_q_implements(s, t, l, pattern),
+        "all_refs":     lambda s, t, l: _q.js_q_all_refs(s, t, l, pattern),
+        "declarations": lambda s, t, l: _q.js_q_declarations(s, t, l, pattern, include_body=include_body),
+        "imports":      lambda s, t, l: _q.js_q_imports(s, t, l),
+        "params":       lambda s, t, l: _q.js_q_params(s, t, l, pattern),
+        "attrs":        lambda s, t, l: _q.js_q_attrs(s, t, l, pattern or None),
+    }
+
+    cpp_dispatch = {
+        "classes":      lambda s, t, l: _q.cpp_q_classes(s, t, l),
+        "methods":      lambda s, t, l: _q.cpp_q_methods(s, t, l),
+        "calls":        lambda s, t, l: _q.cpp_q_calls(s, t, l, pattern),
+        "implements":   lambda s, t, l: _q.cpp_q_implements(s, t, l, pattern),
+        "all_refs":     lambda s, t, l: _q.cpp_q_all_refs(s, t, l, pattern),
+        "declarations": lambda s, t, l: _q.cpp_q_declarations(s, t, l, pattern, include_body=include_body),
+        "includes":     lambda s, t, l: _q.cpp_q_includes(s, t, l),
+        "params":       lambda s, t, l: _q.cpp_q_params(s, t, l, pattern),
+    }
+
+    all_modes = set(cs_dispatch) | set(py_dispatch) | set(rust_dispatch) | set(js_dispatch) | set(cpp_dispatch)
     if mode not in all_modes:
         raise ValueError(f"Unknown mode: {mode!r}")
+
+    # Extension → (dispatch_table, parser_attr, available_attr)
+    _EXT_DISPATCH = {
+        ".py":  (py_dispatch,   "_py_parser",   "_PY_AVAILABLE"),
+        ".rs":  (rust_dispatch, "_rust_parser",  "_RUST_AVAILABLE"),
+        ".js":  (js_dispatch,   "_js_parser",    "_JS_AVAILABLE"),
+        ".jsx": (js_dispatch,   "_js_parser",    "_JS_AVAILABLE"),
+        ".mjs": (js_dispatch,   "_js_parser",    "_JS_AVAILABLE"),
+        ".cjs": (js_dispatch,   "_js_parser",    "_JS_AVAILABLE"),
+        ".ts":  (js_dispatch,   "_ts_parser",    "_TS_AVAILABLE"),
+        ".tsx": (js_dispatch,   "_tsx_parser",   "_TS_AVAILABLE"),
+        ".cpp": (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
+        ".cc":  (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
+        ".cxx": (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
+        ".c":   (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
+        ".h":   (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
+        ".hpp": (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
+        ".hxx": (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
+    }
 
     results = []
     for file_path in files:
         # Map Windows host path to native local path using HOST_ROOTS → ROOTS.
-        # Node.js passes Windows-style paths (e.g. Q:/spocore/src/Foo.cs);
+        # Node.js passes Windows-style paths (e.g. C:/myproject/src/Foo.cs);
         # the server resolves them to the local filesystem path using config.
         resolved = file_path.replace("\\", "/")
         for name, host_root in HOST_ROOTS.items():
@@ -391,12 +445,20 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
                 resolved = ROOTS[name].rstrip("/") + rel
                 break
         native = to_native_path(resolved)
-        is_py = native.endswith(".py")
+        ext = os.path.splitext(native)[1].lower()
 
-        if is_py and not getattr(_q, "_PY_AVAILABLE", False):
-            continue
+        # Get dispatch table and parser for this extension
+        lang_info = _EXT_DISPATCH.get(ext)
+        if lang_info:
+            dispatch, parser_attr, avail_attr = lang_info
+            if not getattr(_q, avail_attr, False):
+                continue
+            parser_obj = getattr(_q, parser_attr, None)
+        else:
+            # Default: C#
+            dispatch = cs_dispatch
+            parser_obj = _q._parser
 
-        dispatch = py_dispatch if is_py else cs_dispatch
         fn = dispatch.get(mode)
         if fn is None:
             continue
@@ -405,8 +467,7 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
         except OSError:
             continue
         try:
-            parser = _q._py_parser if is_py else _q._parser
-            tree = parser.parse(src_bytes)
+            tree = parser_obj.parse(src_bytes)
         except Exception:
             continue
         lines = src_bytes.decode("utf-8", errors="replace").splitlines()

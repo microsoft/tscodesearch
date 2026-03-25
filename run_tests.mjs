@@ -10,27 +10,30 @@
  * ──────
  *   --docker        Build image (if needed), spin up a container with sample
  *                   roots pre-indexed, run pytest + VS Code tests, tear down.
- *   --wsl           Run pytest in WSL via wsl.exe (requires --destructive).
+ *   --wsl           Run pytest in WSL via wsl.exe.  Non-destructive — starts a
+ *                   fresh isolated Typesense on CODESEARCH_TEST_PORT (default 18108)
+ *                   using a temp config; never touches the production instance.
  *   --linux         Run pytest directly (CI / native Linux).
  *
  * Flags
  * ──────
- *   --destructive   Required for --wsl (will kill WSL Typesense and wipe data).
  *   --vscode        Force VS Code tests on  (default: on for docker, off otherwise)
  *   --no-vscode     Skip VS Code tests in all modes.
  *
  * Examples
  * ────────
  *   node run_tests.mjs --docker
- *   node run_tests.mjs --wsl --destructive
- *   node run_tests.mjs --wsl --destructive -k TestVerifier
+ *   node run_tests.mjs --wsl
+ *   node run_tests.mjs --wsl -k TestVerifier
  *   node run_tests.mjs --linux tests/test_indexer.py
  *
  * Environment overrides (wsl / linux modes)
- *   CODESEARCH_PORT     default: read from config.json, else 8108
- *   CODESEARCH_KEY      default: read from config.json, else codesearch-local
- *   TYPESENSE_VERSION   default: 27.1
- *   PYTEST              default: ~/.local/indexserver-venv/bin/pytest
+ *   CODESEARCH_TEST_PORT  WSL test Typesense port  (default: 18108)
+ *   CODESEARCH_CONFIG     Override config.json path (auto-set by --wsl)
+ *   CODESEARCH_PORT       linux mode: Typesense port (default: from config.json)
+ *   CODESEARCH_KEY        linux mode: API key (default: from config.json)
+ *   TYPESENSE_VERSION     default: 27.1
+ *   PYTEST                default: ~/.local/indexserver-venv/bin/pytest
  */
 
 import { spawnSync, spawn }               from 'node:child_process';
@@ -167,24 +170,20 @@ function readConfig() {
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
-let mode        = null;
-let runVscode   = 'auto';
-let destructive = false;
+let mode      = null;
+let runVscode = 'auto';
 const extraArgs = [];
 
 for (const arg of process.argv.slice(2)) {
-  if      (arg === '--docker')      mode        = 'docker';
-  else if (arg === '--wsl')         mode        = 'wsl';
-  else if (arg === '--linux')       mode        = 'linux';
-  else if (arg === '--vscode')      runVscode   = 'true';
-  else if (arg === '--no-vscode')   runVscode   = 'false';
-  else if (arg === '--destructive') destructive = true;
+  if      (arg === '--docker')      mode      = 'docker';
+  else if (arg === '--wsl')         mode      = 'wsl';
+  else if (arg === '--linux')       mode      = 'linux';
+  else if (arg === '--vscode')      runVscode = 'true';
+  else if (arg === '--no-vscode')   runVscode = 'false';
   else                              extraArgs.push(arg);
 }
 
 if (!mode) die('No mode specified. Use --docker, --wsl, or --linux.');
-if (mode === 'wsl' && !destructive)
-  die('--wsl mode will erase your WSL Typesense index. Pass --destructive to confirm.');
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
@@ -335,9 +334,10 @@ async function runDocker() {
 // =============================================================================
 
 async function runWsl() {
-  const cfg  = readConfig();
-  const port = parseInt(process.env.CODESEARCH_PORT ?? cfg.port ?? 8108, 10);
-  const key  = process.env.CODESEARCH_KEY ?? cfg.api_key ?? 'codesearch-local';
+  // Use a dedicated test port so the test instance never touches the production
+  // Typesense.  CODESEARCH_TEST_PORT overrides the default.
+  const TEST_PORT = parseInt(process.env.CODESEARCH_TEST_PORT ?? 18108, 10);
+  const TEST_KEY  = 'codesearch-test';
   const TYPESENSE_VERSION = process.env.TYPESENSE_VERSION ?? '27.1';
   const wslRepo = toWslPath(REPO);
   const PYTEST  = (process.env.PYTEST ?? '~/.local/indexserver-venv/bin/pytest')
@@ -347,8 +347,8 @@ async function runWsl() {
   const CONFIG_FILE = '/tmp/codesearch-wsl-test-config.json';
   const logDir      = mkLogDir();
 
-  // Write minimal test config to WSL (same key/port, no roots to index).
-  const testConfig = JSON.stringify({ api_key: key, port }, null, 2);
+  // Write isolated test config (test port + test key — no roots needed).
+  const testConfig = JSON.stringify({ api_key: TEST_KEY, port: TEST_PORT }, null, 2);
   {
     const r = spawnSync('wsl.exe', ['-e', 'bash', '-c', `cat > '${CONFIG_FILE}'`],
       { input: testConfig, encoding: 'utf8' });
@@ -363,7 +363,8 @@ async function runWsl() {
     const testsLog = join(logDir, 'pytest.log');
     const r = runCaptured('wsl.exe', ['-e', 'bash', '-lc',
       `TYPESENSE_VERSION='${TYPESENSE_VERSION}' TYPESENSE_DATA='${DATA_DIR}' ` +
-      `CONFIG_FILE='${CONFIG_FILE}' CODESEARCH_PORT=${port} ` +
+      `CONFIG_FILE='${CONFIG_FILE}' CODESEARCH_PORT=${TEST_PORT} ` +
+      `CODESEARCH_CONFIG='${CONFIG_FILE}' ` +
       `APP_ROOT='${wslRepo}' PYTEST="${PYTEST}" ` +
       `bash '${wslRepo}/scripts/run-wsl-tests.sh' ${quoted}`,
     ]);
@@ -379,7 +380,7 @@ async function runWsl() {
   if (runVscode === 'true') {
     const vscodeLog = join(logDir, 'vscode.log');
     const s = step('wsl/vscode');
-    const status = await runVscodeTests({ apiPort: port + 1, apiKey: key, logFile: vscodeLog });
+    const status = await runVscodeTests({ apiPort: TEST_PORT + 1, apiKey: TEST_KEY, logFile: vscodeLog });
     if (status !== 0) { s.fail(vscodeLog, vscodeSummary(readFileSync(vscodeLog, 'utf8'))); process.exit(status); }
     s.ok(vscodeSummary(readFileSync(vscodeLog, 'utf8')));
   }

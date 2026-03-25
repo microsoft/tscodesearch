@@ -8,7 +8,7 @@
 # Tests are split across thematic files in tests/:
 #   test_indexer.py      — indexer, semantic fields, multi-root, extract_cs_metadata
 #   test_watcher.py      — file watcher / change handler
-#   test_process_cs.py   — process_file() C# structural query API
+#   test_process_cs.py   — process_cs_file() C# structural query API
 #   test_python.py       — Python metadata extraction and semantic fields
 #   test_verifier.py     — index verifier (run_verify, _export_index)
 REPO="$(cd "$(dirname "$0")" && pwd)"

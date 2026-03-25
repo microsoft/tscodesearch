@@ -42,6 +42,10 @@ RUN pip install --no-cache-dir \
     tree-sitter \
     tree-sitter-c-sharp \
     tree-sitter-python \
+    tree-sitter-rust \
+    tree-sitter-javascript \
+    tree-sitter-typescript \
+    tree-sitter-cpp \
     typesense \
     watchdog \
     pathspec \

@@ -187,7 +187,7 @@ class TestBaseTypesConsistency:
 
 class TestCallSitesConsistency:
     """CONSISTENT — indexer call_sites and q_calls both use _collect_ctor_names
-    and share the same AST traversal via cs_ast helpers."""
+    and share the same AST traversal via ast_cs helpers."""
 
     def test_indexer_includes_method_call(self, meta):
         assert "Transform" in meta["call_sites"], \
@@ -717,7 +717,7 @@ class TestFieldParamTypeConsistency:
 
     def test_field_type_results_in_type_refs(self, fx, meta):
         """Every type returned by q_field_type should be in type_refs."""
-        from cs_ast import _unqualify_type
+        from ast_cs import _unqualify_type
         import re
         for _, txt in q_uses(*fx, "IWidget", uses_kind="field"):
             # type_refs stores individual type names, not full qualified strings

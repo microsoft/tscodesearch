@@ -9,13 +9,13 @@ Usage:
     python inspect_doc.py <file> --field class_names --diff
 
 <file> accepts:
-    Windows path:   q:/spocore/src/sts/stsom/Utilities/AbsIntegration.cs
-    $SRC_ROOT path: $SRC_ROOT/sts/stsom/Utilities/AbsIntegration.cs
-    WSL path:       /mnt/q/spocore/src/sts/stsom/Utilities/AbsIntegration.cs
+    Windows path:   C:/myproject/src/Services/Widget.cs
+    $SRC_ROOT path: $SRC_ROOT/Services/Widget.cs
+    WSL path:       /mnt/c/myproject/src/Services/Widget.cs
 
 Examples:
-    python inspect_doc.py "$SRC_ROOT/sts/stsom/Utilities/AbsIntegration.cs" --diff
-    python inspect_doc.py "$SRC_ROOT/sts/stsom/Utilities/AbsIntegration.cs" --field class_names
+    python inspect_doc.py "$SRC_ROOT/Services/Widget.cs" --diff
+    python inspect_doc.py "$SRC_ROOT/Services/Widget.cs" --field class_names
 """
 
 import os

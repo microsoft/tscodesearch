@@ -17,6 +17,8 @@ These tests do NOT skip — if Typesense is unreachable the suite fails loudly.
 sample/ layout
 ──────────────
   root1/  Processors.cs  DataStore.cs  BlobStorage.cs  services.py  pipeline.py
+          query_fixture.cs  query_fixture.rs  query_fixture.js
+          query_fixture.ts  query_fixture.cpp
   root2/  Widgets.cs     Repositories.cs  SynthTypes.cs  models.py   notifier.py
 """
 
@@ -124,13 +126,13 @@ class TestSampleRoot1E2E(unittest.TestCase):
 
     # ── File-level ────────────────────────────────────────────────────────────
 
-    def test_collection_has_five_files(self):
+    def test_collection_has_ten_files(self):
         info = _collection_info(self.coll)
         self.assertIsNotNone(info, f"Collection {self.coll!r} not found")
         ndocs = info["num_documents"]
-        self.assertEqual(ndocs, 5,
-            f"Expected 5 docs in root1 (Processors.cs, DataStore.cs, "
-            f"BlobStorage.cs, services.py, pipeline.py), got {ndocs}")
+        self.assertEqual(ndocs, 10,
+            f"Expected 10 docs in root1 (Processors.cs, DataStore.cs, BlobStorage.cs, "
+            f"services.py, pipeline.py + 5 language fixtures), got {ndocs}")
 
     def test_processors_cs_indexed(self):
         self.assertIsNotNone(_get_doc(self.coll, "Processors.cs"),
@@ -445,6 +447,182 @@ class TestSampleRoot2E2E(unittest.TestCase):
             "Processors.cs must not appear in root2 collection")
 
 
+# ── TestSampleNewLanguagesE2E ─────────────────────────────────────────────────
+
+class TestSampleNewLanguagesE2E(unittest.TestCase):
+    """E2E: verify Rust, JS, TS, C++ fixtures in root1 are indexed with correct fields."""
+
+    coll: str
+
+    @classmethod
+    def setUpClass(cls):
+        _require_server()
+        from indexserver.indexer import run_index
+        cls.coll = f"test_e2e_langs_{int(time.time())}"
+        run_index(src_root=SAMPLE_ROOT1, collection=cls.coll, resethard=True, verbose=False)
+        time.sleep(0.5)
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "coll"):
+            _delete_collection(cls.coll)
+
+    # ── Rust ──────────────────────────────────────────────────────────────────
+
+    def test_rust_fixture_indexed(self):
+        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.rs"),
+                             "query_fixture.rs not found in index")
+
+    def test_rust_class_names_has_processresult(self):
+        doc = _get_doc(self.coll, "query_fixture.rs")
+        self.assertIsNotNone(doc)
+        self.assertIn("ProcessResult", doc.get("class_names", []))
+
+    def test_rust_class_names_has_processor_trait(self):
+        doc = _get_doc(self.coll, "query_fixture.rs")
+        self.assertIsNotNone(doc)
+        self.assertIn("Processor", doc.get("class_names", []))
+
+    def test_rust_method_names_has_create_processor(self):
+        doc = _get_doc(self.coll, "query_fixture.rs")
+        self.assertIsNotNone(doc)
+        self.assertIn("create_processor", doc.get("method_names", []))
+
+    def test_rust_base_types_has_processor(self):
+        doc = _get_doc(self.coll, "query_fixture.rs")
+        self.assertIsNotNone(doc)
+        self.assertIn("Processor", doc.get("base_types", []))
+
+    def test_rust_call_sites_has_process(self):
+        doc = _get_doc(self.coll, "query_fixture.rs")
+        self.assertIsNotNone(doc)
+        self.assertIn("process", doc.get("call_sites", []))
+
+    def test_rust_usings_has_std(self):
+        doc = _get_doc(self.coll, "query_fixture.rs")
+        self.assertIsNotNone(doc)
+        self.assertIn("std", doc.get("usings", []))
+
+    def test_rust_searchable_via_base_types(self):
+        hits = _search(self.coll, "Processor", query_by="base_types,class_names,filename")
+        self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
+
+    # ── JavaScript ────────────────────────────────────────────────────────────
+
+    def test_js_fixture_indexed(self):
+        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.js"),
+                             "query_fixture.js not found in index")
+
+    def test_js_class_names_has_textprocessor(self):
+        doc = _get_doc(self.coll, "query_fixture.js")
+        self.assertIsNotNone(doc)
+        self.assertIn("TextProcessor", doc.get("class_names", []))
+
+    def test_js_method_names_has_createprocessor(self):
+        doc = _get_doc(self.coll, "query_fixture.js")
+        self.assertIsNotNone(doc)
+        self.assertIn("createProcessor", doc.get("method_names", []))
+
+    def test_js_base_types_has_processor(self):
+        doc = _get_doc(self.coll, "query_fixture.js")
+        self.assertIsNotNone(doc)
+        self.assertIn("Processor", doc.get("base_types", []))
+
+    def test_js_call_sites_has_process(self):
+        doc = _get_doc(self.coll, "query_fixture.js")
+        self.assertIsNotNone(doc)
+        self.assertIn("process", doc.get("call_sites", []))
+
+    def test_js_usings_has_events(self):
+        doc = _get_doc(self.coll, "query_fixture.js")
+        self.assertIsNotNone(doc)
+        self.assertIn("events", doc.get("usings", []))
+
+    def test_js_searchable_via_call_sites(self):
+        hits = _search(self.coll, "createProcessor", query_by="call_sites,method_names,filename")
+        self.assertIn("query_fixture.js", [h["filename"] for h in hits])
+
+    # ── TypeScript ────────────────────────────────────────────────────────────
+
+    def test_ts_fixture_indexed(self):
+        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.ts"),
+                             "query_fixture.ts not found in index")
+
+    def test_ts_class_names_has_textprocessor(self):
+        doc = _get_doc(self.coll, "query_fixture.ts")
+        self.assertIsNotNone(doc)
+        self.assertIn("TextProcessor", doc.get("class_names", []))
+
+    def test_ts_class_names_has_interface(self):
+        doc = _get_doc(self.coll, "query_fixture.ts")
+        self.assertIsNotNone(doc)
+        self.assertIn("IProcessor", doc.get("class_names", []))
+
+    def test_ts_base_types_has_baseprocessor(self):
+        doc = _get_doc(self.coll, "query_fixture.ts")
+        self.assertIsNotNone(doc)
+        self.assertIn("BaseProcessor", doc.get("base_types", []))
+
+    def test_ts_base_types_has_iprocessor(self):
+        doc = _get_doc(self.coll, "query_fixture.ts")
+        self.assertIsNotNone(doc)
+        self.assertIn("IProcessor", doc.get("base_types", []))
+
+    def test_ts_attr_names_has_serializable(self):
+        doc = _get_doc(self.coll, "query_fixture.ts")
+        self.assertIsNotNone(doc)
+        self.assertIn("serializable", doc.get("attr_names", []))
+
+    def test_ts_call_sites_has_process(self):
+        doc = _get_doc(self.coll, "query_fixture.ts")
+        self.assertIsNotNone(doc)
+        self.assertIn("process", doc.get("call_sites", []))
+
+    def test_ts_searchable_via_attr_names(self):
+        hits = _search(self.coll, "serializable", query_by="attr_names,filename")
+        self.assertIn("query_fixture.ts", [h["filename"] for h in hits])
+
+    # ── C++ ───────────────────────────────────────────────────────────────────
+
+    def test_cpp_fixture_indexed(self):
+        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.cpp"),
+                             "query_fixture.cpp not found in index")
+
+    def test_cpp_class_names_has_textprocessor(self):
+        doc = _get_doc(self.coll, "query_fixture.cpp")
+        self.assertIsNotNone(doc)
+        self.assertIn("TextProcessor", doc.get("class_names", []))
+
+    def test_cpp_class_names_has_processresult(self):
+        doc = _get_doc(self.coll, "query_fixture.cpp")
+        self.assertIsNotNone(doc)
+        self.assertIn("ProcessResult", doc.get("class_names", []))
+
+    def test_cpp_method_names_has_createprocessor(self):
+        doc = _get_doc(self.coll, "query_fixture.cpp")
+        self.assertIsNotNone(doc)
+        self.assertIn("createProcessor", doc.get("method_names", []))
+
+    def test_cpp_base_types_has_baseprocessor(self):
+        doc = _get_doc(self.coll, "query_fixture.cpp")
+        self.assertIsNotNone(doc)
+        self.assertIn("BaseProcessor", doc.get("base_types", []))
+
+    def test_cpp_call_sites_has_process(self):
+        doc = _get_doc(self.coll, "query_fixture.cpp")
+        self.assertIsNotNone(doc)
+        self.assertIn("process", doc.get("call_sites", []))
+
+    def test_cpp_usings_has_string(self):
+        doc = _get_doc(self.coll, "query_fixture.cpp")
+        self.assertIsNotNone(doc)
+        self.assertIn("string", doc.get("usings", []))
+
+    def test_cpp_searchable_via_base_types(self):
+        hits = _search(self.coll, "BaseProcessor", query_by="base_types,class_names,filename")
+        self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
+
+
 # ── TestSampleMultiRootE2E ────────────────────────────────────────────────────
 
 class TestSampleMultiRootE2E(unittest.TestCase):
@@ -497,11 +675,11 @@ class TestSampleMultiRootE2E(unittest.TestCase):
         self.assertNotIn("Processors.cs", [h["filename"] for h in hits],
             "Processors.cs must NOT appear in root2")
 
-    def test_root1_doc_count_equals_five(self):
+    def test_root1_doc_count_equals_nine(self):
         info = _collection_info(self.coll_r1)
         self.assertIsNotNone(info)
-        self.assertEqual(info["num_documents"], 5,
-            f"root1 expected 5 docs, got {info['num_documents']}")
+        self.assertEqual(info["num_documents"], 10,
+            f"root1 expected 10 docs, got {info['num_documents']}")
 
     def test_root2_doc_count_equals_five(self):
         info = _collection_info(self.coll_r2)
@@ -545,12 +723,12 @@ class TestPreConfiguredRootsE2E(unittest.TestCase):
         self.assertIsNotNone(_collection_info(coll),
             f"Collection {coll!r} not found — entrypoint should have indexed root1")
 
-    def test_root1_has_five_files(self):
+    def test_root1_has_ten_files(self):
         coll = self._coll("root1")
         info = _collection_info(coll)
         self.assertIsNotNone(info)
-        self.assertEqual(info["num_documents"], 5,
-            f"Expected 5 docs in {coll!r}, got {info['num_documents']}")
+        self.assertEqual(info["num_documents"], 10,
+            f"Expected 10 docs in {coll!r}, got {info['num_documents']}")
 
     def test_root1_has_processors_cs(self):
         self.assertIsNotNone(_get_doc(self._coll("root1"), "Processors.cs"),

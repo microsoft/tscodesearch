@@ -37,6 +37,10 @@ echo "[wsl-setup] Installing/updating Python packages..."
     tree-sitter \
     tree-sitter-c-sharp \
     tree-sitter-python \
+    tree-sitter-rust \
+    tree-sitter-javascript \
+    tree-sitter-typescript \
+    tree-sitter-cpp \
     watchdog \
     pathspec \
     pytest

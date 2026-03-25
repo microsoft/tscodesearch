@@ -29,12 +29,36 @@ try:
 except ImportError:
     _PY_AVAILABLE = False
 
+try:
+    import tree_sitter_rust as tsrust
+    _RUST_AVAILABLE = True
+except ImportError:
+    _RUST_AVAILABLE = False
+
+try:
+    import tree_sitter_javascript as tsjs
+    _JS_AVAILABLE = True
+except ImportError:
+    _JS_AVAILABLE = False
+
+try:
+    import tree_sitter_typescript as tsts
+    _TS_AVAILABLE = True
+except ImportError:
+    _TS_AVAILABLE = False
+
+try:
+    import tree_sitter_cpp as tscpp
+    _CPP_AVAILABLE = True
+except ImportError:
+    _CPP_AVAILABLE = False
+
 from indexserver.config import (
     TYPESENSE_CLIENT_CONFIG, COLLECTION, SRC_ROOT,
     INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES,
     collection_for_root,
 )
-from cs_ast import (
+from ast_cs import (
     _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
     _find_all, _text, _unqualify, _unqualify_type,
     _base_type_names, _collect_ctor_names,
@@ -68,6 +92,33 @@ if _PY_AVAILABLE:
     _py_parser = Parser(_PY)
 else:
     _py_parser = None
+
+if _RUST_AVAILABLE:
+    _RUST = Language(tsrust.language())
+    _rust_parser = Parser(_RUST)
+else:
+    _rust_parser = None
+
+if _JS_AVAILABLE:
+    _JS = Language(tsjs.language())
+    _js_parser = Parser(_JS)
+else:
+    _js_parser = None
+
+if _TS_AVAILABLE:
+    _TS = Language(tsts.language_typescript())
+    _ts_parser = Parser(_TS)
+    _TSX = Language(tsts.language_tsx())
+    _tsx_parser = Parser(_TSX)
+else:
+    _ts_parser = None
+    _tsx_parser = None
+
+if _CPP_AVAILABLE:
+    _CPP = Language(tscpp.language())
+    _cpp_parser = Parser(_CPP)
+else:
+    _cpp_parser = None
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +528,305 @@ def extract_py_metadata(src_bytes: bytes) -> dict:
     }
 
 
+def extract_rust_metadata(src_bytes: bytes) -> dict:
+    """Extract Rust metadata for semantic indexing."""
+    _empty = {
+        "namespace": "", "class_names": [], "method_names": [],
+        "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
+        "type_refs": [], "attr_names": [], "usings": [],
+        "return_types": [], "param_types": [], "field_types": [],
+        "local_types": [], "member_accesses": [],
+    }
+    if not _RUST_AVAILABLE or _rust_parser is None:
+        return _empty
+    try:
+        tree = _rust_parser.parse(src_bytes)
+    except Exception:
+        return _empty
+
+    from ast_rust import (
+        _find_all as _rfa, _text as _rt,
+        _TYPE_DECL_NODES as _RUST_TYPE_NODES,
+        _fn_name as _rfn_name, _type_name as _rtype_name,
+        _impl_trait_name as _rimpl_trait, _impl_type_name as _rimpl_type,
+        _fn_sig as _rfn_sig,
+    )
+
+    root = tree.root_node
+    class_names, method_names, base_types, call_sites, member_sigs = [], [], [], [], []
+    usings, type_refs = [], []
+
+    # Structs, enums, traits
+    for node in _rfa(root, lambda n: n.type in _RUST_TYPE_NODES):
+        name = _rtype_name(node, src_bytes)
+        if name:
+            class_names.append(name)
+
+    # Functions and impl methods
+    for node in _rfa(root, lambda n: n.type == "function_item"):
+        name = _rfn_name(node, src_bytes)
+        if name:
+            method_names.append(name)
+        sig = _rfn_sig(node, src_bytes)
+        if sig:
+            member_sigs.append(sig)
+
+    # impl Trait for Type → base_types
+    for node in _rfa(root, lambda n: n.type == "impl_item"):
+        t = _rimpl_trait(node, src_bytes)
+        if t:
+            base_types.append(t)
+
+    # Call sites
+    for node in _rfa(root, lambda n: n.type == "call_expression"):
+        fn = node.child_by_field_name("function")
+        if fn:
+            if fn.type == "identifier":
+                call_sites.append(_rt(fn, src_bytes).strip())
+            elif fn.type == "field_expression":
+                f = fn.child_by_field_name("field")
+                if f:
+                    call_sites.append(_rt(f, src_bytes).strip())
+    for node in _rfa(root, lambda n: n.type == "method_call_expression"):
+        name_node = node.child_by_field_name("name")
+        if name_node:
+            call_sites.append(_rt(name_node, src_bytes).strip())
+
+    # use declarations
+    for node in _rfa(root, lambda n: n.type == "use_declaration"):
+        txt = _rt(node, src_bytes).strip()
+        # extract first path segment: use std::... → "std"
+        for id_node in _rfa(node, lambda n: n.type == "identifier"):
+            seg = _rt(id_node, src_bytes).strip()
+            if seg and seg not in ("use", "self", "super", "crate"):
+                usings.append(seg)
+            break
+
+    return {
+        "namespace":       "",
+        "class_names":     _dedupe(class_names),
+        "method_names":    _dedupe(method_names),
+        "base_types":      _dedupe(base_types),
+        "call_sites":      _dedupe(call_sites),
+        "cast_types":      [],
+        "member_sigs":     _dedupe(member_sigs),
+        "type_refs":       _dedupe(type_refs),
+        "attr_names":      [],
+        "usings":          _dedupe(usings),
+        "return_types":    [],
+        "param_types":     [],
+        "field_types":     [],
+        "local_types":     [],
+        "member_accesses": [],
+    }
+
+
+def extract_js_metadata(src_bytes: bytes, parser=None) -> dict:
+    """Extract JavaScript metadata for semantic indexing."""
+    _empty = {
+        "namespace": "", "class_names": [], "method_names": [],
+        "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
+        "type_refs": [], "attr_names": [], "usings": [],
+        "return_types": [], "param_types": [], "field_types": [],
+        "local_types": [], "member_accesses": [],
+    }
+    _parser = parser or _js_parser
+    if not _JS_AVAILABLE or _parser is None:
+        return _empty
+    try:
+        tree = _parser.parse(src_bytes)
+    except Exception:
+        return _empty
+
+    from ast_js import (
+        _find_all as _jfa, _text as _jt,
+        _TYPE_DECL_NODES as _JS_TYPE_NODES,
+        _class_bases, _fn_name_from_node, _fn_sig as _jfn_sig,
+    )
+
+    root = tree.root_node
+    class_names, method_names, base_types, call_sites, member_sigs = [], [], [], [], []
+    usings, attr_names = [], []
+
+    # Classes and their bases
+    class_decl_nodes = {
+        "class_declaration", "abstract_class_declaration",
+        "interface_declaration", "type_alias_declaration", "enum_declaration",
+    }
+    for node in _jfa(root, lambda n: n.type in class_decl_nodes):
+        name_node = node.child_by_field_name("name")
+        if name_node:
+            class_names.append(_jt(name_node, src_bytes).strip())
+        base_types.extend(_class_bases(node, src_bytes))
+
+    # Functions and methods
+    fn_nodes = {
+        "function_declaration", "method_definition",
+        "generator_function_declaration",
+    }
+    for node in _jfa(root, lambda n: n.type in fn_nodes):
+        name = _fn_name_from_node(node, src_bytes)
+        if name:
+            method_names.append(name)
+            member_sigs.append(_jfn_sig(node, src_bytes))
+
+    # Call sites
+    for node in _jfa(root, lambda n: n.type == "call_expression"):
+        fn = node.child_by_field_name("function")
+        if fn:
+            if fn.type == "identifier":
+                call_sites.append(_jt(fn, src_bytes).strip())
+            elif fn.type == "member_expression":
+                prop = fn.child_by_field_name("property")
+                if prop:
+                    call_sites.append(_jt(prop, src_bytes).strip())
+
+    # Imports → usings
+    for node in _jfa(root, lambda n: n.type == "import_statement"):
+        src_node = node.child_by_field_name("source")
+        if src_node:
+            raw = _jt(src_node, src_bytes).strip().strip("'\"")
+            seg = raw.lstrip("./").split("/")[0]
+            if seg:
+                usings.append(seg)
+
+    return {
+        "namespace":       "",
+        "class_names":     _dedupe(class_names),
+        "method_names":    _dedupe(method_names),
+        "base_types":      _dedupe(base_types),
+        "call_sites":      _dedupe(call_sites),
+        "cast_types":      [],
+        "member_sigs":     _dedupe(member_sigs),
+        "type_refs":       [],
+        "attr_names":      _dedupe(attr_names),
+        "usings":          _dedupe(usings),
+        "return_types":    [],
+        "param_types":     [],
+        "field_types":     [],
+        "local_types":     [],
+        "member_accesses": [],
+    }
+
+
+def extract_ts_metadata(src_bytes: bytes, parser=None) -> dict:
+    """Extract TypeScript metadata for semantic indexing."""
+    _parser = parser or _ts_parser
+    if not _TS_AVAILABLE or _parser is None:
+        return {
+            "namespace": "", "class_names": [], "method_names": [],
+            "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
+            "type_refs": [], "attr_names": [], "usings": [],
+            "return_types": [], "param_types": [], "field_types": [],
+            "local_types": [], "member_accesses": [],
+        }
+    # TS is a superset of JS — reuse JS extraction with the TS parser
+    meta = extract_js_metadata(src_bytes, parser=_parser)
+
+    # Extra: decorators → attr_names
+    from ast_js import _find_all as _jfa, _text as _jt
+    try:
+        tree = _parser.parse(src_bytes)
+    except Exception:
+        return meta
+
+    attr_names = []
+    for node in _jfa(tree.root_node, lambda n: n.type == "decorator"):
+        # decorator: @name or @name(args)
+        for child in node.children:
+            if child.type in ("identifier", "member_expression", "call_expression"):
+                if child.type == "call_expression":
+                    fn = child.child_by_field_name("function")
+                    if fn:
+                        attr_names.append(_jt(fn, src_bytes).strip())
+                else:
+                    attr_names.append(_jt(child, src_bytes).strip())
+                break
+
+    meta["attr_names"] = _dedupe(attr_names)
+    return meta
+
+
+def extract_cpp_metadata(src_bytes: bytes) -> dict:
+    """Extract C/C++ metadata for semantic indexing."""
+    _empty = {
+        "namespace": "", "class_names": [], "method_names": [],
+        "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
+        "type_refs": [], "attr_names": [], "usings": [],
+        "return_types": [], "param_types": [], "field_types": [],
+        "local_types": [], "member_accesses": [],
+    }
+    if not _CPP_AVAILABLE or _cpp_parser is None:
+        return _empty
+    try:
+        tree = _cpp_parser.parse(src_bytes)
+    except Exception:
+        return _empty
+
+    from ast_cpp import (
+        _find_all as _cfa, _text as _ct,
+        _TYPE_DECL_NODES as _CPP_TYPE_NODES,
+        _class_name as _cclass_name, _base_class_names,
+        _fn_name as _cfn_name, _fn_sig as _cfn_sig,
+    )
+
+    root = tree.root_node
+    class_names, method_names, base_types, call_sites, member_sigs = [], [], [], [], []
+    usings = []
+
+    # Classes, structs, enums
+    for node in _cfa(root, lambda n: n.type in _CPP_TYPE_NODES):
+        name = _cclass_name(node, src_bytes)
+        if name:
+            class_names.append(name)
+        base_types.extend(_base_class_names(node, src_bytes))
+
+    # Function definitions
+    for node in _cfa(root, lambda n: n.type == "function_definition"):
+        name = _cfn_name(node, src_bytes)
+        if name:
+            method_names.append(name)
+            member_sigs.append(_cfn_sig(node, src_bytes))
+
+    # Call sites
+    for node in _cfa(root, lambda n: n.type == "call_expression"):
+        fn = node.child_by_field_name("function")
+        if fn:
+            if fn.type == "identifier":
+                call_sites.append(_ct(fn, src_bytes).strip())
+            elif fn.type == "field_expression":
+                f = fn.child_by_field_name("field")
+                if f:
+                    call_sites.append(_ct(f, src_bytes).strip())
+
+    # #include → usings
+    for node in _cfa(root, lambda n: n.type == "preproc_include"):
+        path_node = node.child_by_field_name("path")
+        if path_node:
+            raw = _ct(path_node, src_bytes).strip().strip("<>\"")
+            seg = raw.split("/")[-1].split(".")[0]
+            if seg:
+                usings.append(seg)
+
+    return {
+        "namespace":       "",
+        "class_names":     _dedupe(class_names),
+        "method_names":    _dedupe(method_names),
+        "base_types":      _dedupe(base_types),
+        "call_sites":      _dedupe(call_sites),
+        "cast_types":      [],
+        "member_sigs":     _dedupe(member_sigs),
+        "type_refs":       [],
+        "attr_names":      [],
+        "usings":          _dedupe(usings),
+        "return_types":    [],
+        "param_types":     [],
+        "field_types":     [],
+        "local_types":     [],
+        "member_accesses": [],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -570,6 +920,16 @@ def build_document(full_path: str, relative_path: str, host_root: str = "") -> d
         meta = extract_cs_metadata(src_bytes)
     elif ext == ".py" and _PY_AVAILABLE:
         meta = extract_py_metadata(src_bytes)
+    elif ext == ".rs" and _RUST_AVAILABLE:
+        meta = extract_rust_metadata(src_bytes)
+    elif ext in (".js", ".jsx", ".mjs", ".cjs") and _JS_AVAILABLE:
+        meta = extract_js_metadata(src_bytes)
+    elif ext in (".ts",) and _TS_AVAILABLE:
+        meta = extract_ts_metadata(src_bytes, parser=_ts_parser)
+    elif ext in (".tsx",) and _TS_AVAILABLE:
+        meta = extract_ts_metadata(src_bytes, parser=_tsx_parser)
+    elif ext in (".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx") and _CPP_AVAILABLE:
+        meta = extract_cpp_metadata(src_bytes)
     else:
         meta = {
             "namespace": "", "class_names": [], "method_names": [],
