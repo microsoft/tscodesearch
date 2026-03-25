@@ -26,11 +26,10 @@ import argparse
 import urllib.request
 import urllib.error
 
-_root = os.path.dirname(os.path.abspath(__file__))
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _root)
-sys.path.insert(0, os.path.join(_root, "indexserver"))
 
-from config import SRC_ROOT, HOST, PORT, API_KEY, COLLECTION, to_native_path
+from src.query.config import SRC_ROOT, HOST, PORT, API_KEY, COLLECTION, to_native_path
 from indexserver.indexer import build_document, subsystem_from_path, file_id
 
 

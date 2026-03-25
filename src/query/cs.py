@@ -7,7 +7,7 @@ All public functions are re-exported from query.py for backward compatibility.
 import re
 import sys
 
-from ast_cs import (
+from ..ast.cs import (
     _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
     _find_all, _text, _unqualify, _unqualify_type,
     _base_type_names, _collect_ctor_names,
@@ -719,7 +719,7 @@ def process_cs_file(path, mode, mode_arg, show_path, count_only, context=0,
 
 def _print_results(results, path, lines, show_path, count_only, context, src_root, mode):
     import os
-    from config import SRC_ROOT as _SRC_ROOT
+    from .config import SRC_ROOT as _SRC_ROOT
     _effective_root = (src_root or _SRC_ROOT).rstrip("/").replace("\\", "/")
     _path_norm = path.replace("\\", "/")
     if _effective_root and _path_norm.lower().startswith(_effective_root.lower() + "/"):

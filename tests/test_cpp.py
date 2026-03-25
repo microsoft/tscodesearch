@@ -90,125 +90,125 @@ class TestQueryCpp(unittest.TestCase):
     # ── classes ──────────────────────────────────────────────────────────────
 
     def test_classes_finds_class(self):
-        from query_cpp import cpp_q_classes
+        from src.query.cpp import cpp_q_classes
         r = cpp_q_classes(*self._fx())
         self.assertTrue(has(r, "TextProcessor"))
 
     def test_classes_finds_struct(self):
-        from query_cpp import cpp_q_classes
+        from src.query.cpp import cpp_q_classes
         r = cpp_q_classes(*self._fx())
         self.assertTrue(has(r, "ProcessResult"))
 
     def test_classes_shows_base(self):
-        from query_cpp import cpp_q_classes
+        from src.query.cpp import cpp_q_classes
         r = cpp_q_classes(*self._fx())
         match = next((t for _, t in r if "TextProcessor" in t), None)
         self.assertIsNotNone(match)
         self.assertIn("BaseProcessor", match)
 
     def test_classes_kind_tagged(self):
-        from query_cpp import cpp_q_classes
+        from src.query.cpp import cpp_q_classes
         r = cpp_q_classes(*self._fx())
         self.assertTrue(any("[class]" in t for _, t in r))
 
     # ── methods ──────────────────────────────────────────────────────────────
 
     def test_methods_finds_function(self):
-        from query_cpp import cpp_q_methods
+        from src.query.cpp import cpp_q_methods
         r = cpp_q_methods(*self._fx())
         self.assertTrue(has(r, "createProcessor"))
 
     def test_methods_finds_member_function(self):
-        from query_cpp import cpp_q_methods
+        from src.query.cpp import cpp_q_methods
         r = cpp_q_methods(*self._fx())
         self.assertTrue(has(r, "process"))
 
     # ── calls ─────────────────────────────────────────────────────────────────
 
     def test_calls_finds_function_call(self):
-        from query_cpp import cpp_q_calls
+        from src.query.cpp import cpp_q_calls
         r = cpp_q_calls(*self._fx(), "createProcessor")
         self.assertGreater(len(r), 0)
 
     def test_calls_finds_method_call(self):
-        from query_cpp import cpp_q_calls
+        from src.query.cpp import cpp_q_calls
         r = cpp_q_calls(*self._fx(), "process")
         self.assertGreater(len(r), 0)
 
     def test_calls_absent_no_match(self):
-        from query_cpp import cpp_q_calls
+        from src.query.cpp import cpp_q_calls
         r = cpp_q_calls(*self._fx(), "nonexistentXYZ")
         self.assertEqual(len(r), 0)
 
     # ── implements ──────────────────────────────────────────────────────────
 
     def test_implements_finds_derived_class(self):
-        from query_cpp import cpp_q_implements
+        from src.query.cpp import cpp_q_implements
         r = cpp_q_implements(*self._fx(), "BaseProcessor")
         self.assertGreater(len(r), 0)
         self.assertTrue(has(r, "TextProcessor"))
 
     def test_implements_interface(self):
-        from query_cpp import cpp_q_implements
+        from src.query.cpp import cpp_q_implements
         r = cpp_q_implements(*self._fx(), "IProcessor")
         self.assertGreater(len(r), 0)
 
     def test_implements_nonexistent_no_match(self):
-        from query_cpp import cpp_q_implements
+        from src.query.cpp import cpp_q_implements
         r = cpp_q_implements(*self._fx(), "INonExistent999")
         self.assertEqual(len(r), 0)
 
     # ── declarations ────────────────────────────────────────────────────────
 
     def test_declarations_finds_class(self):
-        from query_cpp import cpp_q_declarations
+        from src.query.cpp import cpp_q_declarations
         r = cpp_q_declarations(*self._fx(), "TextProcessor")
         self.assertGreater(len(r), 0)
 
     def test_declarations_finds_function(self):
-        from query_cpp import cpp_q_declarations
+        from src.query.cpp import cpp_q_declarations
         r = cpp_q_declarations(*self._fx(), "createProcessor")
         self.assertGreater(len(r), 0)
 
     def test_declarations_nonexistent_no_match(self):
-        from query_cpp import cpp_q_declarations
+        from src.query.cpp import cpp_q_declarations
         r = cpp_q_declarations(*self._fx(), "ZZZNonExistentXXX")
         self.assertEqual(len(r), 0)
 
     # ── all_refs ────────────────────────────────────────────────────────────
 
     def test_all_refs_finds_type(self):
-        from query_cpp import cpp_q_all_refs
+        from src.query.cpp import cpp_q_all_refs
         r = cpp_q_all_refs(*self._fx(), "TextProcessor")
         self.assertGreater(len(r), 0)
 
     def test_all_refs_absent_no_match(self):
-        from query_cpp import cpp_q_all_refs
+        from src.query.cpp import cpp_q_all_refs
         r = cpp_q_all_refs(*self._fx(), "ZZZNonExistentXXX")
         self.assertEqual(len(r), 0)
 
     # ── includes ────────────────────────────────────────────────────────────
 
     def test_includes_found(self):
-        from query_cpp import cpp_q_includes
+        from src.query.cpp import cpp_q_includes
         r = cpp_q_includes(*self._fx())
         self.assertGreater(len(r), 0)
         self.assertTrue(any("#include" in t for _, t in r))
 
     def test_includes_contains_string(self):
-        from query_cpp import cpp_q_includes
+        from src.query.cpp import cpp_q_includes
         r = cpp_q_includes(*self._fx())
         self.assertTrue(any("<string>" in t for _, t in r))
 
     # ── params ──────────────────────────────────────────────────────────────
 
     def test_params_found(self):
-        from query_cpp import cpp_q_params
+        from src.query.cpp import cpp_q_params
         r = cpp_q_params(*self._fx(), "createProcessor")
         self.assertGreater(len(r), 0)
 
     def test_params_absent_no_match(self):
-        from query_cpp import cpp_q_params
+        from src.query.cpp import cpp_q_params
         r = cpp_q_params(*self._fx(), "nonexistent_xyz")
         self.assertEqual(len(r), 0)
 
@@ -228,7 +228,7 @@ class TestProcessCppFile(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, mode, mode_arg=None):
-        from query import process_cpp_file
+        from src.query.dispatch import process_cpp_file
         buf = io.StringIO()
         old = sys.stdout
         sys.stdout = buf

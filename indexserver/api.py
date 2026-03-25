@@ -331,7 +331,7 @@ _query_module = None
 def _get_query_module():
     global _query_module
     if _query_module is None:
-        import query as _q  # codesearch/query.py — on sys.path via _base above
+        import src.query.dispatch as _q  # src/query/dispatch.py — on sys.path via _base above
         _query_module = _q
     return _query_module
 
@@ -743,8 +743,14 @@ class _Handler(BaseHTTPRequestHandler):
             # Must be stripped before prepending the server-local src_root.
             host_root_prefix = HOST_ROOTS.get(root_name, "").replace("\\", "/").rstrip("/")
 
-            # Import search lazily (on sys.path via _base)
-            import search as _search_mod
+            # Import search lazily from scripts/search.py (not a package, use importlib)
+            import importlib.util as _ilu
+            _search_spec = _ilu.spec_from_file_location(
+                "scripts.search",
+                os.path.join(_base, "scripts", "search.py"),
+            )
+            _search_mod = _ilu.module_from_spec(_search_spec)
+            _search_spec.loader.exec_module(_search_mod)
 
             ts_kwargs = dict(
                 query        = pattern,

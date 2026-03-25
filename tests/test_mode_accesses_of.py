@@ -27,7 +27,7 @@ from tests.fixtures import (
     ACCESSES_OF_STATUS_QUALIFIED,
     ACCESSES_OF_NO_STATUS,
 )
-from query import q_accesses_of
+from src.query.dispatch import q_accesses_of
 
 
 class TestQAccessesOf(unittest.TestCase):

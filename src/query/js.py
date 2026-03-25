@@ -29,7 +29,7 @@ try:
 except ImportError:
     _TS_AVAILABLE = False
 
-from ast_js import (
+from ..ast.js import (
     _find_all, _text, _in_literal, _line,
     _TYPE_DECL_NODES, _FUNCTION_NODES, _LITERAL_NODES,
     _class_bases, _fn_name_from_node, _fn_sig,
@@ -316,7 +316,7 @@ def process_js_file(path, mode, mode_arg, show_path, count_only, context=0,
     if not results:
         return 0
 
-    from config import SRC_ROOT as _SRC_ROOT
+    from .config import SRC_ROOT as _SRC_ROOT
     _effective_root = (src_root or _SRC_ROOT).rstrip("/").replace("\\", "/")
     _path_norm = path.replace("\\", "/")
     if _effective_root and _path_norm.lower().startswith(_effective_root.lower() + "/"):

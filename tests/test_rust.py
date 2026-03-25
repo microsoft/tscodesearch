@@ -97,22 +97,22 @@ class TestQueryRust(unittest.TestCase):
     # ── classes ──────────────────────────────────────────────────────────────
 
     def test_classes_finds_struct(self):
-        from query_rust import rust_q_classes
+        from src.query.rust import rust_q_classes
         r = rust_q_classes(*self._fx())
         self.assertTrue(has(r, "ProcessResult"))
 
     def test_classes_finds_trait(self):
-        from query_rust import rust_q_classes
+        from src.query.rust import rust_q_classes
         r = rust_q_classes(*self._fx())
         self.assertTrue(has(r, "Processor"))
 
     def test_classes_finds_enum(self):
-        from query_rust import rust_q_classes
+        from src.query.rust import rust_q_classes
         r = rust_q_classes(*self._fx())
         self.assertTrue(has(r, "ProcessingMode"))
 
     def test_classes_kind_tagged(self):
-        from query_rust import rust_q_classes
+        from src.query.rust import rust_q_classes
         r = rust_q_classes(*self._fx())
         structs = [t for _, t in r if "[struct]" in t]
         self.assertTrue(any("ProcessResult" in t for t in structs))
@@ -120,39 +120,39 @@ class TestQueryRust(unittest.TestCase):
     # ── methods ──────────────────────────────────────────────────────────────
 
     def test_methods_finds_function(self):
-        from query_rust import rust_q_methods
+        from src.query.rust import rust_q_methods
         r = rust_q_methods(*self._fx())
         self.assertTrue(has(r, "create_processor"))
 
     def test_methods_finds_impl_method(self):
-        from query_rust import rust_q_methods
+        from src.query.rust import rust_q_methods
         r = rust_q_methods(*self._fx())
         self.assertTrue(has(r, "process"))
 
     def test_methods_shows_impl_context(self):
-        from query_rust import rust_q_methods
+        from src.query.rust import rust_q_methods
         r = rust_q_methods(*self._fx())
         self.assertTrue(any("[in " in t for _, t in r))
 
     # ── calls ─────────────────────────────────────────────────────────────────
 
     def test_calls_finds_function_call(self):
-        from query_rust import rust_q_calls
+        from src.query.rust import rust_q_calls
         r = rust_q_calls(*self._fx(), "create_processor")
         self.assertGreater(len(r), 0)
 
     def test_calls_finds_method_call(self):
-        from query_rust import rust_q_calls
+        from src.query.rust import rust_q_calls
         r = rust_q_calls(*self._fx(), "process")
         self.assertGreater(len(r), 0)
 
     def test_calls_absent_no_match(self):
-        from query_rust import rust_q_calls
+        from src.query.rust import rust_q_calls
         r = rust_q_calls(*self._fx(), "nonexistent_func_xyz")
         self.assertEqual(len(r), 0)
 
     def test_calls_skips_comment(self):
-        from query_rust import rust_q_calls
+        from src.query.rust import rust_q_calls
         # "process" appears in a comment; should not double-count that line
         r = rust_q_calls(*self._fx(), "process")
         for ln, text in r:
@@ -161,73 +161,73 @@ class TestQueryRust(unittest.TestCase):
     # ── implements ──────────────────────────────────────────────────────────
 
     def test_implements_finds_processor_impl(self):
-        from query_rust import rust_q_implements
+        from src.query.rust import rust_q_implements
         r = rust_q_implements(*self._fx(), "Processor")
         self.assertGreater(len(r), 0)
         self.assertTrue(has(r, "TextProcessor"))
 
     def test_implements_finds_logger_impl(self):
-        from query_rust import rust_q_implements
+        from src.query.rust import rust_q_implements
         r = rust_q_implements(*self._fx(), "Logger")
         self.assertGreater(len(r), 0)
 
     def test_implements_nonexistent_no_match(self):
-        from query_rust import rust_q_implements
+        from src.query.rust import rust_q_implements
         r = rust_q_implements(*self._fx(), "INonExistent999")
         self.assertEqual(len(r), 0)
 
     # ── declarations ────────────────────────────────────────────────────────
 
     def test_declarations_finds_struct(self):
-        from query_rust import rust_q_declarations
+        from src.query.rust import rust_q_declarations
         r = rust_q_declarations(*self._fx(), "ProcessResult")
         self.assertGreater(len(r), 0)
         self.assertTrue(has(r, "ProcessResult"))
 
     def test_declarations_finds_function(self):
-        from query_rust import rust_q_declarations
+        from src.query.rust import rust_q_declarations
         r = rust_q_declarations(*self._fx(), "create_processor")
         self.assertGreater(len(r), 0)
 
     def test_declarations_nonexistent_no_match(self):
-        from query_rust import rust_q_declarations
+        from src.query.rust import rust_q_declarations
         r = rust_q_declarations(*self._fx(), "ZZZNonExistentXXX")
         self.assertEqual(len(r), 0)
 
     # ── all_refs ────────────────────────────────────────────────────────────
 
     def test_all_refs_finds_type(self):
-        from query_rust import rust_q_all_refs
+        from src.query.rust import rust_q_all_refs
         r = rust_q_all_refs(*self._fx(), "ProcessResult")
         self.assertGreater(len(r), 0)
 
     def test_all_refs_absent_no_match(self):
-        from query_rust import rust_q_all_refs
+        from src.query.rust import rust_q_all_refs
         r = rust_q_all_refs(*self._fx(), "ZZZNonExistentXXX")
         self.assertEqual(len(r), 0)
 
     # ── imports ─────────────────────────────────────────────────────────────
 
     def test_imports_found(self):
-        from query_rust import rust_q_imports
+        from src.query.rust import rust_q_imports
         r = rust_q_imports(*self._fx())
         self.assertGreater(len(r), 0)
         self.assertTrue(any("use" in t for _, t in r))
 
     def test_imports_contains_std(self):
-        from query_rust import rust_q_imports
+        from src.query.rust import rust_q_imports
         r = rust_q_imports(*self._fx())
         self.assertTrue(any("std" in t for _, t in r))
 
     # ── params ──────────────────────────────────────────────────────────────
 
     def test_params_found(self):
-        from query_rust import rust_q_params
+        from src.query.rust import rust_q_params
         r = rust_q_params(*self._fx(), "create_processor")
         self.assertGreater(len(r), 0)
 
     def test_params_absent_no_match(self):
-        from query_rust import rust_q_params
+        from src.query.rust import rust_q_params
         r = rust_q_params(*self._fx(), "nonexistent_xyz")
         self.assertEqual(len(r), 0)
 
@@ -248,7 +248,7 @@ class TestProcessRustFile(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, mode, mode_arg=None):
-        from query import process_rust_file
+        from src.query.dispatch import process_rust_file
         buf = io.StringIO()
         old = sys.stdout
         sys.stdout = buf

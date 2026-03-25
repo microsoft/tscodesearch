@@ -30,7 +30,7 @@ from tests.fixtures import (
 )
 from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, run_index
-from query import q_casts
+from src.query.dispatch import q_casts
 
 
 # ══════════════════════════════════════════════════════════════════════════════

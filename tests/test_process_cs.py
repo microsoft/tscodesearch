@@ -23,8 +23,8 @@ from tests.helpers import (
 )
 from indexserver.api import _run_query
 from indexserver.indexer import extract_cs_metadata
-from query import process_cs_file as _query_process_file
-import query as _q
+from src.query.dispatch import process_cs_file as _query_process_file
+import src.query.dispatch as _q
 
 
 class TestQueryCs(unittest.TestCase):
