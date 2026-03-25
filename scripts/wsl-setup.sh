@@ -31,8 +31,18 @@ if [ ! -x "${VENV_DIR}/bin/python3" ]; then
     python3 -m venv "${VENV_DIR}"
 fi
 
+# Bootstrap pip if it wasn't installed with the venv (common on Debian/Ubuntu
+# when python3-distutils or ensurepip is missing).
+if [ ! -x "${VENV_DIR}/bin/pip" ]; then
+    echo "[wsl-setup] pip missing from venv — bootstrapping with ensurepip..."
+    "${VENV_DIR}/bin/python3" -m ensurepip --upgrade 2>/dev/null || {
+        echo "[wsl-setup] ensurepip failed; trying get-pip.py..."
+        curl -fsSL https://bootstrap.pypa.io/get-pip.py | "${VENV_DIR}/bin/python3"
+    }
+fi
+
 echo "[wsl-setup] Installing/updating Python packages..."
-"${VENV_DIR}/bin/pip" install --quiet --upgrade \
+"${VENV_DIR}/bin/python3" -m pip install --quiet --upgrade \
     typesense \
     tree-sitter \
     tree-sitter-c-sharp \
