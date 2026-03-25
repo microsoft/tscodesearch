@@ -21,7 +21,7 @@ from tests.fixtures import (
     FIELD_TYPED_GENERIC_BLOBSTORE, LISTING_TARGET,
 )
 from indexserver.indexer import extract_cs_metadata
-from query import q_uses
+from src.query.dispatch import q_uses
 
 
 # ══════════════════════════════════════════════════════════════════════════════

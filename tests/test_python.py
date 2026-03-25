@@ -25,7 +25,7 @@ from tests.helpers import (
     _FOO_PY, _BAR_PY,
 )
 from indexserver.indexer import run_index, extract_py_metadata
-from query import process_py_file as _query_process_py_file
+from src.query.dispatch import process_py_file as _query_process_py_file
 
 
 # ── TestExtractPyMetadata ─────────────────────────────────────────────────────

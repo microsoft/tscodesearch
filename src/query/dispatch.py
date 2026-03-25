@@ -43,14 +43,11 @@ import json as _json
 import urllib.request
 import urllib.parse
 
-_root = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _root)
-
 # ── C# parser (required) ──────────────────────────────────────────────────────
 
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
-from ast_cs import (
+from ..ast.cs import (
     _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
     _find_all, _text, _unqualify, _unqualify_type,
     _base_type_names, _collect_ctor_names,
@@ -60,9 +57,9 @@ from ast_cs import (
 CS = Language(tscsharp.language())
 _parser = Parser(CS)
 
-# ── C# query functions (imported from query_cs) ───────────────────────────────
+# ── C# query functions (imported from cs.py) ─────────────────────────────────
 
-from query_cs import (
+from .cs import (
     q_classes, q_methods, q_fields, q_calls, q_accesses_of, q_implements,
     q_uses, q_attrs, q_usings, q_declarations, q_params, q_casts,
     q_accesses_on, q_all_refs,
@@ -84,7 +81,7 @@ except ImportError:
     tspython = None
     _py_parser = None
 
-from query_py import (
+from .py import (
     py_q_classes, py_q_methods, py_q_calls, py_q_implements, py_q_ident,
     py_q_declarations, py_q_decorators, py_q_imports, py_q_params,
     _py_in_literal, _py_enclosing_class, _py_base_names,
@@ -101,7 +98,7 @@ except ImportError:
     _RUST_AVAILABLE = False
     _rust_parser = None
 
-from query_rust import (
+from .rust import (
     rust_q_classes, rust_q_methods, rust_q_calls, rust_q_implements,
     rust_q_declarations, rust_q_all_refs, rust_q_imports, rust_q_params,
 )
@@ -131,7 +128,7 @@ except ImportError:
     _ts_parser = None
     _tsx_parser = None
 
-from query_js import (
+from .js import (
     js_q_classes, js_q_methods, js_q_calls, js_q_implements,
     js_q_declarations, js_q_all_refs, js_q_imports, js_q_params, js_q_attrs,
 )
@@ -147,7 +144,7 @@ except ImportError:
     _CPP_AVAILABLE = False
     _cpp_parser = None
 
-from query_cpp import (
+from .cpp import (
     cpp_q_classes, cpp_q_methods, cpp_q_calls, cpp_q_implements,
     cpp_q_declarations, cpp_q_all_refs, cpp_q_includes, cpp_q_params,
 )
@@ -156,7 +153,7 @@ from query_cpp import (
 # ── Typesense file resolver ───────────────────────────────────────────────────
 
 def _ts_search(collection: str, params: dict) -> dict:
-    from config import HOST, PORT, API_KEY
+    from .config import HOST, PORT, API_KEY
     qs = urllib.parse.urlencode({k: str(v) for k, v in params.items()})
     url = f"http://{HOST}:{PORT}/collections/{collection}/documents/search?{qs}"
     req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": API_KEY})
@@ -167,7 +164,7 @@ def _ts_search(collection: str, params: dict) -> dict:
 def files_from_search(query, sub=None, ext="cs", limit=50,
                       collection=None, src_root=None, query_by=None):
     """Run a Typesense search and return the local file paths of matching documents."""
-    from config import COLLECTION, SRC_ROOT, to_native_path
+    from .config import COLLECTION, SRC_ROOT, to_native_path
     coll_name = collection or COLLECTION
     root = src_root or SRC_ROOT
     src_root_native = to_native_path(root)
@@ -215,7 +212,7 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
 # These use module-level parsers for efficiency (api.py accesses _q._parser etc.)
 
 def _print_results(results, path, lines, show_path, count_only, context, src_root, mode):
-    from config import SRC_ROOT as _SRC_ROOT
+    from .config import SRC_ROOT as _SRC_ROOT
     _effective_root = (src_root or _SRC_ROOT).rstrip("/").replace("\\", "/")
     _path_norm = path.replace("\\", "/")
     if _effective_root and _path_norm.lower().startswith(_effective_root.lower() + "/"):

@@ -25,7 +25,7 @@ from tests.fixtures import (
 )
 from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, run_index
-from query import q_methods, q_classes, q_fields
+from src.query.dispatch import q_methods, q_classes, q_fields
 
 
 # ══════════════════════════════════════════════════════════════════════════════

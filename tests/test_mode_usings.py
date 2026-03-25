@@ -21,7 +21,7 @@ from tests.fixtures import (
     USING_SYSTEM_GENERIC, USING_WITH_ALIAS, NO_USINGS,
 )
 from indexserver.indexer import extract_cs_metadata
-from query import q_usings
+from src.query.dispatch import q_usings
 
 
 # ══════════════════════════════════════════════════════════════════════════════
