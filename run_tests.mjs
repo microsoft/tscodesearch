@@ -17,7 +17,7 @@
  *
  * Flags
  * ──────
- *   --vscode        Force VS Code tests on  (default: on for docker, off otherwise)
+ *   --vscode        Force VS Code tests on  (default: on for all modes)
  *   --no-vscode     Skip VS Code tests in all modes.
  *
  * Examples
@@ -377,7 +377,7 @@ async function runWsl() {
     s.ok(pytestSummary(r.output));
   }
 
-  if (runVscode === 'true') {
+  if (runVscode !== 'false') {
     const vscodeLog = join(logDir, 'vscode.log');
     const s = step('wsl/vscode');
     const status = await runVscodeTests({ apiPort: TEST_PORT + 1, apiKey: TEST_KEY, logFile: vscodeLog });
@@ -466,7 +466,7 @@ async function runLinux() {
     s.ok(pytestSummary(r.output));
   }
 
-  if (runVscode === 'true') {
+  if (runVscode !== 'false') {
     const vscodeLog = join(logDir, 'vscode.log');
     const s = step('linux/vscode');
     const status = await runVscodeTests({ apiPort: port + 1, apiKey: key, logFile: vscodeLog });

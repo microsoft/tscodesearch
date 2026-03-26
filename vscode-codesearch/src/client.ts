@@ -394,8 +394,10 @@ export function renderTextTree(result: PipelineResult, query: string, mode: stri
 // ---------------------------------------------------------------------------
 
 export function resolveFilePath(rootPath: string, relativePath: string): string {
+    const rel = relativePath.replace(/\\/g, '/');
+    // If already absolute (e.g. "q:/spocore/src/foo.cs"), return as-is
+    if (/^[a-zA-Z]:\//.test(rel) || rel.startsWith('/')) { return rel; }
     const root = rootPath.replace(/\\/g, '/').replace(/\/$/, '');
-    const rel = relativePath.replace(/\\/g, '/').replace(/^\//, '');
     // WSL path on Windows: /mnt/c/foo -> C:/foo
     const wslMatch = root.match(/^\/mnt\/([a-z])\/(.*)/i);
     const winRoot = wslMatch ? `${wslMatch[1].toUpperCase()}:/${wslMatch[2]}` : root;

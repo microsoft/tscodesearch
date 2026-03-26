@@ -152,6 +152,10 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 (function() {
   'use strict';
   const vscode = acquireVsCodeApi();
+  window.onerror = function(msg, src, line, col, err) {
+    vscode.postMessage({ type: 'jsError', message: (err ? err.toString() : String(msg)) + ' (' + src + ':' + line + ':' + col + ')' });
+    return false;
+  };
   const MODES = ${modesJson};
   const ROOTS = ${rootsJson};
   const DEFAULT_ROOT = ${defaultRootJson};
@@ -401,6 +405,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 
   // ── Delegated click/keyboard handlers for virtual rows ────────────────────
   resultsEl.addEventListener('click', function(e) {
+    try {
     var t = e.target;
     if (!t.closest) { return; }
 
@@ -434,6 +439,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     // Capped subsystem expand (inside _cappedEl, not virtual rows)
     var ch = t.closest('.sub-hdr.is-cap');
     if (ch) { handleSubExpand(ch.dataset.sub); }
+    } catch (err) { vscode.postMessage({ type: 'jsError', message: 'click handler: ' + (err instanceof Error ? err.message : String(err)) }); }
   });
 
   resultsEl.addEventListener('keydown', function(e) {
@@ -448,6 +454,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 
   // ── Capped results (subsystem-level lazy loading, rendered via innerHTML) ─
   var currentSearch  = { query: '', mode: '', ext: '', sub: '', root: '' };
+  var _cappedSearch  = { query: '', mode: '', ext: '', root: '' }; // params from the search that produced the capped view
   var currentFacets  = [];
   var subExpansions  = {}; // sub → { state: 'loading'|'loaded', hits, found, capped }
 
@@ -554,8 +561,8 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     if (!exp || exp.state === 'idle') {
       subExpansions[sub] = { state: 'loading' };
       refreshCappedNode(sub);
-      vscode.postMessage({ type: 'expandSub', sub: sub, query: currentSearch.query,
-        mode: currentSearch.mode, ext: currentSearch.ext, root: currentSearch.root });
+      vscode.postMessage({ type: 'expandSub', sub: sub, query: _cappedSearch.query,
+        mode: _cappedSearch.mode, ext: _cappedSearch.ext, root: _cappedSearch.root });
     } else {
       var node = document.getElementById('capped-sub-' + sub);
       if (node) { node.classList.toggle('collapsed'); }
@@ -611,6 +618,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 
     if (isCapped) {
       statusEl.textContent = found + ' files matched \u2014 too many to show all \u2014 ' + modeLabel + ' mode';
+      _cappedSearch = { query: data.query, mode: data.mode, ext: data.ext || '', root: data.root || currentSearch.root };
       currentFacets = [];
       if (data.facet_counts) {
         var sf = data.facet_counts.find(function(f) { return f.field_name === 'subsystem'; });
@@ -624,7 +632,6 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
       _setMode('capped');
       _cappedEl.innerHTML = renderCappedTree();
       _cappedEl.querySelectorAll('.sub-hdr.is-cap').forEach(function(hdr) {
-        hdr.addEventListener('click', function() { handleSubExpand(hdr.dataset.sub); });
         hdr.addEventListener('keydown', function(e) {
           if (e.key === 'Enter' || e.key === ' ') { handleSubExpand(hdr.dataset.sub); e.preventDefault(); }
         });
@@ -685,6 +692,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 
   // ── Message handler ───────────────────────────────────────────────────────
   window.addEventListener('message', function(ev) {
+    try {
     var msg = ev.data;
     if (msg.type === 'results') { showResults(msg); }
     else if (msg.type === 'fileExpanded') {
@@ -716,6 +724,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
       _setMode('empty');
       _msgEl.innerHTML = 'Search failed \u2014 is the Typesense server running?<br><small>Run: ts start</small>';
     } else if (msg.type === 'configError') { showConfigError(msg.message); }
+    } catch (err) { vscode.postMessage({ type: 'jsError', message: 'message handler: ' + (err instanceof Error ? err.message : String(err)) }); }
   });
 
   // Initial state
@@ -744,6 +753,10 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
         private readonly _docker: ServerManager,
         private readonly _out:   vscode.OutputChannel,
     ) {}
+
+    private _logError(context: string, e: unknown): void {
+        this._out.appendLine(`[${context}] ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     resolveWebviewView(
         webviewView: vscode.WebviewView,
@@ -784,22 +797,29 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
                         elapsed: pr.elapsed,
                         query: msg.query,
                         mode: msg.mode,
+                        ext: msg.ext || '',
+                        root: msg.root || this._defaultRoot,
                         facet_counts: pr.facet_counts ?? [],
                     });
                 } catch (e: unknown) {
-                    const msg = e instanceof Error ? e.message : String(e);
-                    this._out.appendLine(`[search] Error: ${msg}`);
-                    webviewView.webview.postMessage({ type: 'error', message: msg });
+                    this._logError('search', e);
+                    webviewView.webview.postMessage({ type: 'error', message: e instanceof Error ? e.message : String(e) });
                 }
 
             } else if (msg.type === 'expandSub') {
-                if (!this._config && !this._reloadConfig()) { return; }
+                this._out.appendLine(`[expandSub] received: sub=${JSON.stringify(msg.sub)} query=${JSON.stringify(msg.query)} mode=${msg.mode} ext=${JSON.stringify(msg.ext)} root=${JSON.stringify(msg.root)}`);
+                if (!this._config && !this._reloadConfig()) {
+                    this._out.appendLine('[expandSub] no config — aborting');
+                    return;
+                }
                 try {
+                    this._out.appendLine(`[expandSub] calling runSearchPipeline, port=${this._config!.port}`);
                     const pr = await runSearchPipeline(
                         this._config!, msg.query as string, msg.mode as string,
                         msg.ext || '', msg.sub as string,
                         msg.root || this._defaultRoot, 50,
                     );
+                    this._out.appendLine(`[expandSub] result: found=${pr.found} hits=${pr.hits.length} overflow=${pr.overflow}`);
                     webviewView.webview.postMessage({
                         type: 'subResults',
                         sub: msg.sub,
@@ -808,6 +828,7 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
                         elapsed: pr.elapsed,
                     });
                 } catch (e: unknown) {
+                    this._logError('expandSub', e);
                     webviewView.webview.postMessage({
                         type: 'subResults',
                         sub: msg.sub,
@@ -826,7 +847,7 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
                     matches = await doQuerySingleFile(
                         this._config!, msg.mode as string, msg.query as string, fullPath,
                     );
-                } catch { /* return empty matches on failure — file stays as file-only hit */ }
+                } catch (e: unknown) { this._logError('expandFile', e); }
                 webviewView.webview.postMessage({
                     type: 'fileExpanded',
                     relativePath: msg.relativePath,
@@ -861,6 +882,8 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
                 } catch (e: unknown) {
                     vscode.window.showErrorMessage(`TsCodeSearch: cannot open file — ${e instanceof Error ? e.message : e}`);
                 }
+            } else if (msg.type === 'jsError') {
+                this._logError('webview', msg.message ?? '(unknown error)');
             }
         });
     }
@@ -889,9 +912,8 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
             this._out.appendLine(`[config] Loaded ${found} — roots: ${this._roots.join(', ')} | port: ${this._config.port}`);
             return true;
         } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : String(e);
-            this._out.appendLine(`[config] Error: ${msg}`);
-            this._view?.webview.postMessage({ type: 'configError', message: `Failed to load config.json — ${msg}` });
+            this._logError('config', e);
+            this._view?.webview.postMessage({ type: 'configError', message: `Failed to load config.json — ${e instanceof Error ? e.message : String(e)}` });
             return false;
         }
     }

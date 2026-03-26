@@ -254,8 +254,10 @@ describe('resolveFilePath', () => {
         assert.equal(resolveFilePath('C:/myproject/src/', 'Foo/Bar.cs'), 'C:/myproject/src/Foo/Bar.cs');
     });
 
-    it('strips leading slash from relative path', () => {
-        assert.equal(resolveFilePath('C:/myproject/src', '/Foo/Bar.cs'), 'C:/myproject/src/Foo/Bar.cs');
+    it('returns absolute WSL path (/...) as-is without prepending root', () => {
+        // A leading-slash path is treated as absolute (e.g. /mnt/c/... from WSL).
+        // It is returned unchanged — the caller is responsible for further conversion.
+        assert.equal(resolveFilePath('C:/myproject/src', '/mnt/c/myproject/src/Foo/Bar.cs'), '/mnt/c/myproject/src/Foo/Bar.cs');
     });
 
     it('converts WSL /mnt/c/... root to C:/...', () => {
@@ -451,6 +453,102 @@ describe('runSearchPipeline', () => {
             () => runSearchPipeline(makeCfg(), 'x', 'uses', '', '', '', 10),
             /internal error/
         );
+    });
+
+    // ------------------------------------------------------------------
+    // Large-result / capped-view expansion scenario:
+    //   1. Initial search returns overflow (too many files, hits=[])
+    //   2. User clicks a subsystem → expandSub triggers a sub-filtered search
+    //   3. Sub-filtered search returns actual hits that can be clicked
+    // ------------------------------------------------------------------
+    it('overflow search returns overflow=true, found>0, and empty hits array', async () => {
+        mockHandler = () => ({
+            status: 200,
+            body: {
+                found: 350, overflow: true, hits: [],
+                facet_counts: [{ field_name: 'subsystem', counts: [
+                    { value: 'storage', count: 200 },
+                    { value: 'api',     count: 150 },
+                ] }],
+            },
+        });
+        const result = await runSearchPipeline(makeCfg(), 'Widget', 'text', '', '', 'default', 20);
+        assert.equal(result.overflow, true);
+        assert.equal(result.found, 350);
+        assert.equal(result.hits.length, 0, 'overflow result must have no hits');
+        assert.ok(result.facet_counts, 'facet_counts must be present for capped-view subsystem list');
+        const sf = result.facet_counts!.find((f) => f.field_name === 'subsystem');
+        assert.ok(sf, 'subsystem facet must be present');
+        assert.equal(sf!.counts.length, 2);
+        assert.equal(sf!.counts[0].value, 'storage');
+    });
+
+    it('expandSub: sub-filtered search returns hits with matches and correct ast_expanded', async () => {
+        // Simulate the expandSub call: same query, sub='storage' filter, limit=50
+        let capturedBody: Record<string, unknown> = {};
+        mockHandler = (b) => {
+            capturedBody = b as Record<string, unknown>;
+            return {
+                status: 200,
+                body: {
+                    found: 3, overflow: false,
+                    hits: [
+                        {
+                            document: { id: '1', relative_path: 'storage/WidgetStore.cs', subsystem: 'storage', filename: 'WidgetStore.cs' },
+                            matches: [{ line: 12, text: '  private readonly IWidgetStore _store;' }],
+                            ast_expanded: true,
+                        },
+                        {
+                            document: { id: '2', relative_path: 'storage/WidgetCache.cs', subsystem: 'storage', filename: 'WidgetCache.cs' },
+                            matches: [{ line: 5, text: '  public class WidgetCache' }],
+                            ast_expanded: false,  // server did not expand this file
+                        },
+                        {
+                            document: { id: '3', relative_path: 'storage/WidgetIndex.cs', subsystem: 'storage', filename: 'WidgetIndex.cs' },
+                            matches: [],
+                            // ast_expanded omitted — old-format response, should default to true
+                        },
+                    ],
+                    facet_counts: [],
+                },
+            };
+        };
+        const result = await runSearchPipeline(makeCfg(), 'Widget', 'text', '', 'storage', 'default', 50);
+
+        // Verify the sub filter was forwarded to the server
+        assert.equal(capturedBody['sub'], 'storage');
+        assert.equal(capturedBody['limit'], 50);
+
+        assert.equal(result.found, 3);
+        assert.equal(result.hits.length, 3);
+
+        // Hit 0: ast_expanded=true, line converted 12→11
+        assert.equal(result.hits[0].document.relative_path, 'storage/WidgetStore.cs');
+        assert.equal(result.hits[0].ast_expanded, true);
+        assert.equal(result.hits[0]._matches.length, 1);
+        assert.equal(result.hits[0]._matches[0].line, 11);  // 12 - 1
+
+        // Hit 1: ast_expanded=false (server skipped AST) — clicking this file should still work
+        assert.equal(result.hits[1].document.relative_path, 'storage/WidgetCache.cs');
+        assert.equal(result.hits[1].ast_expanded, false,
+            'ast_expanded=false must be preserved so the webview knows to re-expand on click');
+        assert.equal(result.hits[1]._matches[0].line, 4);   // 5 - 1
+
+        // Hit 2: ast_expanded omitted in response — must default to true (backwards compat)
+        assert.equal(result.hits[2].ast_expanded, true,
+            'missing ast_expanded in server response must default to true');
+    });
+
+    it('expandSub still-overflowing subsystem: returns overflow=true with empty hits', async () => {
+        // Subsystem itself has too many matches — should surface overflow, not silently show nothing
+        mockHandler = () => ({
+            status: 200,
+            body: { found: 80, overflow: true, hits: [], facet_counts: [] },
+        });
+        const result = await runSearchPipeline(makeCfg(), 'Widget', 'text', '', 'storage', 'default', 50);
+        assert.equal(result.overflow, true);
+        assert.equal(result.found, 80);
+        assert.equal(result.hits.length, 0);
     });
 });
 
