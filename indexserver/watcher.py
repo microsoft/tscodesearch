@@ -25,7 +25,7 @@ from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 
 from indexserver.config import (
-    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, ROOTS, collection_for_root,
+    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, ROOTS, collection_for_root, extensions_for_root,
 )
 
 DEBOUNCE_SECONDS  = 2.0
@@ -47,11 +47,12 @@ def _to_wsl_path(path: str) -> str:
 
 
 class CsChangeHandler(FileSystemEventHandler):
-    def __init__(self, queue, src_root: str, collection: str):
+    def __init__(self, queue, src_root: str, collection: str, extensions=None):
         super().__init__()
         self._queue      = queue
         self.src_root    = src_root
         self._collection = collection
+        self._extensions = extensions if extensions is not None else INCLUDE_EXTENSIONS
         self._pending    = {}
         self._lock       = threading.Lock()
         self._timer      = None
@@ -64,7 +65,7 @@ class CsChangeHandler(FileSystemEventHandler):
         self._timer.start()
 
     def _is_indexed(self, path):
-        return os.path.splitext(path)[1].lower() in INCLUDE_EXTENSIONS
+        return os.path.splitext(path)[1].lower() in self._extensions
 
     def _is_excluded(self, path):
         parts = path.replace("\\", "/").split("/")
@@ -131,16 +132,16 @@ def run_watcher(src_root=None, collection=None, stop_event=None, queue=None):
 
     if src_root is not None and collection is not None:
         wsl_path = _to_wsl_path(src_root)
-        roots_map = {wsl_path: collection}
+        roots_map = {wsl_path: (collection, None)}
     else:
         roots_map = {
-            _to_wsl_path(r): collection_for_root(name)
+            _to_wsl_path(r): (collection_for_root(name), extensions_for_root(name))
             for name, r in ROOTS.items()
         }
 
     observers = []
-    for src_native, coll_name in roots_map.items():
-        handler = CsChangeHandler(queue, src_native, collection=coll_name)
+    for src_native, (coll_name, exts) in roots_map.items():
+        handler = CsChangeHandler(queue, src_native, collection=coll_name, extensions=exts)
         obs = PollingObserver(timeout=POLL_INTERVAL_SEC)
         obs.schedule(handler, src_native, recursive=True)
         obs.start()

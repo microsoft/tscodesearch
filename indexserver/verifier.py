@@ -102,7 +102,8 @@ def _fmt_time(seconds: float) -> str:
 # ── ready check ───────────────────────────────────────────────────────────────
 
 def check_ready(src_root: str | None = None,
-                collection: str | None = None) -> dict:
+                collection: str | None = None,
+                extensions=None) -> dict:
     """Poll the filesystem and confirm the index is fully up to date.
 
     Performs a complete synchronous diff without modifying the index:
@@ -155,7 +156,7 @@ def check_ready(src_root: str | None = None,
     stale     = 0
 
     try:
-        for full_path, rel in walk_source_files(src):
+        for full_path, rel in walk_source_files(src, extensions=extensions):
             fs_files += 1
             try:
                 mtime = int(os.stat(full_path).st_mtime)
@@ -196,7 +197,8 @@ def run_verify(src_root: str | None = None,
                delete_orphans: bool = True,
                resethard: bool = False,
                stop_event=None,
-               on_complete=None) -> None:
+               on_complete=None,
+               extensions=None) -> None:
     """Scan the file system, diff against the index, and repair any gaps.
 
     Args:
@@ -278,7 +280,7 @@ def run_verify(src_root: str | None = None,
     n_fs = 0
     last_scan_print = time.time()
 
-    for full_path, rel in walk_source_files(src_root):
+    for full_path, rel in walk_source_files(src_root, extensions=extensions):
         if stop_event and stop_event.is_set():
             break
         try:

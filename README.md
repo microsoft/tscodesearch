@@ -114,13 +114,13 @@ The watcher picks up changes automatically within ~12 seconds (10 s poll interva
 ### From Claude (MCP tools)
 
 ```
-ready()                              # poll FS + check index is in sync (synchronous, ~30 s for 200k files)
-verify_index(action="start")         # launch background repair scan
-verify_index(action="status")        # monitor repair progress
+ready()                              # check index readiness (calls /check-ready on indexserver)
+verify_index(action="start")         # launch background sync/repair scan
+verify_index(action="status")        # monitor sync progress (reads from GET /status)
 verify_index(action="stop")          # cancel a running scan
 ```
 
-`ready()` returns a summary with `poll_ok` (FS walk completed), `index_ok` (zero missing/stale/orphaned), and timing. If not ready, `verify_index(action="start")` repairs the index without resetting it.
+`ready()` returns a summary with `poll_ok` (FS walk completed), `index_ok` (zero missing/stale/orphaned), and timing. If not ready, `verify_index(action="start")` triggers the syncer to repair the index without resetting it.
 
 ### From the command line
 
@@ -164,7 +164,7 @@ node run_tests.mjs --wsl tests/test_query_cs.py
 | `test_watcher.py` | File watcher event handler (unit + integration) |
 | `test_process_cs.py` | `process_cs_file()` C# structural query API |
 | `test_python.py` | Python metadata extraction (`extract_py_metadata`), `process_py_file()`, Python semantic fields |
-| `test_verifier.py` | `_export_index()` (mock HTTP), `run_verify()` diff logic, full verify integration |
+| `test_verifier.py` | `_export_index()` (mock HTTP), `run_verify()` diff logic, full sync integration |
 
 ## Direct CLI usage
 
@@ -234,7 +234,7 @@ Typical flow: Typesense narrows the haystack to ~50 candidate files → tree-sit
 │  indexserver/api.py  (management API + thread manager)       │
 │    • watcher thread    (PollingObserver)                      │
 │    • heartbeat thread  (Typesense health check)              │
-│    • verifier thread   (on-demand, via POST /verify)         │
+│    • syncer thread     (on-demand, via POST /index/start)    │
 │  /app/tests (volume mount)                                   │
 └──────────────────────────────────────────────────────────────┘
                              │  internal
@@ -255,7 +255,7 @@ Typical flow: Typesense narrows the haystack to ~50 candidate files → tree-sit
 │  INDEXSERVER  (WSL process: api.py)                          │
 │    • watcher thread    (PollingObserver, /mnt/)              │
 │    • heartbeat thread  (Typesense health check)              │
-│    • verifier thread   (on-demand, via POST /verify)         │
+│    • syncer thread     (on-demand, via POST /index/start)    │
 │  Venv: ~/.local/indexserver-venv/                            │
 └──────────────────────────────────────────────────────────────┘
                              │  data at ~/.local/typesense/
@@ -297,9 +297,9 @@ Typical flow: Typesense narrows the haystack to ~50 candidate files → tree-sit
 | File | Purpose |
 |------|---------|
 | `config.py` | Same constants as client config.py; also has INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES |
-| `api.py` | Single indexserver process: management HTTP API + watcher/heartbeat/verifier threads |
-| `indexer.py` | Full re-index via `os.walk` + `.gitignore` parsing + tree-sitter C#/Python metadata extraction. Shared `index_file_list()` pipeline used by both full indexer and verifier. |
-| `verifier.py` | Index repair: compares FS mtimes against the index, re-indexes missing/stale files, removes orphaned entries. `check_ready()` for synchronous readiness checks. |
+| `api.py` | Single indexserver process: management HTTP API + watcher/heartbeat/syncer threads. Syncer runs `run_verify()` on demand (startup + explicit requests) and reports progress in `GET /status`. |
+| `indexer.py` | Full re-index via `os.walk` + `.gitignore` parsing + tree-sitter C#/Python metadata extraction. Shared `index_file_list()` pipeline used by the syncer. Supports per-root extension filtering. |
+| `verifier.py` | Sync/repair logic. `run_verify()` does a two-phase FS diff and enqueues changes to `IndexQueue`. `check_ready()` for synchronous readiness checks. Used by both startup sync and explicit `ts verify` / `verify_index`. |
 | `watcher.py` | Incremental updates: `PollingObserver` (10 s interval) monitors source root and upserts changes. Uses polling because inotify doesn't fire for Windows-backed `/mnt/` paths in WSL. |
 | `start_server.py` | Downloads Typesense Linux binary; starts server process in WSL |
 | `service.py` | CLI dispatcher for all `ts` subcommands |

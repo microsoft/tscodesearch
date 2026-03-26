@@ -81,7 +81,7 @@ def to_native_path(path: str) -> str:
 # ROOTS      — path used to find files (local_path if set, otherwise external_path)
 # HOST_ROOTS — original Windows path stored as relative_path prefix in indexed docs
 
-def _parse_roots(raw: dict) -> tuple[dict, dict]:
+def _parse_roots(raw: dict) -> tuple[dict, dict, dict]:
     """Parse roots config.  Each entry should have both:
       local_path   — path as seen by the current process (WSL: /mnt/c/…, Docker: /source/…)
       external_path — original Windows path (C:/…), stored as relative_path prefix in indexed docs
@@ -90,11 +90,17 @@ def _parse_roots(raw: dict) -> tuple[dict, dict]:
       - In WSL: C:/foo/bar  →  /mnt/c/foo/bar
       - In Docker/native Linux: cannot auto-derive; falls back to external_path
 
+    Optional per-root field:
+      extensions — list of file extensions to index for this root (e.g. [".cs", ".py"]).
+                   When absent or empty, the global INCLUDE_EXTENSIONS set is used.
+
     ROOTS uses local_path (the server-side filesystem path for file access).
     HOST_ROOTS stores external_path (the Windows-side path used as relative_path prefix).
+    ROOT_EXTENSIONS stores per-root extension sets (None means use global INCLUDE_EXTENSIONS).
     """
     local_paths: dict[str, str] = {}
     external_paths: dict[str, str] = {}
+    root_extensions: dict[str, frozenset | None] = {}
     for name, val in raw.items():
         lp = val.get("local_path", "").replace("\\", "/").rstrip("/")
         wp = val.get("external_path", "").replace("\\", "/").rstrip("/")
@@ -109,9 +115,16 @@ def _parse_roots(raw: dict) -> tuple[dict, dict]:
         local_paths[name] = lp
         if wp:
             external_paths[name] = wp
-    return local_paths, external_paths
+        exts = val.get("extensions")
+        if exts:
+            root_extensions[name] = frozenset(
+                e.lower() if e.startswith(".") else f".{e.lower()}" for e in exts
+            )
+        else:
+            root_extensions[name] = None  # use global INCLUDE_EXTENSIONS
+    return local_paths, external_paths, root_extensions
 
-ROOTS, HOST_ROOTS = _parse_roots(_CONFIG.get("roots", {}))
+ROOTS, HOST_ROOTS, ROOT_EXTENSIONS = _parse_roots(_CONFIG.get("roots", {}))
 
 SRC_ROOT: str = ROOTS.get("default") or next(iter(ROOTS.values()), "")
 
@@ -124,6 +137,12 @@ def _sanitize_root_name(name: str) -> str:
 def collection_for_root(name: str = "default") -> str:
     """Return the Typesense collection name for a given root name."""
     return f"codesearch_{_sanitize_root_name(name)}"
+
+
+def extensions_for_root(name: str) -> frozenset:
+    """Return the extension set for a root, falling back to the global INCLUDE_EXTENSIONS."""
+    exts = ROOT_EXTENSIONS.get(name)
+    return exts if exts is not None else INCLUDE_EXTENSIONS
 
 
 def get_root(name: str = "") -> tuple[str, str]:

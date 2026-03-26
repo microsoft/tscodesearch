@@ -213,10 +213,10 @@ async function queueWarning(): Promise<string> {
     const { status, data } = await apiGet("/status", 2_000);
     if (status !== 200) return "";
     const depth          = data?.queue?.depth ?? 0;
-    const indexerRunning = data?.indexer?.running ?? false;
+    const syncerRunning  = data?.syncer?.running ?? false;
     const parts: string[] = [];
     if (depth > 0) parts.push(`${depth} files queued`);
-    if (indexerRunning) parts.push("indexer walk in progress");
+    if (syncerRunning) parts.push("syncer walk in progress");
     if (parts.length) return `[WARNING: index has outstanding work — ${parts.join(", ")}. Results may be incomplete.]\n\n`;
   } catch { /* indexserver not running */ }
   return "";
@@ -481,7 +481,7 @@ Args:
 
     const watcher  = st.watcher  ?? {};
     const queue    = st.queue    ?? {};
-    const verifier = st.verifier ?? {};
+    const verifier = st.syncer ?? {};
     const wState   = watcher.running ? "running" : (watcher.paused ? "paused" : "stopped");
     lines.push(`Watcher    : ${wState}`);
     lines.push(`Queue      : ${queue.depth ?? 0} pending  (${queue.total_queued ?? 0} total processed)`);
@@ -544,29 +544,33 @@ Args:
     }
 
     if (act === "status") {
-      const { status, data } = await apiGet("/verify/status");
-      if (status === 404) return { content: [{ type: "text" as const, text: "No verification scan has been run. Use action='start' to begin." }] };
+      const { status, data } = await apiGet("/status");
       if (status !== 200) return { content: [{ type: "text" as const, text: `Status failed (${status}): ${data?.error ?? JSON.stringify(data)}` }] };
-      const running = data.running ?? false;
+      const syncer = data.syncer ?? {};
+      const prog   = syncer.progress ?? {};
+      if (!Object.keys(prog).length) {
+        return { content: [{ type: "text" as const, text: "No sync has been run yet. Use action='start' to begin." }] };
+      }
+      const running = syncer.running ?? false;
       const lines: string[] = [];
       if (running) {
-        const tot = data.total_to_update ?? 0;
-        const done = data.updated ?? 0;
+        const tot  = prog.total_to_update ?? 0;
+        const done = prog.updated ?? 0;
         lines.push(`Running  : yes  (${tot ? `${Math.floor(done * 100 / tot)}%` : "—"} complete)`);
       }
       lines.push(
-        `Status   : ${data.status   ?? "?"}`,
-        `Phase    : ${data.phase    ?? "?"}`,
-        `Started  : ${data.started_at ?? "?"}`,
-        `Updated  : ${data.last_update ?? "?"}`,
-        `FS files : ${data.fs_files  ?? "?"}`,
-        `Index    : ${data.index_docs ?? "?"} docs`,
-        `Missing  : ${data.missing  ?? 0}`,
-        `Stale    : ${data.stale    ?? 0}`,
-        `Orphaned : ${data.orphaned ?? 0}`,
-        `Re-indexed: ${data.updated ?? 0}`,
-        `Deleted  : ${data.deleted  ?? 0} orphans removed`,
-        `Errors   : ${data.errors   ?? 0}`,
+        `Status   : ${prog.status      ?? "?"}`,
+        `Phase    : ${prog.phase       ?? "?"}`,
+        `Started  : ${prog.started_at  ?? "?"}`,
+        `Updated  : ${prog.last_update ?? "?"}`,
+        `FS files : ${prog.fs_files    ?? "?"}`,
+        `Index    : ${prog.index_docs  ?? "?"} docs`,
+        `Missing  : ${prog.missing     ?? 0}`,
+        `Stale    : ${prog.stale       ?? 0}`,
+        `Orphaned : ${prog.orphaned    ?? 0}`,
+        `Re-indexed: ${prog.updated    ?? 0}`,
+        `Deleted  : ${prog.deleted     ?? 0} orphans removed`,
+        `Errors   : ${prog.errors      ?? 0}`,
       );
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     }
@@ -629,7 +633,7 @@ Args:
         }
         const w = data.watcher ?? {};
         lines.push(`Watcher: ${w.state ?? "unknown"}  queue depth: ${data.queue?.depth ?? 0}`);
-        if (data.indexer?.running) lines.push(`Indexer: running  ${JSON.stringify(data.indexer.progress ?? {})}`);
+        if (data.syncer?.running) lines.push(`Syncer: running  phase=${data.syncer.progress?.phase ?? "?"}`);
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (e: any) {
         return { content: [{ type: "text" as const, text: `Indexserver not reachable: ${e.message}\nTry: manage_service(action='start')` }] };
@@ -684,7 +688,7 @@ Args:
     }
 
     const rootNames      = root ? [root] : Object.keys(ROOTS);
-    const indexerRunning = st.indexer?.running ?? false;
+    const indexerRunning = st.syncer?.running ?? false;
     const tsLine2 = st.typesense_loading ? "starting up — retry in a few seconds"
                   : st.typesense_ok !== false ? "ok"
                   : "NOT OK";

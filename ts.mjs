@@ -615,15 +615,26 @@ function cmdRoot(args) {
     if (args.addName) {
         if (!args.addPath) die('--add requires NAME and PATH');
         const p = args.addPath.replace(/\\/g, '/').replace(/\/+$/, '');
-        const entry = { external_path: p };
+        // Preserve any existing fields (e.g. extensions) not specified in this call.
+        const existing = (roots[args.addName] && typeof roots[args.addName] === 'object')
+            ? roots[args.addName] : {};
+        const entry = { ...existing, external_path: p };
         // In WSL mode, also store the server-local path so the indexserver can
         // find files without having to auto-derive it at runtime.
         if (MODE === 'wsl') entry.local_path = winToWsl(p);
+        if (args.extensions !== null) {
+            if (args.extensions.length === 0) {
+                delete entry.extensions;  // clear per-root filter, use global default
+            } else {
+                entry.extensions = args.extensions;
+            }
+        }
         roots[args.addName] = entry;
         current.roots = roots;
         saveConfig(current);
         log(`Root '${args.addName}' = ${p}`);
         if (MODE === 'wsl') log(`  local_path = ${entry.local_path}`);
+        if (entry.extensions) log(`  extensions = ${entry.extensions.join(',')}`);
         log('Restart the server for the change to take effect: ts restart');
         return;
     }
@@ -647,7 +658,9 @@ function cmdRoot(args) {
     console.log('Configured roots:');
     for (const [name, entry] of Object.entries(roots)) {
         const p = (entry && typeof entry === 'object') ? (entry.external_path ?? JSON.stringify(entry)) : entry;
-        console.log(`  ${name.padEnd(16)} ${p}`);
+        const exts = (entry && entry.extensions && entry.extensions.length)
+            ? `  [extensions: ${entry.extensions.join(',')}]` : '';
+        console.log(`  ${name.padEnd(16)} ${p}${exts}`);
     }
 }
 
@@ -675,6 +688,8 @@ Commands:
     --error              WSL: show server error log
   root                   List configured roots
   root --add NAME PATH   Add (or update) a root in config.json
+    --extensions EXTS  Comma-separated extensions to index (e.g. .cs,.py,.ts)
+                       Pass empty string to clear per-root filter: --extensions ""
   root --remove NAME     Remove a root from config.json
   build                  Docker only: build the Docker image
   setup                  Build image if needed, then start
@@ -688,6 +703,7 @@ function parseArgs(argv) {
         cmd, root: null, resethard: false, noDeleteOrphans: false,
         indexer: false, error: false, lines: 40, follow: false,
         addName: null, addPath: null, removeName: null,
+        extensions: null,  // null = not specified; [] = clear; [...] = set
     };
     for (let i = 0; i < rest.length; i++) {
         switch (rest[i]) {
@@ -703,6 +719,16 @@ function parseArgs(argv) {
                 args.addPath = rest[++i];
                 break;
             case '--remove':              args.removeName = rest[++i]; break;
+            case '--extensions': {
+                const raw = rest[++i] ?? '';
+                args.extensions = raw
+                    ? raw.split(',').map(e => {
+                        e = e.trim();
+                        return e.startsWith('.') ? e.toLowerCase() : `.${e.toLowerCase()}`;
+                    }).filter(Boolean)
+                    : [];  // empty string = clear per-root filter
+                break;
+            }
             default:
                 if (rest[i].startsWith('-')) {
                     console.error(`Unknown option: ${rest[i]}`);

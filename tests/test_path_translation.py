@@ -111,14 +111,14 @@ class TestParseRoots(unittest.TestCase):
             return _cfg._parse_roots(raw)
 
     def test_both_paths_explicit_uses_local_path(self):
-        local, windows = self._parse({
+        local, windows, _ = self._parse({
             "default": {"local_path": "/source/default", "external_path": "C:/repos/src"}
         })
         self.assertEqual(local["default"], "/source/default")
         self.assertEqual(windows["default"], "C:/repos/src")
 
     def test_only_external_path_wsl_derives_local(self):
-        local, windows = self._parse(
+        local, windows, _ = self._parse(
             {"default": {"external_path": "C:/repos/src"}},
             platform="linux", wsl=True,
         )
@@ -127,7 +127,7 @@ class TestParseRoots(unittest.TestCase):
 
     def test_only_external_path_docker_falls_back_to_windows(self):
         # Docker mode: cannot auto-derive — must be explicit in config.json
-        local, windows = self._parse(
+        local, windows, _ = self._parse(
             {"default": {"external_path": "C:/repos/src"}},
             platform="linux", wsl=False,
         )
@@ -135,21 +135,21 @@ class TestParseRoots(unittest.TestCase):
         self.assertEqual(windows["default"], "C:/repos/src")
 
     def test_only_local_path_no_host_root(self):
-        local, windows = self._parse({
+        local, windows, _ = self._parse({
             "default": {"local_path": "/source/default"}
         })
         self.assertEqual(local["default"], "/source/default")
         self.assertNotIn("default", windows)
 
     def test_trailing_slashes_stripped(self):
-        local, windows = self._parse({
+        local, windows, _ = self._parse({
             "default": {"local_path": "/source/default/", "external_path": "C:/repos/src/"}
         })
         self.assertEqual(local["default"], "/source/default")
         self.assertEqual(windows["default"], "C:/repos/src")
 
     def test_multiple_roots(self):
-        local, windows = self._parse({
+        local, windows, _ = self._parse({
             "app":  {"local_path": "/source/app",  "external_path": "C:/app/src"},
             "libs": {"local_path": "/source/libs", "external_path": "D:/libs/src"},
         })
@@ -159,18 +159,36 @@ class TestParseRoots(unittest.TestCase):
 
     def test_local_path_not_overridden_when_both_set(self):
         # explicit local_path must always win over auto-derived
-        local, _ = self._parse(
+        local, _, _2 = self._parse(
             {"default": {"local_path": "/custom/local", "external_path": "C:/repos/src"}},
             platform="linux", wsl=True,
         )
         self.assertEqual(local["default"], "/custom/local")
 
     def test_wsl_drive_letter_lowercase_in_mnt(self):
-        local, _ = self._parse(
+        local, _, _2 = self._parse(
             {"default": {"external_path": "Q:/myproject/src"}},
             platform="linux", wsl=True,
         )
         self.assertEqual(local["default"], "/mnt/q/myproject/src")
+
+    def test_extensions_parsed_and_normalized(self):
+        _, _, exts = self._parse({
+            "default": {"local_path": "/source/default", "extensions": [".CS", "py", ".Ts"]}
+        })
+        self.assertEqual(exts["default"], frozenset({".cs", ".py", ".ts"}))
+
+    def test_extensions_absent_is_none(self):
+        _, _, exts = self._parse({
+            "default": {"local_path": "/source/default"}
+        })
+        self.assertIsNone(exts["default"])
+
+    def test_extensions_empty_list_is_none(self):
+        _, _, exts = self._parse({
+            "default": {"local_path": "/source/default", "extensions": []}
+        })
+        self.assertIsNone(exts["default"])
 
 
 # ── _run_query path resolution ────────────────────────────────────────────────

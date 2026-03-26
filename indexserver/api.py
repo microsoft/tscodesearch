@@ -5,18 +5,18 @@ Combines in one process:
   - HTTP management API   port PORT+1, authenticated with the same API key
   - File watcher          thread: PollingObserver on all configured roots
   - Heartbeat watchdog    thread: checks Typesense health every 30 s
-  - Syncer               on-demand thread: run_verify() via POST /index/start or /verify/start
+  - Syncer               on-demand thread: run_verify() via POST /index/start (or /verify/start alias)
 
 Started by: ts start
 Stopped by: ts stop (SIGTERM → graceful shutdown of all threads)
 
 Endpoints (all require X-TYPESENSE-API-KEY header):
   GET  /health              → {"ok": true}
-  GET  /status              → watcher stats, verifier state
+  GET  /status              → watcher stats, syncer state (includes progress)
   POST /check-ready         → body {"root": "default"} → check_ready() result
-  POST /verify/start        → body {"root": "default", "delete_orphans": true}
-  GET  /verify/status       → verifier_progress.json + {"running": bool}
-  POST /verify/stop         → cancel running verify
+  POST /verify/start        → alias for POST /index/start (no resethard)
+  POST /verify/stop         → cancel running syncer
+  POST /index/start         → body {"root": "default", "resethard": false}
   POST /watcher/pause       → stop PollingObserver thread; heartbeat won't auto-revive it
   POST /watcher/resume      → restart PollingObserver thread (clears pause flag)
   POST /file-events         → body {"events": [{"path": "Q:/src/foo.cs", "action": "upsert"|"delete"}]}
@@ -55,7 +55,7 @@ import typesense
 from indexserver.config import (
     API_KEY, API_PORT, PORT, HOST, ROOTS, HOST_ROOTS, get_root,
     INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES,
-    to_native_path, collection_for_root, TYPESENSE_CLIENT_CONFIG,
+    to_native_path, collection_for_root, extensions_for_root, TYPESENSE_CLIENT_CONFIG,
 )
 from indexserver.index_queue import IndexQueue
 from indexserver.indexer import walk_source_files, ensure_collection, get_client, verify_all_schemas, verify_schema
@@ -125,7 +125,7 @@ def _enqueue_file_events(events: list) -> dict:
     Filtering (extension, excluded dirs) is applied before enqueuing.
     """
     root_map = [
-        (to_native_path(win_root).rstrip("/"), collection_for_root(name))
+        (to_native_path(win_root).rstrip("/"), collection_for_root(name), extensions_for_root(name))
         for name, win_root in ROOTS.items()
     ]
 
@@ -135,17 +135,17 @@ def _enqueue_file_events(events: list) -> dict:
         action   = ev.get("action", "upsert")
         ext      = os.path.splitext(raw_path)[1].lower()
 
-        if ext not in INCLUDE_EXTENSIONS:
-            continue
-
         native_path = to_native_path(raw_path)
 
-        coll = native_root = None
-        for nr, c in root_map:
+        coll = native_root = root_exts = None
+        for nr, c, exts in root_map:
             if native_path.startswith(nr + "/"):
-                native_root, coll = nr, c
+                native_root, coll, root_exts = nr, c, exts
                 break
         if coll is None:
+            continue
+
+        if ext not in root_exts:
             continue
 
         rel   = native_path[len(native_root) + 1:]
@@ -181,6 +181,7 @@ def _drain_sync_queue() -> None:
         collection = job["collection"]
         resethard  = job["resethard"]
         host_root  = job["host_root"]
+        extensions = job.get("extensions")
 
         if host_root:
             _index_queue.register_host_root(collection, host_root)
@@ -197,6 +198,8 @@ def _drain_sync_queue() -> None:
                 delete_orphans=True,
                 resethard=resethard,
                 stop_event=stop,
+                extensions=extensions,
+                on_complete=lambda: None,  # places a fence so progress reaches "complete" after queue drains
             )
         except Exception as e:
             print(f"[syncer] ERROR for {collection}: {e}", flush=True)
@@ -570,12 +573,15 @@ class _Handler(BaseHTTPRequestHandler):
                                       "error": "Typesense is still loading"})
                 return
             body = self._read_body()
+            root_arg  = body.get("root", "")
+            root_name = root_arg if root_arg else ("default" if "default" in ROOTS else next(iter(ROOTS)))
             try:
-                collection, src_root = get_root(body.get("root", ""))
+                collection, src_root = get_root(root_name)
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
-            result = check_ready(src_root=src_root, collection=collection)
+            result = check_ready(src_root=src_root, collection=collection,
+                                 extensions=extensions_for_root(root_name))
             self._send_json(200, result)
             return
 
@@ -583,21 +589,7 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/verify/start":
             path = "/index/start"  # fall through; resethard defaults to False
 
-        # ── GET /verify/status ────────────────────────────────────────────────
-        if method == "GET" and path == "/verify/status":
-            if not _PROGRESS_FILE.exists():
-                self._send_json(404, {"error": "no sync has been run yet"})
-                return
-            try:
-                data = json.loads(_PROGRESS_FILE.read_text())
-            except Exception as e:
-                self._send_json(500, {"error": str(e)})
-                return
-            data["running"] = bool(_sync_thread and _sync_thread.is_alive())
-            self._send_json(200, data)
-            return
-
-        # ── POST /verify/stop  (alias for /index/stop) ────────────────────────
+        # ── POST /verify/stop ─────────────────────────────────────────────────
         if method == "POST" and path == "/verify/stop":
             if not (_sync_thread and _sync_thread.is_alive()):
                 self._send_json(404, {"error": "no sync job is running"})
@@ -651,7 +643,8 @@ class _Handler(BaseHTTPRequestHandler):
 
             with _sync_lock:
                 job = {"root_name": root_name, "src_root": src_root, "collection": collection,
-                       "resethard": resethard, "host_root": host_root}
+                       "resethard": resethard, "host_root": host_root,
+                       "extensions": extensions_for_root(root_name)}
                 _sync_pending.append(job)
                 queued_pos = len(_sync_pending)
                 if not (_sync_thread and _sync_thread.is_alive()):
@@ -694,6 +687,9 @@ class _Handler(BaseHTTPRequestHandler):
 
             ts_mode_flag, ast_mode = _EXT_TO_TS_AND_AST[mode]
 
+            if not ROOTS:
+                self._send_json(400, {"error": "No roots configured. Add a root with: ts root --add NAME /path/to/src"})
+                return
             root_name = root if root else ("default" if "default" in ROOTS else next(iter(ROOTS)))
             try:
                 collection, src_root = get_root(root_name)
@@ -906,11 +902,12 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
             except ValueError:
                 continue
             _sync_pending.append({
-                "root_name": root_name,
-                "src_root":  src_root,
+                "root_name":  root_name,
+                "src_root":   src_root,
                 "collection": collection,
                 "resethard":  False,
                 "host_root":  HOST_ROOTS.get(root_name, ""),
+                "extensions": extensions_for_root(root_name),
             })
         if _sync_pending:
             _sync_thread = threading.Thread(

@@ -347,8 +347,19 @@ async function runWsl() {
   const CONFIG_FILE = '/tmp/codesearch-wsl-test-config.json';
   const logDir      = mkLogDir();
 
-  // Write isolated test config (test port + test key — no roots needed).
-  const testConfig = JSON.stringify({ api_key: TEST_KEY, port: TEST_PORT }, null, 2);
+  // Write isolated test config with sample roots so the management API indexes
+  // them during startup (completed well before pytest finishes ~25 s).
+  const wslRoot1 = `${wslRepo}/sample/root1`;
+  const wslRoot2 = `${wslRepo}/sample/root2`;
+  const winRoot1 = join(REPO, 'sample', 'root1').replace(/\\/g, '/');
+  const winRoot2 = join(REPO, 'sample', 'root2').replace(/\\/g, '/');
+  const testConfig = JSON.stringify({
+    api_key: TEST_KEY, port: TEST_PORT,
+    roots: {
+      root1: { local_path: wslRoot1, external_path: winRoot1 },
+      root2: { local_path: wslRoot2, external_path: winRoot2 },
+    },
+  }, null, 2);
   {
     const r = spawnSync('wsl.exe', ['-e', 'bash', '-c', `cat > '${CONFIG_FILE}'`],
       { input: testConfig, encoding: 'utf8' });
@@ -357,32 +368,47 @@ async function runWsl() {
 
   const testTargets = extraArgs.length > 0 ? extraArgs : ['tests/'];
   const quoted = testTargets.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
+  const noVscode = runVscode === 'false' ? ' --no-vscode' : '';
+
+  // Single WSL invocation runs everything: setup → services → pytest → vscode tests.
+  const allLog = join(logDir, 'all.log');
+  const r = runCaptured('wsl.exe', ['-e', 'bash', '-lc',
+    `TYPESENSE_VERSION='${TYPESENSE_VERSION}' TYPESENSE_DATA='${DATA_DIR}' ` +
+    `CONFIG_FILE='${CONFIG_FILE}' CODESEARCH_PORT=${TEST_PORT} ` +
+    `CODESEARCH_CONFIG='${CONFIG_FILE}' ` +
+    `APP_ROOT='${wslRepo}' PYTEST="${PYTEST}" ` +
+    `bash '${wslRepo}/scripts/run-wsl-tests.sh'${noVscode} ${quoted}`,
+  ]);
+  writeFileSync(allLog, r.output);
+
+  // Split on markers to report pytest and vscode results separately.
+  const MSTART = '\n=== VSCODE_TESTS_START ===\n';
+  const MEND   = '\n=== VSCODE_TESTS_END ===';
+  const mi = r.output.indexOf(MSTART);
+  const pytestOut = mi >= 0 ? r.output.slice(0, mi) : r.output;
+  const vscodeOut = mi >= 0 ? r.output.slice(mi + MSTART.length,
+    r.output.indexOf(MEND, mi) >= 0 ? r.output.indexOf(MEND, mi) : undefined) : '';
+
+  writeFileSync(join(logDir, 'pytest.log'), pytestOut);
+  if (vscodeOut) writeFileSync(join(logDir, 'vscode.log'), vscodeOut);
 
   {
     const s = step('wsl/tests');
-    const testsLog = join(logDir, 'pytest.log');
-    const r = runCaptured('wsl.exe', ['-e', 'bash', '-lc',
-      `TYPESENSE_VERSION='${TYPESENSE_VERSION}' TYPESENSE_DATA='${DATA_DIR}' ` +
-      `CONFIG_FILE='${CONFIG_FILE}' CODESEARCH_PORT=${TEST_PORT} ` +
-      `CODESEARCH_CONFIG='${CONFIG_FILE}' ` +
-      `APP_ROOT='${wslRepo}' PYTEST="${PYTEST}" ` +
-      `bash '${wslRepo}/scripts/run-wsl-tests.sh' ${quoted}`,
-    ]);
-    writeFileSync(testsLog, r.output);
-    if (r.status !== 0) {
-      s.fail(testsLog, pytestSummary(r.output));
-      const d = pytestDetail(r.output); if (d) console.log(d);
-      process.exit(r.status);
+    if (pytestSummary(pytestOut)?.includes('failed') || (r.status !== 0 && !vscodeOut)) {
+      s.fail(join(logDir, 'pytest.log'), pytestSummary(pytestOut));
+      const d = pytestDetail(pytestOut); if (d) console.log(d);
+      process.exit(r.status || 1);
     }
-    s.ok(pytestSummary(r.output));
+    s.ok(pytestSummary(pytestOut));
   }
 
-  if (runVscode !== 'false') {
-    const vscodeLog = join(logDir, 'vscode.log');
+  if (runVscode !== 'false' && vscodeOut) {
     const s = step('wsl/vscode');
-    const status = await runVscodeTests({ apiPort: TEST_PORT + 1, apiKey: TEST_KEY, logFile: vscodeLog });
-    if (status !== 0) { s.fail(vscodeLog, vscodeSummary(readFileSync(vscodeLog, 'utf8'))); process.exit(status); }
-    s.ok(vscodeSummary(readFileSync(vscodeLog, 'utf8')));
+    const summary = vscodeSummary(vscodeOut);
+    if (r.status !== 0 || /[1-9]\d* failed/.test(summary ?? '')) {
+      s.fail(join(logDir, 'vscode.log'), summary); process.exit(r.status || 1);
+    }
+    s.ok(summary);
   }
 
   console.log('[wsl] PASSED');

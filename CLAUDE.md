@@ -113,7 +113,7 @@ Two distinct layers that run in separate processes and venvs:
 │  │  api.py  — management HTTP server + thread manager  │   │
 │  │    • watcher thread    (PollingObserver, /mnt/)      │   │
 │  │    • heartbeat thread  (Typesense health check)      │   │
-│  │    • verifier thread   (on-demand, via POST /verify) │   │
+│  │    • syncer thread     (on-demand, via POST /index/start) │
 │  └─────────────────────────────────────────────────────┘   │
 │  indexer.py   verifier.py   watcher.py   start_server.py   │
 │  Venv (WSL only): ~/.local/indexserver-venv/               │
@@ -123,7 +123,7 @@ Two distinct layers that run in separate processes and venvs:
                     Typesense server (Linux binary)
 ```
 
-The MCP client never runs indexserver code directly — it calls `POST /check-ready`, `POST /verify/start`, `GET /verify/status`, and `POST /verify/stop` on the management API. The management API uses the **same API key** as Typesense (`X-TYPESENSE-API-KEY` header).
+The MCP client never runs indexserver code directly — it calls `POST /check-ready`, `POST /index/start`, `POST /verify/start` (alias for `/index/start`), and `POST /verify/stop` on the management API. Syncer status is read from `GET /status` under `syncer.progress`. The management API uses the **same API key** as Typesense (`X-TYPESENSE-API-KEY` header).
 
 ## Module map
 
@@ -131,7 +131,7 @@ The MCP client never runs indexserver code directly — it calls `POST /check-re
 
 | File | Responsibility |
 |------|---------------|
-| `src/query/config.py` | Shared constants: `HOST`, `PORT`, `API_KEY`, `ROOTS`, `COLLECTION`, `INCLUDE_EXTENSIONS`. Reads `config.json`. Provides `get_root(name)` → `(collection, src_path)` and `collection_for_root(name)` → `"codesearch_{name}"`. |
+| `src/query/config.py` | Shared constants: `HOST`, `PORT`, `API_KEY`, `ROOTS`, `COLLECTION`, `INCLUDE_EXTENSIONS`. Reads `config.json`. Provides `get_root(name)` → `(collection, src_path)`, `collection_for_root(name)` → `"codesearch_{name}"`, `ROOT_EXTENSIONS`, and `extensions_for_root(name)` for per-root extension filtering. |
 | `scripts/search.py` | Test utility: direct Typesense HTTP search. `search(query, ...)` builds params and calls Typesense; `format_results()` prints human-readable output. Run from WSL. |
 | `src/ast/cs.py` | C# tree-sitter AST helpers: node type sets, `_find_all`, `_text`, `symbol_kind_query_by`. Used by both `indexer.py` and `src/query/cs.py` to keep extraction consistent. |
 | `src/ast/py.py` | Python tree-sitter AST helpers: `_line`, `_py_in_literal`, `_py_enclosing_class`, `_py_base_names`. Also re-exports `_find_all`/`_text` from `ast/cs` (shared traversal helpers). |
@@ -157,11 +157,11 @@ Checked-in source tree used by `test_sample_e2e.py` for end-to-end indexer tests
 
 | File | Responsibility |
 |------|---------------|
-| `config.py` | Same constants as client `config.py` — reads the same `codesearch/config.json`. Also has `INCLUDE_EXTENSIONS`, `EXCLUDE_DIRS`, `MAX_FILE_BYTES`, `MAX_CONTENT_CHARS`, `API_PORT = PORT + 1`. Imported by all indexserver modules. |
-| `api.py` | **Single indexserver process.** HTTP management API (`ThreadingMixIn + HTTPServer`) on `PORT+1`. Manages three daemon threads: watcher (file watching), heartbeat (Typesense health check, auto-restart), verifier (on-demand scan). Auth: `X-TYPESENSE-API-KEY` header. Endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `POST /verify/start`, `GET /verify/status`, `POST /verify/stop`. Writes `api.pid`; shutdown on SIGTERM. |
-| `indexer.py` | One-shot full index. `run_index(src_root, collection, reset, verbose)` walks the source tree via `os.walk` + `.gitignore` parsing (`pathspec`), calls tree-sitter via `extract_cs_metadata()` / `extract_py_metadata()`, batches upserts via the shared `index_file_list(client, file_pairs, coll_name, batch_size, on_progress, stop_event)` pipeline. `build_schema(name)` returns the collection schema. `walk_source_files(src_root)` is a generator yielding `(full_path, rel)` pairs. |
-| `verifier.py` | Index repair. `run_verify(src_root, collection, delete_orphans, stop_event)` does a two-phase diff: Phase 1 exports the index + walks the FS inline to classify files as missing/stale/orphaned; Phase 2 calls `index_file_list()` for only changed files and removes orphans. Writes progress to `verifier_progress.json`. `check_ready(src_root, collection)` runs Phase 1 synchronously and returns `{ready, poll_ok, index_ok, missing, stale, orphaned, fs_files, indexed, duration_s, error}` without modifying the index. |
-| `watcher.py` | Incremental updates. `run_watcher(src_root, collection, stop_event)` — started as a daemon thread by `api.py`. `PollingObserver` monitors source root and upserts changed files. Uses `PollingObserver` (not inotify) because source is on a Windows-backed `/mnt/` path. Poll interval is 10 s; detection latency is up to ~12 s (poll + 2 s debounce). |
+| `config.py` | Same constants as client `config.py` — reads the same `codesearch/config.json`. Also has `INCLUDE_EXTENSIONS`, `EXCLUDE_DIRS`, `MAX_FILE_BYTES`, `MAX_CONTENT_CHARS`, `API_PORT = PORT + 1`. Defines `ROOT_EXTENSIONS: dict[str, frozenset | None]` and `extensions_for_root(name)` for per-root extension filtering. Imported by all indexserver modules. |
+| `api.py` | **Single indexserver process.** HTTP management API (`ThreadingMixIn + HTTPServer`) on `PORT+1`. Manages three daemon threads: watcher (file watching), heartbeat (Typesense health check, auto-restart), syncer (on-demand scan). Auth: `X-TYPESENSE-API-KEY` header. Endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `POST /index/start`, `POST /verify/start` (alias for `/index/start`), `POST /verify/stop`. Syncer progress is embedded in `GET /status` under `syncer.progress`. Writes `api.pid`; shutdown on SIGTERM. |
+| `indexer.py` | One-shot full index. `run_index(src_root, collection, reset, verbose)` walks the source tree via `os.walk` + `.gitignore` parsing (`pathspec`), calls tree-sitter via `extract_cs_metadata()` / `extract_py_metadata()`, batches upserts via the shared `index_file_list(client, file_pairs, coll_name, batch_size, on_progress, stop_event)` pipeline. `build_schema(name)` returns the collection schema. `walk_source_files(src_root, extensions=None)` is a generator yielding `(full_path, rel)` pairs; respects per-root extension filters. |
+| `verifier.py` | Sync/repair logic (used by both startup sync and explicit verify). `run_verify(src_root, collection, queue, delete_orphans, stop_event, extensions, on_complete)` does a two-phase diff: Phase 1 exports the index + walks the FS inline to classify files as missing/stale/orphaned; Phase 2 enqueues changed files to `IndexQueue` and removes orphans. Places an `IndexQueue` fence via `on_complete` so progress reaches `"complete"` after the queue drains. Writes progress to `verifier_progress.json`. `check_ready(src_root, collection, extensions)` runs Phase 1 synchronously and returns `{ready, poll_ok, index_ok, missing, stale, orphaned, fs_files, indexed, duration_s, error}` without modifying the index. |
+| `watcher.py` | Incremental updates. `run_watcher(src_root, collection, stop_event)` — started as a daemon thread by `api.py`. `PollingObserver` monitors source root and upserts changed files. Uses `PollingObserver` (not inotify) because source is on a Windows-backed `/mnt/` path. Poll interval is 10 s; detection latency is up to ~12 s (poll + 2 s debounce). Respects per-root extension filters. |
 | `heartbeat.py` | Standalone heartbeat watchdog process (alternative to the inline heartbeat thread in `api.py`). Polls `/health` every 30 s; after 3 consecutive failures restarts Typesense via `entrypoint.sh`. Also revives the watcher process if it dies while the server is healthy. Writes `~/.local/typesense/heartbeat.pid`. |
 | `index_queue.py` | Centralised, deduplicating index queue. All Typesense writes — from the full-index walk, the WSL watcher, and the Windows native watcher — flow through a single `IndexQueue` instance. Deduplicates by `(collection, file_id)`; a background worker thread batches writes and skips upserts whose mtime hasn't changed since last index. |
 | `start_server.py` | Downloads the Typesense Linux binary to `~/.local/typesense/` on first run, starts the process, writes PID to `~/.local/typesense/typesense.pid`. |

@@ -1114,10 +1114,15 @@ def ensure_collection(client, resethard=False, collection=None):
 # Full index walk
 # ---------------------------------------------------------------------------
 
-def walk_source_files(src_root: str):
-    """Yield (full_path, relative_path) for all source files, respecting .gitignore."""
+def walk_source_files(src_root: str, extensions=None):
+    """Yield (full_path, relative_path) for all source files, respecting .gitignore.
+
+    extensions: set of lowercase extensions to include (e.g. {".cs", ".py"}).
+                When None, the global INCLUDE_EXTENSIONS set is used.
+    """
     import pathspec
 
+    exts = extensions if extensions is not None else INCLUDE_EXTENSIONS
     src_root = _to_native_path(src_root)
 
     # Cache: abs_dir -> PathSpec | None
@@ -1158,7 +1163,7 @@ def walk_source_files(src_root: str):
         for filename in files:
             full_path = os.path.join(dirpath, filename)
             ext = os.path.splitext(filename)[1].lower()
-            if ext not in INCLUDE_EXTENSIONS:
+            if ext not in exts:
                 continue
             try:
                 if os.path.getsize(full_path) > MAX_FILE_BYTES:
@@ -1256,6 +1261,7 @@ def walk_and_enqueue(
     queue,
     resethard: bool = False,
     stop_event=None,
+    extensions=None,
 ) -> tuple[int, int]:
     """Walk *src_root* and feed every source file into *queue*.
 
@@ -1266,7 +1272,7 @@ def walk_and_enqueue(
     client = get_client()
     ensure_collection(client, resethard=resethard, collection=collection)
     return queue.enqueue_bulk(
-        walk_source_files(src_root),
+        walk_source_files(src_root, extensions=extensions),
         collection=collection,
         stop_event=stop_event,
     )
@@ -1274,18 +1280,21 @@ def walk_and_enqueue(
 
 def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, collection=None, host_root=""):
     coll_name = collection or COLLECTION
+    root_exts = None
     if src_root is None:
         # Derive src_root (and host_root if not supplied) from config using collection name.
-        from indexserver.config import ROOTS, HOST_ROOTS, collection_for_root
+        from indexserver.config import ROOTS, HOST_ROOTS, collection_for_root, extensions_for_root
         for name in ROOTS:
             if collection_for_root(name) == coll_name:
                 src_root = ROOTS[name]
                 if not host_root:
                     host_root = HOST_ROOTS.get(name, "")
+                root_exts = extensions_for_root(name)
                 break
         if src_root is None:
             src_root = _SRC_ROOT_NATIVE
     src_root = _to_native_path(src_root)
+    exts = root_exts if root_exts is not None else INCLUDE_EXTENSIONS
     client = get_client()
     ensure_collection(client, resethard=resethard, collection=coll_name)
 
@@ -1297,13 +1306,13 @@ def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, coll
     total_errors  = 0
 
     print(f"Indexing source files under: {src_root}")
-    print(f"Extensions: {', '.join(sorted(INCLUDE_EXTENSIONS))}")
+    print(f"Extensions: {', '.join(sorted(exts))}")
     print()
 
     def _tracked_files():
         """Yield (full_path, rel) from walk_source_files with subsystem logging."""
         nonlocal current_sub
-        for full_path, rel in walk_source_files(src_root):
+        for full_path, rel in walk_source_files(src_root, extensions=exts):
             sub = subsystem_from_path(rel)
             if sub != current_sub:
                 current_sub = sub
