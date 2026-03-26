@@ -98,7 +98,7 @@ if [ "$RUN_VSCODE" = "1" ]; then
         set +e
         (
             cd "$VSCODE_DIR"
-            CS_CONFIG="$WIN_CFG" CS_QUERY=IProcessor CS_SUB=Processors.cs \
+            CS_CONFIG="$WIN_CFG" \
                 node.exe --require tsx/cjs --test \
                     src/test/client.test.ts \
                     src/test/pipeline.test.ts

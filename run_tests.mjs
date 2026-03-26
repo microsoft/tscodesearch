@@ -441,6 +441,17 @@ async function runLinux() {
 
   if (!existsSync(PYTEST)) die(`pytest not found at ${PYTEST}\nRun setup first.`);
 
+  const sampleRoot1 = join(REPO, 'sample', 'root1');
+  const sampleRoot2 = join(REPO, 'sample', 'root2');
+  const sampleRoots = {
+    root1: { local_path: sampleRoot1 },
+    root2: { local_path: sampleRoot2 },
+  };
+
+  // Write config.json with sample roots so api.py knows about them on startup.
+  writeFileSync(join(REPO, 'config.json'), JSON.stringify(
+    { api_key: key, port, roots: sampleRoots }, null, 2));
+
   let tsProc  = null;
   let apiProc = null;
   function cleanup() {
@@ -488,6 +499,43 @@ async function runLinux() {
     s.ok(`port ${port + 1}`);
   }
 
+  // Index sample roots so vscode pipeline tests have data to query.
+  {
+    const s = step('linux/index');
+    const apiPort = port + 1;
+    const post = (path, body) => new Promise((resolve, reject) => {
+      const data = JSON.stringify(body);
+      const req = http.request(
+        { hostname: 'localhost', port: apiPort, path, method: 'POST',
+          headers: { 'Content-Type': 'application/json',
+                     'Content-Length': Buffer.byteLength(data),
+                     'X-TYPESENSE-API-KEY': key } },
+        res => { let b = ''; res.on('data', d => b += d); res.on('end', () => resolve(JSON.parse(b))); }
+      );
+      req.on('error', reject);
+      req.write(data);
+      req.end();
+    });
+    const getStatus = () => new Promise((resolve, reject) => {
+      const req = http.request(
+        { hostname: 'localhost', port: apiPort, path: '/status', method: 'GET',
+          headers: { 'X-TYPESENSE-API-KEY': key } },
+        res => { let b = ''; res.on('data', d => b += d); res.on('end', () => resolve(JSON.parse(b))); }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    await post('/index/start', { root: 'root1' });
+    await post('/index/start', { root: 'root2' });
+    // Wait for syncer to drain (both roots queued sequentially).
+    for (let i = 0; i < 60; i++) {
+      await sleep(1000);
+      const st = await getStatus();
+      if (!st?.syncer?.alive && (st?.syncer?.pending ?? 0) === 0) break;
+    }
+    s.ok('root1 root2');
+  }
+
   const testTargets = extraArgs.length > 0 ? extraArgs : ['tests/'];
   {
     const s = step('linux/pytest');
@@ -505,7 +553,8 @@ async function runLinux() {
   if (runVscode !== 'false') {
     const vscodeLog = join(logDir, 'vscode.log');
     const s = step('linux/vscode');
-    const status = await runVscodeTests({ apiPort: port + 1, apiKey: key, logFile: vscodeLog });
+    const status = await runVscodeTests({ apiPort: port + 1, apiKey: key, logFile: vscodeLog,
+                                          roots: sampleRoots });
     if (status !== 0) {
       const logContent = readFileSync(vscodeLog, 'utf8');
       s.fail(vscodeLog, vscodeSummary(logContent));
@@ -600,7 +649,7 @@ async function runVscodeTests({ apiPort, apiKey, logFile, container = null, logD
     'src/test/pipeline.test.ts',
   ], {
     cwd: vscodeDir,
-    env: { ...process.env, CS_CONFIG: tmpCfg, CS_QUERY: 'IProcessor', CS_SUB: 'Processors.cs' },
+    env: { ...process.env, CS_CONFIG: tmpCfg },
   });
 
   if (existsSync(tmpCfg)) unlinkSync(tmpCfg);

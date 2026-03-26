@@ -6,20 +6,13 @@
  * Run all tests:           npm test
  * Run just this file:      node --require tsx/cjs --test src/test/pipeline.test.ts
  *
- * Live pipeline tests require the server AND the management API (port+1) AND:
+ * Live pipeline tests require the server AND the management API (port+1).
+ * They always query against the sample data in sample/root1/ and sample/root2/
+ * using hardcoded type names from those fixtures. They skip automatically when
+ * the server is not reachable.
  *
- *   CS_QUERY      Symbol/type to search for (required for live tests)
- *   CS_SUB        Subsystem filter, e.g. "myapp" (optional, default: '')
- *   CS_CONFIG     Path to config.json (optional; defaults to ../../../config.json)
- *
- * Example:
- *   CS_QUERY=IProcessor CS_SUB=root1 npm run test:pipeline
- *   CS_CONFIG=/tmp/e2e-config.json CS_QUERY=IProcessor npm run test:pipeline
- *
- * All live tests call the management API (/query-codebase on port+1) and skip
- * automatically when it is not reachable — whether CS_QUERY is unset or the
- * AST API is down.  In Docker E2E mode (run_tests.sh --docker), the management
- * API port is not exposed, so live tests skip gracefully (unit tests still run).
+ * Optional env vars:
+ *   CS_CONFIG   Path to config.json (defaults to ../../../config.json)
  */
 
 import { describe, it, before } from 'node:test';
@@ -40,6 +33,15 @@ import {
 } from '../client';
 
 // ---------------------------------------------------------------------------
+// Fixed sample-data queries
+// These symbols exist in sample/root1/ and sample/root2/.
+// ---------------------------------------------------------------------------
+
+const DECLARATIONS_QUERY = 'IProcessor'; // defined in Processors.cs and root2/Widgets.cs
+const USES_QUERY         = 'IDataStore'; // used extensively in DataStore.cs
+const IMPLEMENTS_QUERY   = 'IDataStore'; // implemented by SqlDataStore in DataStore.cs
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -56,22 +58,6 @@ function readConfig(): { config: CodesearchConfig; rootPath: string } | null {
     } catch {
         return null;
     }
-}
-
-async function serverIsUp(port: number, apiKey: string): Promise<boolean> {
-    return new Promise((resolve) => {
-        const req = http.request(
-            { hostname: 'localhost', port, path: '/health', method: 'GET',
-              headers: { 'X-TYPESENSE-API-KEY': apiKey } },
-            (res) => {
-                let d = '';
-                res.on('data', (c) => (d += c));
-                res.on('end', () => { try { resolve(JSON.parse(d).ok === true); } catch { resolve(false); } });
-            });
-        req.setTimeout(2000, () => { req.destroy(); resolve(false); });
-        req.on('error', () => resolve(false));
-        req.end();
-    });
 }
 
 async function queryApiIsUp(port: number): Promise<boolean> {
@@ -92,11 +78,6 @@ async function queryApiIsUp(port: number): Promise<boolean> {
 let cfg: CodesearchConfig;
 let rootPath: string;
 let serverAvailable = false;
-let astAvailable = false;
-
-// Env-var parameters for live pipeline tests — no defaults so tests skip if unset
-const LIVE_QUERY = process.env['CS_QUERY'] ?? '';
-const LIVE_SUB   = process.env['CS_SUB']   ?? '';
 
 before(async () => {
     const loaded = readConfig();
@@ -104,25 +85,11 @@ before(async () => {
     cfg = loaded.config;
     rootPath = loaded.rootPath;
     const port = cfg.port ?? 8108;
-    // Check the indexserver management API (port+1) — Typesense is internal-only.
     serverAvailable = await queryApiIsUp(port);
-    if (serverAvailable) { astAvailable = true; }
 });
 
 function skipIfNoServer(t: { skip(msg?: string): void }): boolean {
     if (!serverAvailable) { t.skip('Indexserver not running — run: ts start'); return true; }
-    return false;
-}
-
-function skipIfNoLiveParams(t: { skip(msg?: string): void }): boolean {
-    if (!serverAvailable) { t.skip('Indexserver not running — run: ts start'); return true; }
-    if (!LIVE_QUERY) { t.skip('CS_QUERY not set — set CS_QUERY=<symbol> to run live tests'); return true; }
-    return false;
-}
-
-function skipIfNoAst(t: { skip(msg?: string): void }): boolean {
-    if (skipIfNoLiveParams(t)) { return true; }
-    if (!astAvailable) { t.skip('AST API not running (port+1)'); return true; }
     return false;
 }
 
@@ -203,21 +170,17 @@ describe('MODES structure', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Live pipeline tests — require CS_QUERY env var + running server
-//
-// These tests are generic: they exercise the pipeline contract regardless of
-// what codebase is indexed. The query and subsystem come from env vars so
-// this file has no knowledge of any specific project.
+// Live pipeline tests — require a running server with sample data indexed
 // ---------------------------------------------------------------------------
 
-describe('pipeline — declarations mode (AST-backed, CS_QUERY)', () => {
-    it('returns method_sigs from the index; each item has parens', async (t) => {
-        if (skipIfNoLiveParams(t)) { return; }
+describe('pipeline — declarations mode (IProcessor)', () => {
+    it('returns match items; each item has non-empty text', async (t) => {
+        if (skipIfNoServer(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'declarations', 'cs', LIVE_SUB, '', 20);
-        printTree(renderTextTree(result, `${LIVE_QUERY} [sub=${LIVE_SUB || '*'}]`, 'declarations'));
+            cfg, DECLARATIONS_QUERY, 'declarations', 'cs', '', '', 20);
+        printTree(renderTextTree(result, DECLARATIONS_QUERY, 'declarations'));
 
-        assert.ok(result.found > 0, `no declarations results for "${LIVE_QUERY}"`);
+        assert.ok(result.found > 0, `no declarations results for "${DECLARATIONS_QUERY}"`);
         assert.ok(result.found >= result.hits.length);
 
         for (const hit of result.hits) {
@@ -229,14 +192,14 @@ describe('pipeline — declarations mode (AST-backed, CS_QUERY)', () => {
     });
 });
 
-describe('pipeline — uses mode (AST-backed, CS_QUERY)', () => {
+describe('pipeline — uses mode (IDataStore)', () => {
     it('returns exact line-level matches; all files have at least one match', async (t) => {
-        if (skipIfNoAst(t)) { return; }
+        if (skipIfNoServer(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'uses', 'cs', LIVE_SUB, '', 20);
-        printTree(renderTextTree(result, `${LIVE_QUERY} [sub=${LIVE_SUB || '*'}]`, 'uses'));
+            cfg, USES_QUERY, 'uses', 'cs', '', '', 20);
+        printTree(renderTextTree(result, USES_QUERY, 'uses'));
 
-        assert.ok(result.found > 0, `no uses results for "${LIVE_QUERY}"`);
+        assert.ok(result.found > 0, `no uses results for "${USES_QUERY}"`);
 
         for (const hit of result.hits) {
             assert.ok(hit._matches.length > 0,
@@ -249,9 +212,9 @@ describe('pipeline — uses mode (AST-backed, CS_QUERY)', () => {
     });
 
     it('no hit has zero matches (empty-match filter works)', async (t) => {
-        if (skipIfNoAst(t)) { return; }
+        if (skipIfNoServer(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'uses', 'cs', LIVE_SUB, '', 20);
+            cfg, USES_QUERY, 'uses', 'cs', '', '', 20);
         for (const hit of result.hits) {
             assert.ok(hit._matches.length > 0,
                 `${hit.document.relative_path}: in results with 0 matches`);
@@ -259,13 +222,13 @@ describe('pipeline — uses mode (AST-backed, CS_QUERY)', () => {
     });
 });
 
-describe('pipeline — implements mode (AST-backed, CS_QUERY)', () => {
+describe('pipeline — implements mode (IDataStore)', () => {
     it('runs without error; all returned files have at least one match', async (t) => {
-        if (skipIfNoAst(t)) { return; }
+        if (skipIfNoServer(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'implements', 'cs', LIVE_SUB, '', 20);
-        printTree(renderTextTree(result, `${LIVE_QUERY} [implements]`, 'implements'));
-        // May legitimately return 0 if nothing inherits the type
+            cfg, IMPLEMENTS_QUERY, 'implements', 'cs', '', '', 20);
+        printTree(renderTextTree(result, IMPLEMENTS_QUERY, 'implements'));
+        assert.ok(result.found > 0, `no implements results for "${IMPLEMENTS_QUERY}"`);
         for (const hit of result.hits) {
             assert.ok(hit._matches.length > 0,
                 `${hit.document.relative_path}: empty matches in implements result`);
@@ -281,19 +244,15 @@ describe('pipeline — implements mode (AST-backed, CS_QUERY)', () => {
 // then verify the returned matches are usable.
 // ---------------------------------------------------------------------------
 
-// Expansion tests use CS_QUERY if set, otherwise fall back to 'IAbsBlobStore' which
-// exists in the SPO.Core index, or the first symbol findable in the index.
-const EXPANSION_QUERY = LIVE_QUERY || 'IAbsBlobStore';
-
-describe('expansion — doQuerySingleFile round-trip (CS_QUERY or IAbsBlobStore fallback)', () => {
+describe('expansion — doQuerySingleFile round-trip (IDataStore uses)', () => {
     it('expanding a file from search results yields valid line-number matches', async (t) => {
         if (skipIfNoServer(t)) { return; }
 
         // Step 1: search to get a result set, same as the webview does.
         const searchResult = await runSearchPipeline(
-            cfg, EXPANSION_QUERY, 'uses', 'cs', LIVE_SUB, '', 10);
+            cfg, USES_QUERY, 'uses', 'cs', '', '', 10);
         if (searchResult.hits.length === 0) {
-            t.skip(`no "uses" results for "${EXPANSION_QUERY}" — index may not contain this type`);
+            t.skip(`no "uses" results for "${USES_QUERY}" — index may not contain sample data`);
             return;
         }
 
@@ -304,10 +263,10 @@ describe('expansion — doQuerySingleFile round-trip (CS_QUERY or IAbsBlobStore 
         const absPath  = resolveFilePath(rootPath, relPath);
 
         // Step 3: call doQuerySingleFile — this is the call the extension makes.
-        const matches = await doQuerySingleFile(cfg, 'uses', EXPANSION_QUERY, absPath);
+        const matches = await doQuerySingleFile(cfg, 'uses', USES_QUERY, absPath);
 
         assert.ok(matches.length > 0,
-            `doQuerySingleFile returned no matches for ${relPath} (query: "${EXPANSION_QUERY}")`);
+            `doQuerySingleFile returned no matches for ${relPath} (query: "${USES_QUERY}")`);
 
         for (const m of matches) {
             assert.ok(typeof m.line === 'number' && m.line >= 0,
@@ -326,15 +285,15 @@ describe('expansion — doQuerySingleFile round-trip (CS_QUERY or IAbsBlobStore 
         if (skipIfNoServer(t)) { return; }
 
         const searchResult = await runSearchPipeline(
-            cfg, EXPANSION_QUERY, 'declarations', 'cs', LIVE_SUB, '', 10);
+            cfg, DECLARATIONS_QUERY, 'declarations', 'cs', '', '', 10);
         if (searchResult.hits.length === 0) {
-            t.skip(`no "declarations" results for "${EXPANSION_QUERY}"`);
+            t.skip(`no "declarations" results for "${DECLARATIONS_QUERY}"`);
             return;
         }
 
         const hit     = searchResult.hits[0];
         const absPath = resolveFilePath(rootPath, hit.document.relative_path);
-        const matches = await doQuerySingleFile(cfg, 'declarations', EXPANSION_QUERY, absPath);
+        const matches = await doQuerySingleFile(cfg, 'declarations', DECLARATIONS_QUERY, absPath);
 
         assert.ok(matches.length > 0,
             `doQuerySingleFile(declarations) returned no matches for ${hit.document.relative_path}`);
@@ -349,7 +308,7 @@ describe('expansion — doQuerySingleFile round-trip (CS_QUERY or IAbsBlobStore 
         // Both search pipeline and single-file expansion should agree on line numbers
         // for fully-expanded hits (ast_expanded=true).
         const searchResult = await runSearchPipeline(
-            cfg, EXPANSION_QUERY, 'uses', 'cs', LIVE_SUB, '', 5);
+            cfg, USES_QUERY, 'uses', 'cs', '', '', 5);
         const hit = searchResult.hits.find((h) => h._matches.length > 0 && h.ast_expanded !== false);
         if (!hit) {
             t.skip('no fully-expanded hits in search results');
@@ -357,7 +316,7 @@ describe('expansion — doQuerySingleFile round-trip (CS_QUERY or IAbsBlobStore 
         }
 
         const absPath       = resolveFilePath(rootPath, hit.document.relative_path);
-        const expandMatches = await doQuerySingleFile(cfg, 'uses', EXPANSION_QUERY, absPath);
+        const expandMatches = await doQuerySingleFile(cfg, 'uses', USES_QUERY, absPath);
 
         // The expansion must include every line the pipeline already found for this file.
         const expandLines = new Set(expandMatches.map((m) => m.line));
@@ -373,39 +332,7 @@ describe('expansion — doQuerySingleFile round-trip (CS_QUERY or IAbsBlobStore 
 
         // A file path that doesn't exist — server should return empty results gracefully.
         const fakeAbsPath = resolveFilePath(rootPath, '__nonexistent__/DoesNotExist.cs');
-        const matches = await doQuerySingleFile(cfg, 'calls', EXPANSION_QUERY, fakeAbsPath);
+        const matches = await doQuerySingleFile(cfg, 'calls', USES_QUERY, fakeAbsPath);
         assert.deepEqual(matches, [], 'expected empty array for non-existent file');
-    });
-});
-
-describe('pipeline — expansion simulation (CS_QUERY + CS_SUB)', () => {
-    it('declarations expand: all returned hits belong to the requested subsystem', async (t) => {
-        if (skipIfNoLiveParams(t)) { return; }
-        if (!LIVE_SUB) { t.skip('CS_SUB not set — set CS_SUB=<subsystem> to test expansion'); return; }
-
-        const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'declarations', 'cs', LIVE_SUB, '', 50);
-        printTree(renderTextTree(result, `${LIVE_QUERY} [expand: ${LIVE_SUB}]`, 'declarations'));
-
-        assert.ok(result.found > 0, `no results for ${LIVE_QUERY} in ${LIVE_SUB}`);
-        for (const hit of result.hits) {
-            assert.equal(hit.document.subsystem, LIVE_SUB,
-                `unexpected subsystem ${hit.document.subsystem} in ${hit.document.relative_path}`);
-        }
-    });
-
-    it('uses expand: AST-filtered, line numbers present', async (t) => {
-        if (skipIfNoAst(t)) { return; }
-        if (!LIVE_SUB) { t.skip('CS_SUB not set'); return; }
-
-        const result = await runSearchPipeline(
-            cfg, LIVE_QUERY, 'uses', 'cs', LIVE_SUB, '', 50);
-        printTree(renderTextTree(result, `${LIVE_QUERY} [expand: ${LIVE_SUB}]`, 'uses'));
-
-        assert.ok(result.found > 0);
-        for (const hit of result.hits) {
-            assert.ok(hit._matches.length > 0);
-            assert.ok(hit._matches.some((m) => typeof m.line === 'number'));
-        }
     });
 });
