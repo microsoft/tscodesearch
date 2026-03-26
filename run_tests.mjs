@@ -444,8 +444,8 @@ async function runLinux() {
   const sampleRoot1 = join(REPO, 'sample', 'root1');
   const sampleRoot2 = join(REPO, 'sample', 'root2');
   const sampleRoots = {
-    root1: { local_path: sampleRoot1 },
-    root2: { local_path: sampleRoot2 },
+    root1: { local_path: sampleRoot1, external_path: sampleRoot1 },
+    root2: { local_path: sampleRoot2, external_path: sampleRoot2 },
   };
 
   // Write config.json with sample roots so api.py knows about them on startup.
