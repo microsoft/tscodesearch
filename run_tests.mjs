@@ -37,11 +37,10 @@
  *   PYTEST                default: ~/.local/indexserver-venv/bin/pytest
  */
 
-import { spawnSync, spawn }               from 'node:child_process';
+import { spawnSync }                      from 'node:child_process';
 import { existsSync, writeFileSync,
          readFileSync, unlinkSync,
-         mkdirSync, rmSync,
-         createWriteStream }              from 'node:fs';
+         mkdirSync, rmSync }              from 'node:fs';
 import { tmpdir }                         from 'node:os';
 import { join, dirname }                  from 'node:path';
 import { fileURLToPath }                  from 'node:url';
@@ -103,6 +102,53 @@ function capture(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', ...opts });
   if (r.error || r.status !== 0) return null;
   return r.stdout.trim();
+}
+
+// ── Pytest log splitting ───────────────────────────────────────────────────────
+
+/**
+ * Split raw pytest output into passed-only and error-only sections.
+ * Shared lines (header, warnings, final summary) appear in both files.
+ */
+function splitPytestOutput(output) {
+  const lines = output.split('\n');
+  const passedLines = [];
+  const errorLines = [];
+  let inFailSection = false;
+
+  for (const line of lines) {
+    if (/^=+ (FAILURES|ERRORS) =+/.test(line)) {
+      inFailSection = true;
+      errorLines.push(line);
+      continue;
+    }
+    if (inFailSection && /^=+ /.test(line)) {
+      inFailSection = false;
+    }
+    if (inFailSection) {
+      errorLines.push(line);
+    } else if (/\sFAILED(\s|$)|^FAILED /.test(line) || /\sERROR(\s|$)|^ERROR /.test(line)) {
+      errorLines.push(line);
+    } else if (/\sPASSED(\s|$)/.test(line)) {
+      passedLines.push(line);
+    } else {
+      // Shared: header, config, warnings summary, final stats line
+      passedLines.push(line);
+      errorLines.push(line);
+    }
+  }
+
+  return { passed: passedLines.join('\n'), errors: errorLines.join('\n') };
+}
+
+/** Write split pytest logs; return { passedLog, errorsLog }. */
+function writePytestLogs(logDir, output) {
+  const passedLog = join(logDir, 'pytest_passed.log');
+  const errorsLog = join(logDir, 'pytest_errors.log');
+  const { passed, errors } = splitPytestOutput(output);
+  writeFileSync(passedLog, passed);
+  writeFileSync(errorsLog, errors);
+  return { passedLog, errorsLog };
 }
 
 // ── Summaries extracted from captured output ──────────────────────────────────
@@ -205,6 +251,8 @@ async function runDocker() {
   const API_PORT    = 18109;
   const API_KEY     = 'e2e-test-key';
   const logDir      = mkLogDir();
+  console.log(`[run] pytest passed → ${join(logDir, 'pytest_passed.log')}`);
+  console.log(`[run] pytest errors → ${join(logDir, 'pytest_errors.log')}`);
 
   const sampleRoot1 = join(REPO, 'sample', 'root1');
   const sampleRoot2 = join(REPO, 'sample', 'root2');
@@ -297,17 +345,18 @@ async function runDocker() {
   // Run e2e suite (waits for health + collections, then pytest)
   {
     const s = step('docker/pytest');
-    const suiteLog = join(logDir, 'pytest.log');
     const r = runCaptured('docker', [
       'exec', CONTAINER,
       '/app/scripts/e2e.sh', 'run-suite',
       'codesearch_root1', 'codesearch_root2',
       '--', ...extraArgs,
     ]);
-    writeFileSync(suiteLog, r.output);
+    const { passedLog, errorsLog } = writePytestLogs(logDir, r.output);
     if (r.status !== 0) {
-      s.fail(suiteLog, pytestSummary(r.output));
+      s.fail(errorsLog, pytestSummary(r.output));
       const d = pytestDetail(r.output); if (d) console.log(d);
+      if (printLogs) console.error('\n--- pytest_errors.log ---\n' +
+        readFileSync(errorsLog, 'utf8') + '\n--- end pytest_errors.log ---');
       saveContainerLogs(CONTAINER, logDir);
       process.exit(r.status);
     }
@@ -352,6 +401,7 @@ async function runWsl() {
                     .replace(/^~/, '$HOME');
 
   const DATA_DIR    = '/tmp/codesearch-wsl-test';
+  const TS_DIR      = '/tmp/codesearch-wsl-test-ts';
   const CONFIG_FILE = '/tmp/codesearch-wsl-test-config.json';
   const logDir      = mkLogDir();
 
@@ -376,49 +426,52 @@ async function runWsl() {
 
   const testTargets = extraArgs.length > 0 ? extraArgs : ['tests/'];
   const quoted = testTargets.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
-  const noVscode = runVscode === 'false' ? ' --no-vscode' : '';
 
-  // Single WSL invocation runs everything: setup → services → pytest → vscode tests.
-  const allLog = join(logDir, 'all.log');
+  // Announce log paths before running so they're visible even if the run crashes.
+  console.log(`[run] pytest passed → ${join(logDir, 'pytest_passed.log')}`);
+  console.log(`[run] pytest errors → ${join(logDir, 'pytest_errors.log')}`);
+
   const r = runCaptured('wsl.exe', ['-e', 'bash', '-lc',
-    `TYPESENSE_VERSION='${TYPESENSE_VERSION}' TYPESENSE_DATA='${DATA_DIR}' ` +
+    `TYPESENSE_VERSION='${TYPESENSE_VERSION}' ` +
+    `TYPESENSE_DATA='${DATA_DIR}' TYPESENSE_DIR='${TS_DIR}' ` +
     `CONFIG_FILE='${CONFIG_FILE}' CODESEARCH_PORT=${TEST_PORT} ` +
     `CODESEARCH_CONFIG='${CONFIG_FILE}' ` +
     `APP_ROOT='${wslRepo}' PYTEST="${PYTEST}" ` +
-    `bash '${wslRepo}/scripts/run-wsl-tests.sh'${noVscode} ${quoted}`,
+    `bash '${wslRepo}/scripts/run-tests-with-server.sh' "${PYTEST}" -v ${quoted}`,
   ]);
-  writeFileSync(allLog, r.output);
+  writeFileSync(join(logDir, 'all.log'), r.output);
 
-  // Split on markers to report pytest and vscode results separately.
-  const MSTART = '\n=== VSCODE_TESTS_START ===\n';
-  const MEND   = '\n=== VSCODE_TESTS_END ===';
-  const mi = r.output.indexOf(MSTART);
-  const pytestOut = mi >= 0 ? r.output.slice(0, mi) : r.output;
-  const vscodeOut = mi >= 0 ? r.output.slice(mi + MSTART.length,
-    r.output.indexOf(MEND, mi) >= 0 ? r.output.indexOf(MEND, mi) : undefined) : '';
-
-  writeFileSync(join(logDir, 'pytest.log'), pytestOut);
-  if (vscodeOut) writeFileSync(join(logDir, 'vscode.log'), vscodeOut);
+  const { passedLog, errorsLog } = writePytestLogs(logDir, r.output);
 
   {
-    const s = step('wsl/tests');
-    if (pytestSummary(pytestOut)?.includes('failed') || (r.status !== 0 && !vscodeOut)) {
-      s.fail(join(logDir, 'pytest.log'), pytestSummary(pytestOut));
-      const d = pytestDetail(pytestOut); if (d) console.log(d);
+    const s = step('wsl/pytest');
+    if (pytestSummary(r.output)?.includes('failed') || r.status !== 0) {
+      s.fail(errorsLog, pytestSummary(r.output));
+      const d = pytestDetail(r.output); if (d) console.log(d);
+      if (printLogs) console.error('\n--- pytest_errors.log ---\n' +
+        readFileSync(errorsLog, 'utf8') + '\n--- end pytest_errors.log ---');
       process.exit(r.status || 1);
     }
-    s.ok(pytestSummary(pytestOut));
+    s.ok(pytestSummary(r.output));
   }
 
-  if (runVscode !== 'false' && vscodeOut) {
+  if (runVscode !== 'false') {
+    const vscodeLog = join(logDir, 'vscode.log');
     const s = step('wsl/vscode');
-    const summary = vscodeSummary(vscodeOut);
-    if (r.status !== 0 || /[1-9]\d* failed/.test(summary ?? '')) {
-      s.fail(join(logDir, 'vscode.log'), summary);
-      if (printLogs) console.error('\n--- vscode.log ---\n' + vscodeOut + '\n--- end vscode.log ---');
-      process.exit(r.status || 1);
+    const status = await runVscodeTests({
+      apiPort: TEST_PORT + 1, apiKey: TEST_KEY, logFile: vscodeLog,
+      roots: {
+        root1: { external_path: winRoot1 },
+        root2: { external_path: winRoot2 },
+      },
+    });
+    if (status !== 0) {
+      const logContent = readFileSync(vscodeLog, 'utf8');
+      s.fail(vscodeLog, vscodeSummary(logContent));
+      if (printLogs) console.error('\n--- vscode.log ---\n' + logContent + '\n--- end vscode.log ---');
+      process.exit(status || 1);
     }
-    s.ok(summary);
+    s.ok(vscodeSummary(readFileSync(vscodeLog, 'utf8')));
   }
 
   console.log('[wsl] PASSED');
@@ -430,122 +483,63 @@ async function runWsl() {
 // =============================================================================
 
 async function runLinux() {
-  const cfg  = readConfig();
-  const port = parseInt(process.env.CODESEARCH_PORT ?? cfg.port ?? 8108, 10);
-  const key  = process.env.CODESEARCH_KEY ?? cfg.api_key ?? 'codesearch-local';
+  const TEST_PORT         = parseInt(process.env.CODESEARCH_TEST_PORT ?? 18108, 10);
+  const TEST_KEY          = 'codesearch-test';
   const PYTEST            = process.env.PYTEST ?? `${process.env.HOME}/.local/indexserver-venv/bin/pytest`;
-  const PYTHON3           = PYTEST.replace(/\/bin\/pytest$/, '/bin/python3');
   const TYPESENSE_VERSION = process.env.TYPESENSE_VERSION ?? '27.1';
-  const TS_DIR            = '/tmp/typesense-ci';
+  const DATA_DIR          = '/tmp/codesearch-linux-test';
+  const TS_DIR            = '/tmp/codesearch-linux-test-ts';
+  const CONFIG_FILE       = '/tmp/codesearch-linux-test-config.json';
   const logDir            = mkLogDir();
 
   if (!existsSync(PYTEST)) die(`pytest not found at ${PYTEST}\nRun setup first.`);
 
   const sampleRoot1 = join(REPO, 'sample', 'root1');
   const sampleRoot2 = join(REPO, 'sample', 'root2');
-  const sampleRoots = {
-    root1: { local_path: sampleRoot1 },
-    root2: { local_path: sampleRoot2 },
-  };
 
-  // Write config.json with sample roots so api.py knows about them on startup.
-  writeFileSync(join(REPO, 'config.json'), JSON.stringify(
-    { api_key: key, port, roots: sampleRoots }, null, 2));
+  writeFileSync(CONFIG_FILE, JSON.stringify({
+    api_key: TEST_KEY, port: TEST_PORT,
+    roots: {
+      root1: { local_path: sampleRoot1, external_path: sampleRoot1 },
+      root2: { local_path: sampleRoot2, external_path: sampleRoot2 },
+    },
+  }, null, 2));
 
-  let tsProc  = null;
-  let apiProc = null;
-  function cleanup() {
-    if (tsProc)  { try { tsProc.kill();  } catch {} }
-    if (apiProc) { try { apiProc.kill(); } catch {} }
-  }
-  process.on('exit',    cleanup);
   process.on('SIGINT',  () => process.exit(130));
   process.on('SIGTERM', () => process.exit(143));
 
-  if (await httpHealth(port)) {
-    console.log(`[linux] Typesense already running on port ${port}.`);
-  } else {
-    const s = step('linux/typesense');
-    tsProc = await startTypesenseLinux({ port, key, TYPESENSE_VERSION, TS_DIR });
-    s.ok(`port ${port}`);
-  }
-
-  // Start management API (api.py) if not already running.
-  if (!(await httpHealth(port + 1))) {
-    const s = step('linux/api');
-    const apiLog = join(logDir, 'api.log');
-    const apiLogStream = createWriteStream(apiLog);
-    await new Promise((resolve, reject) => {
-      apiLogStream.once('open', resolve);
-      apiLogStream.once('error', reject);
-    });
-    apiProc = spawn(PYTHON3, [
-      join(REPO, 'indexserver', 'api.py'),
-      '--host', '127.0.0.1',
-      '--port', String(port + 1),
-    ], {
-      env: { ...process.env, TYPESENSE_DATA: TS_DIR },
-      cwd: REPO,
-      stdio: ['ignore', apiLogStream, apiLogStream],
-    });
-    for (let i = 0; i < 30; i++) {
-      await sleep(1000);
-      if (await httpHealth(port + 1)) break;
-    }
-    if (!(await httpHealth(port + 1))) {
-      s.fail(apiLog, 'timeout');
-      process.exit(1);
-    }
-    s.ok(`port ${port + 1}`);
-  }
-
-  // Index sample roots so vscode pipeline tests have data to query.
-  {
-    const s = step('linux/index');
-    const apiPort = port + 1;
-    const post = (path, body) => new Promise((resolve, reject) => {
-      const data = JSON.stringify(body);
-      const req = http.request(
-        { hostname: 'localhost', port: apiPort, path, method: 'POST',
-          headers: { 'Content-Type': 'application/json',
-                     'Content-Length': Buffer.byteLength(data),
-                     'X-TYPESENSE-API-KEY': key } },
-        res => { let b = ''; res.on('data', d => b += d); res.on('end', () => resolve(JSON.parse(b))); }
-      );
-      req.on('error', reject);
-      req.write(data);
-      req.end();
-    });
-    const getStatus = () => new Promise((resolve, reject) => {
-      const req = http.request(
-        { hostname: 'localhost', port: apiPort, path: '/status', method: 'GET',
-          headers: { 'X-TYPESENSE-API-KEY': key } },
-        res => { let b = ''; res.on('data', d => b += d); res.on('end', () => resolve(JSON.parse(b))); }
-      );
-      req.on('error', reject);
-      req.end();
-    });
-    await post('/index/start', { root: 'root1' });
-    await post('/index/start', { root: 'root2' });
-    // Wait for syncer to drain (both roots queued sequentially).
-    for (let i = 0; i < 60; i++) {
-      await sleep(1000);
-      const st = await getStatus();
-      if (!st?.syncer?.alive && (st?.syncer?.pending ?? 0) === 0) break;
-    }
-    s.ok('root1 root2');
-  }
-
   const testTargets = extraArgs.length > 0 ? extraArgs : ['tests/'];
+
+  console.log(`[run] pytest passed → ${join(logDir, 'pytest_passed.log')}`);
+  console.log(`[run] pytest errors → ${join(logDir, 'pytest_errors.log')}`);
+
+  const r = runCaptured('bash', [
+    join(REPO, 'scripts', 'run-tests-with-server.sh'), PYTEST, '-v', ...testTargets,
+  ], {
+    env: {
+      ...process.env,
+      TYPESENSE_VERSION,
+      TYPESENSE_DATA: DATA_DIR,
+      TYPESENSE_DIR:  TS_DIR,
+      CONFIG_FILE,
+      CODESEARCH_PORT:   String(TEST_PORT),
+      CODESEARCH_CONFIG: CONFIG_FILE,
+      APP_ROOT: REPO,
+      PYTEST,
+    },
+  });
+  writeFileSync(join(logDir, 'all.log'), r.output);
+
+  const { passedLog, errorsLog } = writePytestLogs(logDir, r.output);
+
   {
     const s = step('linux/pytest');
-    const pytestLog = join(logDir, 'pytest.log');
-    const r = runCaptured(PYTEST, ['-v', ...testTargets], { cwd: REPO });
-    writeFileSync(pytestLog, r.output);
-    if (r.status !== 0) {
-      s.fail(pytestLog, pytestSummary(r.output));
+    if (pytestSummary(r.output)?.includes('failed') || r.status !== 0) {
+      s.fail(errorsLog, pytestSummary(r.output));
       const d = pytestDetail(r.output); if (d) console.log(d);
-      process.exit(r.status);
+      if (printLogs) console.error('\n--- pytest_errors.log ---\n' +
+        readFileSync(errorsLog, 'utf8') + '\n--- end pytest_errors.log ---');
+      process.exit(r.status || 1);
     }
     s.ok(pytestSummary(r.output));
   }
@@ -553,57 +547,24 @@ async function runLinux() {
   if (runVscode !== 'false') {
     const vscodeLog = join(logDir, 'vscode.log');
     const s = step('linux/vscode');
-    const status = await runVscodeTests({ apiPort: port + 1, apiKey: key, logFile: vscodeLog,
-                                          roots: sampleRoots });
+    const status = await runVscodeTests({
+      apiPort: TEST_PORT + 1, apiKey: TEST_KEY, logFile: vscodeLog,
+      roots: {
+        root1: { external_path: sampleRoot1 },
+        root2: { external_path: sampleRoot2 },
+      },
+    });
     if (status !== 0) {
       const logContent = readFileSync(vscodeLog, 'utf8');
       s.fail(vscodeLog, vscodeSummary(logContent));
       if (printLogs) console.error('\n--- vscode.log ---\n' + logContent + '\n--- end vscode.log ---');
-      process.exit(status);
+      process.exit(status || 1);
     }
     s.ok(vscodeSummary(readFileSync(vscodeLog, 'utf8')));
   }
 
   console.log('[linux] PASSED');
   process.exit(0);
-}
-
-// =============================================================================
-// Typesense auto-start (Linux mode)
-// =============================================================================
-
-async function startTypesenseLinux({ port, key, TYPESENSE_VERSION, TS_DIR }) {
-  const tsBin = `${TS_DIR}/typesense-server`;
-
-  if (!existsSync(tsBin)) {
-    const s = step('linux/download-typesense');
-    runOrDie('bash', ['-c',
-      `mkdir -p "${TS_DIR}/data" && ` +
-      `curl -fsSL "https://dl.typesense.org/releases/${TYPESENSE_VERSION}/typesense-server-${TYPESENSE_VERSION}-linux-amd64.tar.gz" ` +
-      `| tar -xz -C "${TS_DIR}" && chmod +x "${tsBin}"`,
-    ], { stdio: 'pipe' });
-    s.ok();
-  }
-
-  const logStream = createWriteStream(`${TS_DIR}/typesense.log`);
-  await new Promise((resolve, reject) => {
-    logStream.once('open', resolve);
-    logStream.once('error', reject);
-  });
-  const proc = spawn(tsBin, [
-    `--data-dir=${TS_DIR}/data`, `--api-key=${key}`, `--port=${port}`,
-  ], { stdio: ['ignore', logStream, logStream] });
-
-  for (let i = 0; i < 30; i++) {
-    await sleep(1000);
-    if (await httpHealth(port)) return proc;
-  }
-  console.error('[ERROR] Typesense did not become healthy within 30s');
-  try {
-    const log = readFileSync(`${TS_DIR}/typesense.log`, 'utf8').split('\n').slice(-20).join('\n');
-    console.error(log);
-  } catch {}
-  process.exit(1);
 }
 
 // =============================================================================
