@@ -75,33 +75,6 @@ _VENV_PY       = str(_VENV_PY_PATH) if _VENV_PY_PATH.exists() else sys.executabl
 _SERVER_PY     = str(_THIS_DIR / "start_server.py")
 _ENTRYPOINT    = str(_THIS_DIR.parent / "scripts" / "entrypoint.sh")
 
-# ── completion markers ─────────────────────────────────────────────────────────
-# Written to $TYPESENSE_DATA/synced_<collection>.json when a full sync completes.
-# Absence = sync never completed (or was interrupted); triggers auto-sync on startup.
-
-def _marker_path(collection: str) -> Path:
-    return _RUN_DIR / f"synced_{collection}.json"
-
-def _read_marker(collection: str) -> dict | None:
-    p = _marker_path(collection)
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text())
-    except Exception:
-        return None
-
-def _write_marker(collection: str) -> None:
-    _marker_path(collection).write_text(json.dumps({
-        "collection":   collection,
-        "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }))
-
-def _delete_marker(collection: str) -> None:
-    p = _marker_path(collection)
-    if p.exists():
-        p.unlink()
-
 
 CHECK_INTERVAL = 30    # heartbeat poll interval (seconds)
 FAIL_THRESHOLD = 3     # consecutive failures before restarting Typesense
@@ -195,7 +168,7 @@ def _drain_sync_queue() -> None:
 
     Each job calls run_verify() with the shared IndexQueue. The verifier
     enqueues upserts, deletes orphans synchronously, then places a fence
-    so the completion marker is written only after all files reach Typesense.
+    so progress is updated only after all files reach Typesense.
     """
     global _sync_pending, _sync_stop
     while True:
@@ -209,17 +182,11 @@ def _drain_sync_queue() -> None:
         resethard  = job["resethard"]
         host_root  = job["host_root"]
 
-        if resethard:
-            _delete_marker(collection)
-
         if host_root:
             _index_queue.register_host_root(collection, host_root)
 
         stop = threading.Event()
         _sync_stop = stop
-
-        def on_complete(coll=collection):
-            _write_marker(coll)
 
         _INDEXER_PID.write_text(str(os.getpid()))
         try:
@@ -230,7 +197,6 @@ def _drain_sync_queue() -> None:
                 delete_orphans=True,
                 resethard=resethard,
                 stop_event=stop,
-                on_complete=on_complete,
             )
         except Exception as e:
             print(f"[syncer] ERROR for {collection}: {e}", flush=True)
@@ -583,15 +549,12 @@ class _Handler(BaseHTTPRequestHandler):
                 # Use the live Typesense retrieve() as the authoritative existence check;
                 # the cached _schema_status may be stale (e.g. collection just created).
                 col_live_exists = ndocs is not None
-                marker = _read_marker(coll)
                 collections[root_name] = {
                     "collection":        coll,
                     "num_documents":     ndocs,
                     "collection_exists": col_live_exists,
                     "schema_ok":         col_live_exists and schema.get("ok", False),
                     "schema_warnings":   schema.get("warnings", []) if col_live_exists else [],
-                    "synced":            marker is not None,
-                    "synced_at":         marker.get("completed_at", "") if marker else "",
                 }
             result["collections"] = collections
             result["typesense_ok"] = _ts_healthy
@@ -687,8 +650,6 @@ class _Handler(BaseHTTPRequestHandler):
             host_root = HOST_ROOTS.get(root_name, "")
 
             with _sync_lock:
-                if resethard:
-                    _delete_marker(collection)
                 job = {"root_name": root_name, "src_root": src_root, "collection": collection,
                        "resethard": resethard, "host_root": host_root}
                 _sync_pending.append(job)
@@ -937,21 +898,20 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
     _index_queue.start(_ts_client)
     _schema_status = verify_all_schemas(_ts_client)
 
-    # Auto-sync roots that have no completion marker (first run or interrupted)
+    # Auto-sync all roots on every startup so the index is repaired after downtime
     with _sync_lock:
         for root_name in ROOTS:
             try:
                 collection, src_root = get_root(root_name)
             except ValueError:
                 continue
-            if _read_marker(collection) is None:
-                _sync_pending.append({
-                    "root_name": root_name,
-                    "src_root":  src_root,
-                    "collection": collection,
-                    "resethard":  False,
-                    "host_root":  HOST_ROOTS.get(root_name, ""),
-                })
+            _sync_pending.append({
+                "root_name": root_name,
+                "src_root":  src_root,
+                "collection": collection,
+                "resethard":  False,
+                "host_root":  HOST_ROOTS.get(root_name, ""),
+            })
         if _sync_pending:
             _sync_thread = threading.Thread(
                 target=_drain_sync_queue, name="syncer", daemon=True
@@ -974,6 +934,8 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
 def run(host: str = "127.0.0.1", port: int = API_PORT) -> None:
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
     _API_PID.write_text(str(os.getpid()))
+
+    print(f"[api] === STARTED pid={os.getpid()} at {time.strftime('%Y-%m-%dT%H:%M:%S')} ===", flush=True)
 
     # Graceful shutdown on SIGTERM
     _shutdown_event = threading.Event()

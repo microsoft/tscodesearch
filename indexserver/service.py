@@ -80,9 +80,13 @@ def _typesense_health() -> dict:
     try:
         with urllib.request.urlopen(url, timeout=3) as r:
             body = json.loads(r.read())
-            return {"ok": body.get("ok", False), "status": "healthy"}
+            return {"ok": body.get("ok", False), "status": "healthy", "starting": False}
+    except urllib.error.HTTPError as e:
+        if e.code == 503:
+            return {"ok": False, "status": "starting up", "starting": True}
+        return {"ok": False, "status": str(e), "starting": False}
     except Exception as e:
-        return {"ok": False, "status": str(e)}
+        return {"ok": False, "status": str(e), "starting": False}
 
 
 def _collection_stats(collection: str) -> dict | None:
@@ -180,6 +184,8 @@ def cmd_status(args) -> None:
     health = _typesense_health()
     if health["ok"]:
         print(f"  Server  : [OK]  running  (pid={server_pid}, port={PORT})")
+    elif server_alive and health.get("starting"):
+        print(f"  Server  : [>>] starting up  (pid={server_pid}, port={PORT})")
     elif server_alive:
         print(f"  Server  : [!!] process alive (pid={server_pid}) but health failed: {health['status']}")
     else:
@@ -203,6 +209,9 @@ def cmd_status(args) -> None:
                 if syncer_running:
                     print(f"  [{root_name}] Index : [>>] indexing in progress ({ndocs:,} docs so far)")
                     # Don't add to missing_collections — searches will work once done
+                elif health.get("starting"):
+                    print(f"  [{root_name}] Index : [>>] server starting up")
+                    # Don't add to missing_collections — may be fine once server is ready
                 else:
                     print(f"  [{root_name}] Index : [--] not yet indexed — run: ts index")
                     missing_collections.append(root_name)
@@ -254,8 +263,10 @@ def cmd_status(args) -> None:
             err_note   = f"  errors={errors}" if errors else ""
             print(f"  Queue   : {upserted} upserted, {deleted} deleted, {deduped} deduped{depth_note}{err_note}")
 
+        watcher_active = watcher.get("running") or watcher.get("paused")
         syncer_info = api_info.get("syncer", {})
         prog = syncer_info.get("progress", {})
+        pending = syncer_info.get("pending", 0)
         if syncer_info.get("running"):
             total = prog.get("total_to_update", 0)
             phase = prog.get("phase", "starting")
@@ -270,16 +281,30 @@ def cmd_status(args) -> None:
             missing  = prog.get("missing", 0)
             stale    = prog.get("stale", 0)
             fs_files = prog.get("fs_files", 0)
-            indexed  = prog.get("index_docs", 0)
-            detail_parts = []
-            if fs_files:
-                detail_parts.append(f"{indexed:,}/{fs_files:,} indexed")
+            problems = []
             if missing:
-                detail_parts.append(f"{missing:,} missing")
+                problems.append(f"{missing:,} files not in index")
             if stale:
-                detail_parts.append(f"{stale:,} stale")
-            detail = f"  ({', '.join(detail_parts)})" if detail_parts else ""
-            print(f"  Syncer  : {vstatus}{detail}")
+                problems.append(f"{stale:,} stale")
+            if vstatus == "complete":
+                if problems:
+                    if watcher_active or health.get("starting"):
+                        # Watcher is running (or server is still starting) so these numbers
+                        # are likely stale — don't prompt to re-verify yet
+                        detail = f"  ({', '.join(problems)} at last check)"
+                        print(f"  Syncer  : last check found issues{detail}")
+                    else:
+                        detail = f"  ({', '.join(problems)} — run: ts verify)"
+                        print(f"  Syncer  : last check found issues{detail}")
+                else:
+                    total_note = f" ({fs_files:,} files checked)" if fs_files else ""
+                    print(f"  Syncer  : last check OK{total_note}")
+            else:
+                detail = f"  ({', '.join(problems)})" if problems else ""
+                print(f"  Syncer  : {vstatus}{detail}")
+        else:
+            pending_note = f"  ({pending} job(s) queued)" if pending else ""
+            print(f"  Syncer  : [--] idle{pending_note}")
 
     if missing_collections:
         print(f"")
@@ -533,12 +558,21 @@ def cmd_verify(args) -> None:
     print(f"  Monitor with: ts status")
 
 
+_STARTUP_MARKER = "[api] === STARTED"
+
 def _tail_log(path: str, n: int, label: str) -> None:
     if not os.path.exists(path):
         print(f"No {label} log found.")
         return
     with open(path, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
+    # Find the last startup marker so we only show the current run's log.
+    last_start = None
+    for i, line in enumerate(lines):
+        if _STARTUP_MARKER in line:
+            last_start = i
+    if last_start is not None:
+        lines = lines[last_start:]
     for line in lines[-n:]:
         print(line, end="")
 
