@@ -37,7 +37,7 @@ jobs:
         run: echo '{"api_key":"ci-test-key","port":8108,"roots":{}}' > config.json
 
       - name: Run tests
-        run: node run_tests.mjs --linux
+        run: node run_tests.mjs --linux --print-logs
 
       - name: Upload logs on failure
         if: failure()
@@ -63,7 +63,7 @@ jobs:
           node-version: "20"
 
       - name: Run Docker E2E tests
-        run: node run_tests.mjs --docker
+        run: node run_tests.mjs --docker --print-logs
 
       - name: Upload logs on failure
         if: failure()

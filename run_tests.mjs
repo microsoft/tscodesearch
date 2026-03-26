@@ -19,6 +19,7 @@
  * ──────
  *   --vscode        Force VS Code tests on  (default: on for all modes)
  *   --no-vscode     Skip VS Code tests in all modes.
+ *   --print-logs    Print log file contents to stderr on failure (used by CI)
  *
  * Examples
  * ────────
@@ -170,8 +171,9 @@ function readConfig() {
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
-let mode      = null;
-let runVscode = 'auto';
+let mode       = null;
+let runVscode  = 'auto';
+let printLogs  = false;
 const extraArgs = [];
 
 for (const arg of process.argv.slice(2)) {
@@ -180,6 +182,7 @@ for (const arg of process.argv.slice(2)) {
   else if (arg === '--linux')       mode      = 'linux';
   else if (arg === '--vscode')      runVscode = 'true';
   else if (arg === '--no-vscode')   runVscode = 'false';
+  else if (arg === '--print-logs')  printLogs = true;
   else                              extraArgs.push(arg);
 }
 
@@ -322,7 +325,12 @@ async function runDocker() {
                                             root1: { external_path: '/app/sample/root1' },
                                             root2: { external_path: '/app/sample/root2' },
                                           } });
-    if (status !== 0) { s.fail(vscodeLog, vscodeSummary(readFileSync(vscodeLog, 'utf8'))); process.exit(status); }
+    if (status !== 0) {
+      const logContent = readFileSync(vscodeLog, 'utf8');
+      s.fail(vscodeLog, vscodeSummary(logContent));
+      if (printLogs) console.error('\n--- vscode.log ---\n' + logContent + '\n--- end vscode.log ---');
+      process.exit(status);
+    }
     s.ok(vscodeSummary(readFileSync(vscodeLog, 'utf8')));
   }
 
@@ -406,7 +414,9 @@ async function runWsl() {
     const s = step('wsl/vscode');
     const summary = vscodeSummary(vscodeOut);
     if (r.status !== 0 || /[1-9]\d* failed/.test(summary ?? '')) {
-      s.fail(join(logDir, 'vscode.log'), summary); process.exit(r.status || 1);
+      s.fail(join(logDir, 'vscode.log'), summary);
+      if (printLogs) console.error('\n--- vscode.log ---\n' + vscodeOut + '\n--- end vscode.log ---');
+      process.exit(r.status || 1);
     }
     s.ok(summary);
   }
@@ -496,7 +506,12 @@ async function runLinux() {
     const vscodeLog = join(logDir, 'vscode.log');
     const s = step('linux/vscode');
     const status = await runVscodeTests({ apiPort: port + 1, apiKey: key, logFile: vscodeLog });
-    if (status !== 0) { s.fail(vscodeLog, vscodeSummary(readFileSync(vscodeLog, 'utf8'))); process.exit(status); }
+    if (status !== 0) {
+      const logContent = readFileSync(vscodeLog, 'utf8');
+      s.fail(vscodeLog, vscodeSummary(logContent));
+      if (printLogs) console.error('\n--- vscode.log ---\n' + logContent + '\n--- end vscode.log ---');
+      process.exit(status);
+    }
     s.ok(vscodeSummary(readFileSync(vscodeLog, 'utf8')));
   }
 
