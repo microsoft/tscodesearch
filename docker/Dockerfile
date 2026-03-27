@@ -46,6 +46,7 @@ RUN pip install --no-cache-dir \
     tree-sitter-javascript \
     tree-sitter-typescript \
     tree-sitter-cpp \
+    tree-sitter-sql \
     typesense \
     watchdog \
     pathspec \

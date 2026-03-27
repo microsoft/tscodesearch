@@ -53,6 +53,12 @@ try:
 except ImportError:
     _CPP_AVAILABLE = False
 
+try:
+    import tree_sitter_sql as tssql
+    _SQL_AVAILABLE = True
+except ImportError:
+    _SQL_AVAILABLE = False
+
 from indexserver.config import (
     TYPESENSE_CLIENT_CONFIG, COLLECTION, SRC_ROOT,
     INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES,
@@ -119,6 +125,12 @@ if _CPP_AVAILABLE:
     _cpp_parser = Parser(_CPP)
 else:
     _cpp_parser = None
+
+if _SQL_AVAILABLE:
+    _SQL = Language(tssql.language())
+    _sql_parser = Parser(_SQL)
+else:
+    _sql_parser = None
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +839,69 @@ def extract_cpp_metadata(src_bytes: bytes) -> dict:
     }
 
 
+def extract_sql_metadata(src_bytes: bytes) -> dict:
+    """Extract SQL metadata for semantic indexing.
+
+    Uses tree-sitter for CREATE TABLE / VIEW / FUNCTION, and regex
+    fallback for CREATE PROCEDURE (T-SQL isn't fully supported by
+    the tree-sitter-sql grammar).
+    """
+    _empty = {
+        "namespace": "", "class_names": [], "method_names": [],
+        "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
+        "type_refs": [], "attr_names": [], "usings": [],
+        "return_types": [], "param_types": [], "field_types": [],
+        "local_types": [], "member_accesses": [],
+    }
+
+    from src.ast.sql import (
+        extract_table_names, extract_function_names,
+        extract_proc_names_regex, extract_column_info,
+        extract_referenced_tables, extract_invocations,
+    )
+
+    class_names = []   # tables, views
+    method_names = []  # stored procs, functions
+    type_refs = []     # column types
+    call_sites = []    # referenced tables, function calls
+
+    if _SQL_AVAILABLE and _sql_parser is not None:
+        try:
+            tree = _sql_parser.parse(src_bytes)
+        except Exception:
+            tree = None
+
+        if tree:
+            root = tree.root_node
+            class_names.extend(extract_table_names(root, src_bytes))
+            method_names.extend(extract_function_names(root, src_bytes))
+            _, col_types = extract_column_info(root, src_bytes)
+            type_refs.extend(col_types)
+            call_sites.extend(extract_referenced_tables(root, src_bytes))
+            call_sites.extend(extract_invocations(root, src_bytes))
+
+    # Regex fallback for T-SQL stored procedures
+    method_names.extend(extract_proc_names_regex(src_bytes))
+
+    return {
+        "namespace":       "",
+        "class_names":     _dedupe(class_names),
+        "method_names":    _dedupe(method_names),
+        "base_types":      [],
+        "call_sites":      _dedupe(call_sites),
+        "cast_types":      [],
+        "member_sigs":     [],
+        "type_refs":       _dedupe(type_refs),
+        "attr_names":      [],
+        "usings":          [],
+        "return_types":    [],
+        "param_types":     [],
+        "field_types":     [],
+        "local_types":     [],
+        "member_accesses": [],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -860,6 +935,8 @@ _LANGUAGE: dict[str, str] = {
     ".go":    "go",
     # Rust
     ".rs":    "rust",
+    # SQL
+    ".sql":   "sql",
     # Kotlin
     ".kt":    "kotlin",  ".kts":   "kotlin",
     # Swift
@@ -930,6 +1007,8 @@ def build_document(full_path: str, relative_path: str, host_root: str = "") -> d
         meta = extract_ts_metadata(src_bytes, parser=_tsx_parser)
     elif ext in (".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx") and _CPP_AVAILABLE:
         meta = extract_cpp_metadata(src_bytes)
+    elif ext == ".sql":
+        meta = extract_sql_metadata(src_bytes)
     else:
         meta = {
             "namespace": "", "class_names": [], "method_names": [],
