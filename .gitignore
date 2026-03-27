@@ -33,6 +33,10 @@ vscode-codesearch/src/buildInfo.ts
 # Typesense data directory (when running locally outside Docker)
 typesensedata/
 
+# C# build artifacts
+bin/
+obj/
+
 # Test artifacts
 .pytest_cache/
 .coverage

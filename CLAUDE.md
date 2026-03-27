@@ -6,8 +6,20 @@ WSL tests are **non-destructive** — they start an isolated Typesense on port 1
 (override: `CODESEARCH_TEST_PORT`) using `/tmp/codesearch-wsl-test/` as data dir.
 The production instance on port 8108 is never touched.
 
-- Default: `node run_tests.mjs --wsl`
-- Filter: `node run_tests.mjs --wsl -k TestVerifier`
+- **All tests (full suite via Node runner):** `node run_tests.mjs --wsl`
+- **Pytest directly (faster, no Typesense needed for unit tests):**
+  ```bash
+  MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/<drive>/<path>/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/ -v"
+  ```
+- **Single file:**
+  ```bash
+  MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/<drive>/<path>/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/test_cs_throttle.py -v"
+  ```
+- **Filter by name:**
+  ```bash
+  MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/<drive>/<path>/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/ -k TestAccessesOn -v"
+  ```
+- Node runner filter: `node run_tests.mjs --wsl -k TestVerifier`
 
 ---
 
@@ -17,13 +29,13 @@ The production instance on port 8108 is never touched.
 (e.g. `tests/inspect_doc.py`, `smoke_test.py`, `indexserver/query_util.py`, utility scripts) via the Bash tool:
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/python3 /mnt/c/repos/tscodesearch/tests/inspect_doc.py <args>"
+MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/<drive>/<path>/tscodesearch && ~/.local/indexserver-venv/bin/python3 tests/inspect_doc.py <args>"
 ```
 
 To debug AST parsing on a specific file (e.g. why `query_single_file` returns no results):
 ```bash
-wsl.exe -- bash -c "~/.local/indexserver-venv/bin/python3 /mnt/c/repos/tscodesearch/indexserver/query_util.py --methods /mnt/c/myproject/src/path/to/File.cs"
-wsl.exe -- bash -c "~/.local/indexserver-venv/bin/python3 /mnt/c/repos/tscodesearch/indexserver/query_util.py --declarations MethodName /mnt/c/myproject/src/path/to/File.cs"
+MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/<drive>/<path>/tscodesearch && ~/.local/indexserver-venv/bin/python3 indexserver/query_util.py --methods /mnt/<drive>/<path>/src/path/to/File.cs"
+MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/<drive>/<path>/tscodesearch && ~/.local/indexserver-venv/bin/python3 indexserver/query_util.py --declarations MethodName /mnt/<drive>/<path>/src/path/to/File.cs"
 ```
 
 To hit the indexserver API directly with curl (read API key + port from config.json — never hard-code them):
@@ -58,7 +70,7 @@ Run these from the repo root so the `node -e require('./config.json')` resolves 
 
 - `.venv/Scripts/python.exe` is Windows-only and not accessible from Git Bash / Bash tool
 - `~/.local/indexserver-venv/` has everything: `typesense`, `tree_sitter_c_sharp`, `tree_sitter`, `watchdog`, `pathspec`, `pytest`
-- For tests: `MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/pytest /mnt/c/repos/tscodesearch/tests/ [args]"`
+- For tests: `MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/<drive>/<path>/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/ [args]"`
 
 ---
 

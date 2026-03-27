@@ -1,9 +1,13 @@
 // BlobStorage.cs -- blob storage types, casts, member accesses.
 // Covers: casts, member_accesses, param_type, field_type, ident, usings
 using System;
+using Sample.Storage;
 
 namespace Sample.Blob
 {
+    // Stub — IRouter is referenced in RequestHandler.Dispatch but defined nowhere else.
+    public interface IRouter { void Route(string key); }
+
     // -- Core type ------------------------------------------------------------
 
     public class BlobStore

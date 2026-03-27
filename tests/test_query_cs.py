@@ -483,12 +483,12 @@ class TestCasts:
         r = q_casts(src, tree, lines, "NonExistentType")
         assert len(r) == 0
 
-    def test_as_expression_not_matched(self, fx):
-        # (obj as TextProcessor) is NOT an explicit cast; should not appear
+    def test_as_expression_matched(self, fx):
+        # (obj as TextProcessor) is an 'as' cast and must now appear (Round 13 fix)
         src, tree, lines = fx
         r = q_casts(src, tree, lines, "TextProcessor")
-        for _, t in r:
-            assert " as " not in t
+        as_results = [(ln, t) for ln, t in r if " as " in t]
+        assert as_results, f"Expected 'as' cast lines for TextProcessor, got: {r}"
 
     def test_skips_cast_in_comment(self, fx):
         """(TextProcessor)obj mentioned only inside a comment must not be found."""

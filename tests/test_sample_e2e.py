@@ -130,9 +130,9 @@ class TestSampleRoot1E2E(unittest.TestCase):
         info = _collection_info(self.coll)
         self.assertIsNotNone(info, f"Collection {self.coll!r} not found")
         ndocs = info["num_documents"]
-        self.assertEqual(ndocs, 10,
-            f"Expected 10 docs in root1 (Processors.cs, DataStore.cs, BlobStorage.cs, "
-            f"services.py, pipeline.py + 5 language fixtures), got {ndocs}")
+        self.assertEqual(ndocs, 21,
+            f"Expected 21 docs in root1 (Processors.cs, DataStore.cs, BlobStorage.cs, "
+            f"services.py, pipeline.py + language fixtures + bug-fix fixtures), got {ndocs}")
 
     def test_processors_cs_indexed(self):
         self.assertIsNotNone(_get_doc(self.coll, "Processors.cs"),
@@ -678,8 +678,8 @@ class TestSampleMultiRootE2E(unittest.TestCase):
     def test_root1_doc_count_equals_nine(self):
         info = _collection_info(self.coll_r1)
         self.assertIsNotNone(info)
-        self.assertEqual(info["num_documents"], 10,
-            f"root1 expected 10 docs, got {info['num_documents']}")
+        self.assertEqual(info["num_documents"], 20,
+            f"root1 expected 20 docs, got {info['num_documents']}")
 
     def test_root2_doc_count_equals_five(self):
         info = _collection_info(self.coll_r2)

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <OutputType>Library</OutputType>
+    <!-- Suppress warnings that are expected in a pure fixture codebase -->
+    <NoWarn>CS0169;CS0649;CS0414;CS1998;CS8321;CS0219;CS0618</NoWarn>
+  </PropertyGroup>
+</Project>

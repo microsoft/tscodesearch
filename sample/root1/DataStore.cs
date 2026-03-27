@@ -2,6 +2,8 @@
 // Covers: implements, field_type, param_type, usings, ident, local var type_refs
 using System;
 using System.Collections.Generic;
+using Sample.Blob;
+using Sample.Processing;
 
 namespace Sample.Storage
 {
@@ -11,6 +13,9 @@ namespace Sample.Storage
     {
         void Write(string key, byte[] data);
         byte[] Read(string key);
+        // Static methods used in StaticUser below (C# 8+ static interface members)
+        static void Flush(string key) { }
+        static void Reset() { }
     }
 
     // -- Implementations ------------------------------------------------------
@@ -56,7 +61,7 @@ namespace Sample.Storage
     {
         public void Execute(object raw)
         {
-            IDataStore store = GetStore(raw);
+            IDataStore store = (IDataStore)GetStore(raw);
             store.Write("k", null);
         }
 
@@ -103,6 +108,6 @@ namespace Sample.Storage
         public ILogger Log { get; set; }
 
         public LoggedService(ILogger log) { _log = log; }
-        public void Run() { _log.Info("running"); }
+        public void Run() { _log.Log("running"); }
     }
 }
