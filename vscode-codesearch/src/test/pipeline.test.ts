@@ -77,13 +77,27 @@ async function queryApiIsUp(port: number): Promise<boolean> {
 
 let cfg: CodesearchConfig;
 let rootPath: string;
+let rootName: string;
 let serverAvailable = false;
 
 before(async () => {
     const loaded = readConfig();
     if (!loaded) { return; }
     cfg = loaded.config;
-    rootPath = loaded.rootPath;
+
+    // Live pipeline tests require a root named "sample" in the config.
+    // All test runner modes (WSL, Linux, Docker) add this root pointing to
+    // sample/root1 so the collection codesearch_sample is always available.
+    // If it is absent the config is not a test config (e.g. production
+    // config.json was loaded as a fallback) — skip rather than assert against
+    // production files.
+    const sampleEntry = cfg.roots['sample'] as
+        { external_path?: string; local_path?: string } | undefined;
+    if (!sampleEntry) { return; }
+
+    rootName = 'sample';
+    rootPath = (sampleEntry.external_path ?? sampleEntry.local_path ?? '')
+        .replace(/\\/g, '/');
     const port = cfg.port ?? 8108;
     serverAvailable = await queryApiIsUp(port);
 });
@@ -177,7 +191,7 @@ describe('pipeline — declarations mode (IProcessor)', () => {
     it('returns match items; each item has non-empty text', async (t) => {
         if (skipIfNoServer(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, DECLARATIONS_QUERY, 'declarations', 'cs', '', '', 20);
+            cfg, DECLARATIONS_QUERY, 'declarations', 'cs', '', rootName, 20);
         printTree(renderTextTree(result, DECLARATIONS_QUERY, 'declarations'));
 
         assert.ok(result.found > 0, `no declarations results for "${DECLARATIONS_QUERY}"`);
@@ -196,7 +210,7 @@ describe('pipeline — uses mode (IDataStore)', () => {
     it('returns exact line-level matches; all files have at least one match', async (t) => {
         if (skipIfNoServer(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, USES_QUERY, 'uses', 'cs', '', '', 20);
+            cfg, USES_QUERY, 'uses', 'cs', '', rootName, 20);
         printTree(renderTextTree(result, USES_QUERY, 'uses'));
 
         assert.ok(result.found > 0, `no uses results for "${USES_QUERY}"`);
@@ -214,7 +228,7 @@ describe('pipeline — uses mode (IDataStore)', () => {
     it('no hit has zero matches (empty-match filter works)', async (t) => {
         if (skipIfNoServer(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, USES_QUERY, 'uses', 'cs', '', '', 20);
+            cfg, USES_QUERY, 'uses', 'cs', '', rootName, 20);
         for (const hit of result.hits) {
             assert.ok(hit._matches.length > 0,
                 `${hit.document.relative_path}: in results with 0 matches`);
@@ -226,7 +240,7 @@ describe('pipeline — implements mode (IDataStore)', () => {
     it('runs without error; all returned files have at least one match', async (t) => {
         if (skipIfNoServer(t)) { return; }
         const result = await runSearchPipeline(
-            cfg, IMPLEMENTS_QUERY, 'implements', 'cs', '', '', 20);
+            cfg, IMPLEMENTS_QUERY, 'implements', 'cs', '', rootName, 20);
         printTree(renderTextTree(result, IMPLEMENTS_QUERY, 'implements'));
         assert.ok(result.found > 0, `no implements results for "${IMPLEMENTS_QUERY}"`);
         for (const hit of result.hits) {
@@ -250,7 +264,7 @@ describe('expansion — doQuerySingleFile round-trip (IDataStore uses)', () => {
 
         // Step 1: search to get a result set, same as the webview does.
         const searchResult = await runSearchPipeline(
-            cfg, USES_QUERY, 'uses', 'cs', '', '', 10);
+            cfg, USES_QUERY, 'uses', 'cs', '', rootName, 10);
         if (searchResult.hits.length === 0) {
             t.skip(`no "uses" results for "${USES_QUERY}" — index may not contain sample data`);
             return;
@@ -285,7 +299,7 @@ describe('expansion — doQuerySingleFile round-trip (IDataStore uses)', () => {
         if (skipIfNoServer(t)) { return; }
 
         const searchResult = await runSearchPipeline(
-            cfg, DECLARATIONS_QUERY, 'declarations', 'cs', '', '', 10);
+            cfg, DECLARATIONS_QUERY, 'declarations', 'cs', '', rootName, 10);
         if (searchResult.hits.length === 0) {
             t.skip(`no "declarations" results for "${DECLARATIONS_QUERY}"`);
             return;
@@ -308,7 +322,7 @@ describe('expansion — doQuerySingleFile round-trip (IDataStore uses)', () => {
         // Both search pipeline and single-file expansion should agree on line numbers
         // for fully-expanded hits (ast_expanded=true).
         const searchResult = await runSearchPipeline(
-            cfg, USES_QUERY, 'uses', 'cs', '', '', 5);
+            cfg, USES_QUERY, 'uses', 'cs', '', rootName, 5);
         const hit = searchResult.hits.find((h) => h._matches.length > 0 && h.ast_expanded !== false);
         if (!hit) {
             t.skip('no fully-expanded hits in search results');

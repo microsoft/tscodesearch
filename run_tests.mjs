@@ -234,8 +234,9 @@ async function runDocker() {
   writeFileSync(tmpConfig, JSON.stringify({
     api_key: API_KEY, port: 8108,
     roots: {
-      root1: { local_path: '/app/sample/root1' },
-      root2: { local_path: '/app/sample/root2' },
+      root1:  { local_path: '/app/sample/root1' },
+      root2:  { local_path: '/app/sample/root2' },
+      sample: { local_path: '/app/sample/root1' },
     },
   }, null, 2));
 
@@ -301,7 +302,7 @@ async function runDocker() {
     const r = runCaptured('docker', [
       'exec', CONTAINER,
       '/app/scripts/e2e.sh', 'run-suite',
-      'codesearch_root1', 'codesearch_root2',
+      'codesearch_root1', 'codesearch_root2', 'codesearch_sample',
       '--', ...extraArgs,
     ]);
     writeFileSync(suiteLog, r.output);
@@ -322,8 +323,9 @@ async function runDocker() {
                                           logFile: vscodeLog, container: CONTAINER,
                                           logDir,
                                           roots: {
-                                            root1: { external_path: '/app/sample/root1' },
-                                            root2: { external_path: '/app/sample/root2' },
+                                            root1:  { external_path: '/app/sample/root1' },
+                                            root2:  { external_path: '/app/sample/root2' },
+                                            sample: { external_path: '/app/sample/root1' },
                                           } });
     if (status !== 0) {
       const logContent = readFileSync(vscodeLog, 'utf8');
@@ -364,8 +366,9 @@ async function runWsl() {
   const testConfig = JSON.stringify({
     api_key: TEST_KEY, port: TEST_PORT,
     roots: {
-      root1: { local_path: wslRoot1, external_path: winRoot1 },
-      root2: { local_path: wslRoot2, external_path: winRoot2 },
+      root1:  { local_path: wslRoot1, external_path: winRoot1 },
+      root2:  { local_path: wslRoot2, external_path: winRoot2 },
+      sample: { local_path: wslRoot1, external_path: winRoot1 },
     },
   }, null, 2);
   {
@@ -444,8 +447,9 @@ async function runLinux() {
   const sampleRoot1 = join(REPO, 'sample', 'root1');
   const sampleRoot2 = join(REPO, 'sample', 'root2');
   const sampleRoots = {
-    root1: { local_path: sampleRoot1 },
-    root2: { local_path: sampleRoot2 },
+    root1:  { local_path: sampleRoot1 },
+    root2:  { local_path: sampleRoot2 },
+    sample: { local_path: sampleRoot1 },
   };
 
   // Write config.json with sample roots so api.py knows about them on startup.
@@ -527,7 +531,8 @@ async function runLinux() {
     });
     await post('/index/start', { root: 'root1' });
     await post('/index/start', { root: 'root2' });
-    // Wait for syncer to drain (both roots queued sequentially).
+    await post('/index/start', { root: 'sample' });
+    // Wait for syncer to drain (all roots queued sequentially).
     for (let i = 0; i < 60; i++) {
       await sleep(1000);
       const st = await getStatus();

@@ -104,6 +104,12 @@ def _delete_collection(collection: str) -> None:
         pass
 
 
+def _count_sample_files(src_root: str) -> int:
+    """Count indexable files in a sample directory using the same logic as the indexer."""
+    from indexserver.indexer import walk_source_files
+    return sum(1 for _ in walk_source_files(src_root))
+
+
 # ── TestSampleRoot1E2E ────────────────────────────────────────────────────────
 
 class TestSampleRoot1E2E(unittest.TestCase):
@@ -130,9 +136,9 @@ class TestSampleRoot1E2E(unittest.TestCase):
         info = _collection_info(self.coll)
         self.assertIsNotNone(info, f"Collection {self.coll!r} not found")
         ndocs = info["num_documents"]
-        self.assertEqual(ndocs, 21,
-            f"Expected 21 docs in root1 (Processors.cs, DataStore.cs, BlobStorage.cs, "
-            f"services.py, pipeline.py + language fixtures + bug-fix fixtures), got {ndocs}")
+        expected = _count_sample_files(SAMPLE_ROOT1)
+        self.assertEqual(ndocs, expected,
+            f"Expected {expected} docs in root1, got {ndocs}")
 
     def test_processors_cs_indexed(self):
         self.assertIsNotNone(_get_doc(self.coll, "Processors.cs"),
@@ -311,9 +317,9 @@ class TestSampleRoot2E2E(unittest.TestCase):
         info = _collection_info(self.coll)
         self.assertIsNotNone(info, f"Collection {self.coll!r} not found")
         ndocs = info["num_documents"]
-        self.assertEqual(ndocs, 5,
-            f"Expected 5 docs in root2 (Widgets.cs, Repositories.cs, "
-            f"SynthTypes.cs, models.py, notifier.py), got {ndocs}")
+        expected = _count_sample_files(SAMPLE_ROOT2)
+        self.assertEqual(ndocs, expected,
+            f"Expected {expected} docs in root2, got {ndocs}")
 
     def test_widgets_cs_indexed(self):
         self.assertIsNotNone(_get_doc(self.coll, "Widgets.cs"),
@@ -678,14 +684,16 @@ class TestSampleMultiRootE2E(unittest.TestCase):
     def test_root1_doc_count_equals_nine(self):
         info = _collection_info(self.coll_r1)
         self.assertIsNotNone(info)
-        self.assertEqual(info["num_documents"], 20,
-            f"root1 expected 20 docs, got {info['num_documents']}")
+        expected = _count_sample_files(SAMPLE_ROOT1)
+        self.assertEqual(info["num_documents"], expected,
+            f"root1 expected {expected} docs, got {info['num_documents']}")
 
     def test_root2_doc_count_equals_five(self):
         info = _collection_info(self.coll_r2)
         self.assertIsNotNone(info)
-        self.assertEqual(info["num_documents"], 5,
-            f"root2 expected 5 docs, got {info['num_documents']}")
+        expected = _count_sample_files(SAMPLE_ROOT2)
+        self.assertEqual(info["num_documents"], expected,
+            f"root2 expected {expected} docs, got {info['num_documents']}")
 
 
 # ── TestPreConfiguredRootsE2E ─────────────────────────────────────────────────
@@ -727,8 +735,9 @@ class TestPreConfiguredRootsE2E(unittest.TestCase):
         coll = self._coll("root1")
         info = _collection_info(coll)
         self.assertIsNotNone(info)
-        self.assertEqual(info["num_documents"], 10,
-            f"Expected 10 docs in {coll!r}, got {info['num_documents']}")
+        expected = _count_sample_files(SAMPLE_ROOT1)
+        self.assertEqual(info["num_documents"], expected,
+            f"Expected {expected} docs in {coll!r}, got {info['num_documents']}")
 
     def test_root1_has_processors_cs(self):
         self.assertIsNotNone(_get_doc(self._coll("root1"), "Processors.cs"),
@@ -749,8 +758,9 @@ class TestPreConfiguredRootsE2E(unittest.TestCase):
         coll = self._coll("root2")
         info = _collection_info(coll)
         self.assertIsNotNone(info)
-        self.assertEqual(info["num_documents"], 5,
-            f"Expected 5 docs in {coll!r}, got {info['num_documents']}")
+        expected = _count_sample_files(SAMPLE_ROOT2)
+        self.assertEqual(info["num_documents"], expected,
+            f"Expected {expected} docs in {coll!r}, got {info['num_documents']}")
 
     def test_root2_has_widgets_cs(self):
         self.assertIsNotNone(_get_doc(self._coll("root2"), "Widgets.cs"),

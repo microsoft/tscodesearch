@@ -94,11 +94,17 @@ if [ "$RUN_VSCODE" = "1" ]; then
     echo ""
     echo "=== VSCODE_TESTS_START ==="
     if [ -d "$VSCODE_DIR/node_modules" ] && command -v node.exe &>/dev/null; then
-        WIN_CFG=$(wslpath -w "$CONFIG_FILE")
+        # Copy the config to the Windows temp dir so node.exe can read it via a
+        # drive-letter path.  wslpath -w /tmp/... gives a \\wsl.localhost\... UNC
+        # path which node.exe on Windows cannot reliably access.
+        WIN_TEMP=$(cmd.exe /c "echo %TEMP%" 2>/dev/null | tr -d '\r\n')
+        WIN_CFG_DEST="$WIN_TEMP\\codesearch-vscode-test-config.json"
+        WSL_CFG_DEST=$(wslpath -u "$WIN_CFG_DEST")
+        cp "$CONFIG_FILE" "$WSL_CFG_DEST"
         set +e
         (
             cd "$VSCODE_DIR"
-            CS_CONFIG="$WIN_CFG" \
+            CS_CONFIG="$WIN_CFG_DEST" \
                 node.exe --require tsx/cjs --test \
                     src/test/client.test.ts \
                     src/test/pipeline.test.ts
