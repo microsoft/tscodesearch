@@ -171,6 +171,7 @@ def extract_column_sigs(root, src: bytes) -> list:
     return sigs
 
 
+
 def extract_referenced_tables(root, src: bytes) -> list:
     """Extract table names referenced in FROM, JOIN, and REFERENCES clauses."""
     names = []

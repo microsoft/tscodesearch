@@ -54,6 +54,7 @@ class TestExtractSqlMetadata:
         proc_names_found = [n for n in mn if "proc_GetProductById" in n]
         assert len(proc_names_found) > 0, f"proc_GetProductById not found in {mn}"
 
+
     def test_function_found(self):
         """CREATE FUNCTION name should appear in method_names."""
         mn = self.meta["method_names"]
