@@ -30,7 +30,7 @@ jobs:
           ~/.local/indexserver-venv/bin/pip install -q \
             typesense tree-sitter tree-sitter-c-sharp tree-sitter-python \
             tree-sitter-javascript tree-sitter-typescript \
-            tree-sitter-rust tree-sitter-cpp \
+            tree-sitter-rust tree-sitter-cpp tree-sitter-sql \
             watchdog pathspec pytest
 
       - name: Write config.json
