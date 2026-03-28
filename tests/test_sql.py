@@ -35,12 +35,14 @@ class TestExtractSqlMetadata:
         from indexserver.indexer import extract_sql_metadata
         self.meta = extract_sql_metadata(fixture_bytes)
 
+    @pytest.mark.skipif(not _SQL_AVAILABLE, reason="tree-sitter-sql not installed")
     def test_tables_found(self):
         """CREATE TABLE names should appear in class_names."""
         cn = self.meta["class_names"]
         assert "dbo.Products" in cn or "Products" in cn
         assert "dbo.Orders" in cn or "Orders" in cn
 
+    @pytest.mark.skipif(not _SQL_AVAILABLE, reason="tree-sitter-sql not installed")
     def test_view_found(self):
         """CREATE VIEW name should appear in class_names."""
         cn = self.meta["class_names"]
