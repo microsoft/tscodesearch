@@ -5,16 +5,11 @@ procedures, functions, column types, and table references.
 import os
 import sys
 import pytest
+import tree_sitter_sql
 
 _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
-
-try:
-    import tree_sitter_sql
-    _SQL_AVAILABLE = True
-except ImportError:
-    _SQL_AVAILABLE = False
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "sql_fixture.sql")
 
@@ -35,14 +30,12 @@ class TestExtractSqlMetadata:
         from indexserver.indexer import extract_sql_metadata
         self.meta = extract_sql_metadata(fixture_bytes)
 
-    @pytest.mark.skipif(not _SQL_AVAILABLE, reason="tree-sitter-sql not installed")
     def test_tables_found(self):
         """CREATE TABLE names should appear in class_names."""
         cn = self.meta["class_names"]
         assert "dbo.Products" in cn or "Products" in cn
         assert "dbo.Orders" in cn or "Orders" in cn
 
-    @pytest.mark.skipif(not _SQL_AVAILABLE, reason="tree-sitter-sql not installed")
     def test_view_found(self):
         """CREATE VIEW name should appear in class_names."""
         cn = self.meta["class_names"]
@@ -51,7 +44,6 @@ class TestExtractSqlMetadata:
     def test_procs_found(self):
         """Stored procedure names should appear in method_names."""
         mn = self.meta["method_names"]
-        # At least the regex fallback should find these
         proc_names_found = [n for n in mn if "proc_GetProductById" in n]
         assert len(proc_names_found) > 0, f"proc_GetProductById not found in {mn}"
 
@@ -66,33 +58,27 @@ class TestExtractSqlMetadata:
         proc_names_found = [n for n in mn if "proc_UpdateProduct" in n]
         assert len(proc_names_found) > 0, f"proc_UpdateProduct not found in {mn}"
 
-    @pytest.mark.skipif(not _SQL_AVAILABLE, reason="tree-sitter-sql not installed")
     def test_function_found(self):
         """CREATE FUNCTION name should appear in method_names."""
         mn = self.meta["method_names"]
         func_names_found = [n for n in mn if "fn_GetProductCount" in n]
         assert len(func_names_found) > 0, f"fn_GetProductCount not found in {mn}"
 
-    @pytest.mark.skipif(not _SQL_AVAILABLE, reason="tree-sitter-sql not installed")
     def test_column_types(self):
         """Column types should appear in type_refs."""
         tr = [t.upper() for t in self.meta["type_refs"]]
-        # Should find at least some of the common types
         found_any = any(t in tr for t in ["UNIQUEIDENTIFIER", "NVARCHAR(256)", "INT", "DATETIME", "BIT"])
         assert found_any, f"No column types found in {tr}"
 
-    @pytest.mark.skipif(not _SQL_AVAILABLE, reason="tree-sitter-sql not installed")
     def test_referenced_tables(self):
         """Tables referenced in FROM/JOIN/REFERENCES should appear in call_sites."""
         cs = self.meta["call_sites"]
-        # The FROM clauses reference dbo.Products
         ref_found = [n for n in cs if "Products" in n]
         assert len(ref_found) > 0, f"No Products reference found in call_sites: {cs}"
 
 
 # ── AST helper tests ──────────────────────────────────────────────────────────
 
-@pytest.mark.skipif(not _SQL_AVAILABLE, reason="tree-sitter-sql not installed")
 class TestSqlAstHelpers:
     """Tests for src/ast/sql.py helper functions."""
 
@@ -133,7 +119,6 @@ class TestSqlAstHelpers:
         from src.ast.sql import _object_name, _full_object_name
         from src.ast.cs import _find_all
         refs = _find_all(self.root, lambda n: n.type == "object_reference")
-        # Should find at least one with the name "Products"
         refs_found = [r for r in refs if _object_name(r, self.src) == "Products"]
         assert len(refs_found) > 0
 
