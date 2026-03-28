@@ -27,11 +27,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python3 -m venv ~/.local/indexserver-venv
-          ~/.local/indexserver-venv/bin/pip install -q \
-            typesense tree-sitter tree-sitter-c-sharp tree-sitter-python \
-            tree-sitter-javascript tree-sitter-typescript \
-            tree-sitter-rust tree-sitter-cpp \
-            watchdog pathspec pytest
+          ~/.local/indexserver-venv/bin/pip install -q -r requirements-dev.txt
 
       - name: Write config.json
         run: echo '{"api_key":"ci-test-key","port":8108,"roots":{}}' > config.json

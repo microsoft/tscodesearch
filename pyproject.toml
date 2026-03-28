@@ -12,6 +12,7 @@ dependencies = [
     "tree-sitter",
     "tree-sitter-c-sharp",
     "tree-sitter-python",
+    "tree-sitter-sql",
     "typesense",
     "watchdog",
     "pathspec",
