@@ -1,6 +1,6 @@
 """
 Tests for SQL metadata extraction — covers tables, views, stored
-procedures, functions, column types, and table references.
+procedures, functions, column types, table references, and column sigs.
 """
 import os
 import sys
@@ -11,12 +11,19 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-FIXTURE = os.path.join(os.path.dirname(__file__), "sql_fixture.sql")
+CATALOG_SQL = os.path.join(_base, "sample", "root1", "sql", "catalog.sql")
+ACCOUNTS_SQL = os.path.join(_base, "sample", "root1", "sql", "accounts.sql")
 
 
 @pytest.fixture
-def fixture_bytes():
-    with open(FIXTURE, "rb") as f:
+def catalog_bytes():
+    with open(CATALOG_SQL, "rb") as f:
+        return f.read()
+
+
+@pytest.fixture
+def accounts_bytes():
+    with open(ACCOUNTS_SQL, "rb") as f:
         return f.read()
 
 
@@ -26,9 +33,9 @@ class TestExtractSqlMetadata:
     """Unit tests for the indexer's extract_sql_metadata()."""
 
     @pytest.fixture(autouse=True)
-    def _load(self, fixture_bytes):
+    def _load(self, catalog_bytes):
         from indexserver.indexer import extract_sql_metadata
-        self.meta = extract_sql_metadata(fixture_bytes)
+        self.meta = extract_sql_metadata(catalog_bytes)
 
     def test_tables_found(self):
         """CREATE TABLE names should appear in class_names."""
@@ -46,17 +53,6 @@ class TestExtractSqlMetadata:
         mn = self.meta["method_names"]
         proc_names_found = [n for n in mn if "proc_GetProductById" in n]
         assert len(proc_names_found) > 0, f"proc_GetProductById not found in {mn}"
-
-    def test_proc_insert_order_found(self):
-        mn = self.meta["method_names"]
-        proc_names_found = [n for n in mn if "proc_InsertOrder" in n]
-        assert len(proc_names_found) > 0, f"proc_InsertOrder not found in {mn}"
-
-    def test_create_or_alter_proc(self):
-        """CREATE OR ALTER PROCEDURE should be found by regex fallback."""
-        mn = self.meta["method_names"]
-        proc_names_found = [n for n in mn if "proc_UpdateProduct" in n]
-        assert len(proc_names_found) > 0, f"proc_UpdateProduct not found in {mn}"
 
     def test_function_found(self):
         """CREATE FUNCTION name should appear in method_names."""
@@ -76,6 +72,44 @@ class TestExtractSqlMetadata:
         ref_found = [n for n in cs if "Products" in n]
         assert len(ref_found) > 0, f"No Products reference found in call_sites: {cs}"
 
+    def test_column_sigs(self):
+        """Column definitions should appear in member_sigs as 'Table.Column TYPE'."""
+        ms = self.meta["member_sigs"]
+        assert any("ProductId" in s for s in ms), f"ProductId not found in member_sigs: {ms}"
+        assert any("ProductName" in s for s in ms), f"ProductName not found in member_sigs: {ms}"
+
+    def test_column_sig_format(self):
+        """member_sigs entries should include the column type."""
+        ms = self.meta["member_sigs"]
+        sig = next((s for s in ms if "ProductId" in s), None)
+        assert sig is not None
+        assert "UNIQUEIDENTIFIER" in sig.upper(), f"Type missing from sig: {sig}"
+
+
+# ── accounts.sql tests ────────────────────────────────────────────────────────
+
+class TestExtractSqlMetadataAccounts:
+    """Verify metadata extraction on the accounts sample file."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self, accounts_bytes):
+        from indexserver.indexer import extract_sql_metadata
+        self.meta = extract_sql_metadata(accounts_bytes)
+
+    def test_tables_found(self):
+        cn = self.meta["class_names"]
+        assert "dbo.Users" in cn or "Users" in cn
+        assert "dbo.Roles" in cn or "Roles" in cn
+
+    def test_column_sigs(self):
+        ms = self.meta["member_sigs"]
+        assert any("UserId" in s for s in ms), f"UserId not found in member_sigs: {ms}"
+        assert any("Username" in s for s in ms), f"Username not found in member_sigs: {ms}"
+
+    def test_create_or_alter_proc(self):
+        mn = self.meta["method_names"]
+        assert any("proc_UpdateUserEmail" in n for n in mn), f"proc_UpdateUserEmail not found in {mn}"
+
 
 # ── AST helper tests ──────────────────────────────────────────────────────────
 
@@ -83,13 +117,13 @@ class TestSqlAstHelpers:
     """Tests for src/ast/sql.py helper functions."""
 
     @pytest.fixture(autouse=True)
-    def _parse(self, fixture_bytes):
+    def _parse(self, catalog_bytes):
         from tree_sitter import Language, Parser
         lang = Language(tree_sitter_sql.language())
         parser = Parser(lang)
-        self.tree = parser.parse(fixture_bytes)
+        self.tree = parser.parse(catalog_bytes)
         self.root = self.tree.root_node
-        self.src = fixture_bytes
+        self.src = catalog_bytes
 
     def test_extract_table_names(self):
         from src.ast.sql import extract_table_names
@@ -106,8 +140,6 @@ class TestSqlAstHelpers:
         from src.ast.sql import extract_proc_names_regex
         names = extract_proc_names_regex(self.src)
         assert any("proc_GetProductById" in n for n in names)
-        assert any("proc_InsertOrder" in n for n in names)
-        assert any("proc_UpdateProduct" in n for n in names)
 
     def test_extract_column_info(self):
         from src.ast.sql import extract_column_info
@@ -115,8 +147,14 @@ class TestSqlAstHelpers:
         assert "ProductId" in col_names
         assert "ProductName" in col_names
 
+    def test_extract_column_sigs(self):
+        from src.ast.sql import extract_column_sigs
+        sigs = extract_column_sigs(self.root, self.src)
+        assert any("ProductId" in s for s in sigs), f"ProductId not in sigs: {sigs}"
+        assert any("UNIQUEIDENTIFIER" in s.upper() for s in sigs), f"Type missing: {sigs}"
+
     def test_object_name_helper(self):
-        from src.ast.sql import _object_name, _full_object_name
+        from src.ast.sql import _object_name
         from src.ast.cs import _find_all
         refs = _find_all(self.root, lambda n: n.type == "object_reference")
         refs_found = [r for r in refs if _object_name(r, self.src) == "Products"]

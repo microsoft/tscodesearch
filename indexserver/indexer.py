@@ -857,11 +857,12 @@ def extract_sql_metadata(src_bytes: bytes) -> dict:
     from src.ast.sql import (
         extract_table_names, extract_function_names,
         extract_proc_names_regex, extract_column_info,
-        extract_referenced_tables, extract_invocations,
+        extract_column_sigs, extract_referenced_tables, extract_invocations,
     )
 
     class_names = []   # tables, views
     method_names = []  # stored procs, functions
+    member_sigs = []   # column signatures: TableName.ColName TYPE
     type_refs = []     # column types
     call_sites = []    # referenced tables, function calls
 
@@ -877,6 +878,7 @@ def extract_sql_metadata(src_bytes: bytes) -> dict:
             method_names.extend(extract_function_names(root, src_bytes))
             _, col_types = extract_column_info(root, src_bytes)
             type_refs.extend(col_types)
+            member_sigs.extend(extract_column_sigs(root, src_bytes))
             call_sites.extend(extract_referenced_tables(root, src_bytes))
             call_sites.extend(extract_invocations(root, src_bytes))
 
@@ -890,7 +892,7 @@ def extract_sql_metadata(src_bytes: bytes) -> dict:
         "base_types":      [],
         "call_sites":      _dedupe(call_sites),
         "cast_types":      [],
-        "member_sigs":     [],
+        "member_sigs":     _dedupe(member_sigs),
         "type_refs":       _dedupe(type_refs),
         "attr_names":      [],
         "usings":          [],

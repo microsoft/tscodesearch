@@ -107,6 +107,35 @@ def extract_proc_names_regex(src: bytes) -> list:
     return names
 
 
+_COL_TYPE_NODE_TYPES = {
+    "int", "bigint", "smallint", "tinyint", "bit",
+    "nvarchar", "varchar", "char", "nchar",
+    "datetime", "datetime2", "date", "time", "datetimeoffset",
+    "decimal", "numeric", "float", "real", "money",
+    "uniqueidentifier", "varbinary", "binary", "image",
+    "text", "ntext", "xml", "sql_variant",
+}
+
+
+def _col_type_text(name_node, children, src: bytes) -> str:
+    """Return the type text for a column_definition's named children.
+    Handles both keyword type nodes and object_reference types (e.g. UNIQUEIDENTIFIER)."""
+    past_name = False
+    for child in children:
+        if child is name_node:
+            past_name = True
+            continue
+        if not past_name:
+            continue
+        ctype = child.type.lower()
+        if ctype in _COL_TYPE_NODE_TYPES or ctype.startswith("keyword_"):
+            return _text(child, src).strip().upper()
+        # UNIQUEIDENTIFIER and other user-defined types land as object_reference
+        if ctype == "object_reference":
+            return _text(child, src).strip().upper()
+    return ""
+
+
 def extract_column_info(root, src: bytes) -> tuple:
     """Extract column names and types from column_definition nodes.
     Returns (column_names: list, column_types: list)."""
@@ -114,28 +143,32 @@ def extract_column_info(root, src: bytes) -> tuple:
     col_types = []
     for node in _find_all(root, lambda n: n.type == "column_definition"):
         children = node.named_children
-        # First identifier child is column name
         name_node = next((c for c in children if c.type == "identifier"), None)
         if name_node:
             col_names.append(_text(name_node, src).strip())
-        # Type node follows the name — various type node types
-        type_keywords = {
-            "int", "bigint", "smallint", "tinyint", "bit",
-            "nvarchar", "varchar", "char", "nchar",
-            "datetime", "datetime2", "date", "time", "datetimeoffset",
-            "decimal", "numeric", "float", "real", "money",
-            "uniqueidentifier", "varbinary", "binary", "image",
-            "text", "ntext", "xml", "sql_variant",
-            "keyword_int", "keyword_bigint", "keyword_datetime",
-            "keyword_bit", "keyword_float", "keyword_real",
-        }
-        for child in children:
-            ctype = child.type.lower()
-            if ctype in type_keywords or ctype.startswith("keyword_"):
-                col_types.append(_text(child, src).strip().upper())
-                break
-
+            col_type = _col_type_text(name_node, children, src)
+            if col_type:
+                col_types.append(col_type)
     return col_names, col_types
+
+
+def extract_column_sigs(root, src: bytes) -> list:
+    """Extract column signatures as 'TableName.ColumnName TYPE' strings.
+    Returns one entry per column defined in a CREATE TABLE statement."""
+    sigs = []
+    for table_node in _find_all(root, lambda n: n.type == "create_table"):
+        ref = next((c for c in table_node.children if c.type == "object_reference"), None)
+        table_name = _object_name(ref, src) if ref else ""
+        for col_node in _find_all(table_node, lambda n: n.type == "column_definition"):
+            children = col_node.named_children
+            name_node = next((c for c in children if c.type == "identifier"), None)
+            if not name_node:
+                continue
+            col_name = _text(name_node, src).strip()
+            col_type = _col_type_text(name_node, children, src)
+            prefix = f"{table_name}." if table_name else ""
+            sigs.append(f"{prefix}{col_name} {col_type}".strip())
+    return sigs
 
 
 def extract_referenced_tables(root, src: bytes) -> list:
