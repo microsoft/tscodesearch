@@ -143,7 +143,8 @@ def py_q_decorators(src, tree, lines, name=None):
 def py_q_imports(src, tree, lines):
     results = []
     for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("import_statement", "import_from_statement")):
+                          lambda n: n.type in ("import_statement", "import_from_statement",
+                                               "future_import_statement")):
         results.append((_line(node), _text(node, src).strip()))
     return results
 
@@ -163,13 +164,29 @@ def py_q_params(src, tree, lines, method_name):
             if p.type == "identifier":
                 param_lines.append(f"  {_text(p, src)}")
             elif p.type in ("typed_parameter", "typed_default_parameter"):
-                pname = next((_text(c, src) for c in p.named_children
-                              if c.type == "identifier"), "")
+                # The name may be a plain identifier or nested inside
+                # list_splat_pattern (*args: T) or dictionary_splat_pattern (**kwargs: T)
+                prefix = ""
+                pname = ""
+                for c in p.named_children:
+                    if c.type == "identifier":
+                        pname = _text(c, src)
+                        break
+                    elif c.type == "list_splat_pattern":
+                        prefix = "*"
+                        pname = next((_text(gc, src) for gc in c.named_children
+                                      if gc.type == "identifier"), "")
+                        break
+                    elif c.type == "dictionary_splat_pattern":
+                        prefix = "**"
+                        pname = next((_text(gc, src) for gc in c.named_children
+                                      if gc.type == "identifier"), "")
+                        break
                 ptype = p.child_by_field_name("type")
                 pt_txt = f": {_text(ptype, src)}" if ptype else ""
                 dval = p.child_by_field_name("value") if p.type == "typed_default_parameter" else None
                 dv_txt = f" = {_text(dval, src)}" if dval else ""
-                param_lines.append(f"  {pname}{pt_txt}{dv_txt}")
+                param_lines.append(f"  {prefix}{pname}{pt_txt}{dv_txt}")
             elif p.type == "default_parameter":
                 pname = next((_text(c, src) for c in p.named_children
                               if c.type == "identifier"), "")

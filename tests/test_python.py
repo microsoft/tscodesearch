@@ -247,6 +247,36 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.foo_path, "imports")
         self.assertIn("typing", out)
 
+    def test_imports_includes_future_import(self):
+        # from __future__ import annotations is a future_import_statement node,
+        # distinct from import_from_statement — must be found too
+        n, out = self._run(self.foo_path, "imports")
+        self.assertIn("__future__", out)
+
+    def test_imports_future_appears_first(self):
+        # future import must be line 1 of the fixture
+        n, out = self._run(self.foo_path, "imports")
+        first_line = out.strip().splitlines()[0]
+        self.assertIn("__future__", first_line)
+
+    # ── mode: attrs (Python decorator alias) ──────────────────────────────────
+
+    def test_attrs_mode_works_for_python(self):
+        # --attrs in query_util maps to mode "attrs"; Python dispatch must
+        # alias it to decorators rather than returning Unknown mode
+        n, out = self._run(self.foo_path, "attrs")
+        self.assertGreater(n, 0)
+        self.assertIn("dataclass", out)
+
+    def test_attrs_mode_filtered(self):
+        n, out = self._run(self.foo_path, "attrs", "dataclass")
+        self.assertGreater(n, 0)
+        self.assertIn("dataclass", out)
+
+    def test_attrs_mode_no_match(self):
+        n, out = self._run(self.foo_path, "attrs", "nonexistent_decorator_xyz")
+        self.assertEqual(n, 0)
+
     # ── mode: params ──────────────────────────────────────────────────────────
 
     def test_params_found(self):
@@ -256,6 +286,26 @@ class TestQueryPy(unittest.TestCase):
     def test_params_shows_types(self):
         n, out = self._run(self.foo_path, "params", "process")
         self.assertIn("str", out)
+
+    def test_params_typed_args_shows_name(self):
+        # *args: str must show "*args: str", not just ": str"
+        # (list_splat_pattern wraps the identifier inside typed_parameter)
+        n, out = self._run(self.foo_path, "params", "variadic")
+        self.assertGreater(n, 0)
+        self.assertIn("*args", out)
+        self.assertIn("**kwargs", out)
+
+    def test_params_typed_args_shows_type(self):
+        n, out = self._run(self.foo_path, "params", "variadic")
+        self.assertIn("*args: str", out)
+        self.assertIn("**kwargs: int", out)
+
+    def test_params_keyword_only_separator(self):
+        # bare * in parameter list (positional_separator) must appear
+        n, out = self._run(self.foo_path, "params", "kw_only")
+        self.assertGreater(n, 0)
+        self.assertIn("*", out)
+        self.assertIn("debug", out)
 
     # ── relative path display ─────────────────────────────────────────────────
 

@@ -211,6 +211,7 @@ def process_py_file(path, mode, mode_arg, include_body=False, symbol_kind=None, 
         "all_refs":     lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
         "declarations": lambda: py_q_declarations(src_bytes, tree, lines, mode_arg),
         "decorators":   lambda: py_q_decorators(src_bytes, tree, lines, mode_arg),
+        "attrs":        lambda: py_q_decorators(src_bytes, tree, lines, mode_arg),
         "imports":      lambda: py_q_imports(src_bytes, tree, lines),
         "params":       lambda: py_q_params(src_bytes, tree, lines, mode_arg),
     }
