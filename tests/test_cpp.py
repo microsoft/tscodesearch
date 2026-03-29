@@ -30,6 +30,7 @@ _SKIP_MSG = "tree-sitter-cpp not installed"
 
 FIXTURE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sample", "root1", "query_fixture.cpp")
 HAL_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sample", "root1", "cpp", "hal_fixture.h")
+CORNER_CASES_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sample", "root1", "cpp", "corner_cases.h")
 
 
 def _setup_parser(path=None):
@@ -415,6 +416,170 @@ class TestHALFixture(unittest.TestCase):
         self.assertIn("init",     meta["method_names"])
         self.assertIn("read",     meta["method_names"])
         self.assertIn("set_pin",  meta["method_names"])
+
+
+@unittest.skipIf(_SKIP, _SKIP_MSG)
+class TestCornerCases(unittest.TestCase):
+    """Tests against corner_cases.h — pins the three bugs fixed in this session:
+      1. Operator overloads (operator_name node) found by methods/declarations.
+      2. Destructor names include the '~' prefix.
+      3. Trailing-return-type prototypes (declaration node) found by methods/declarations.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src, cls.tree, cls.lines = _setup_parser(CORNER_CASES_PATH)
+
+    def _fx(self):
+        return self.src, self.tree, self.lines
+
+    # ── Bug 1 fix: operator overloads appear in methods ───────────────────────
+
+    def test_methods_finds_operator_plus(self):
+        """Vec2::operator+ must appear in methods output."""
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        self.assertTrue(has(r, "operator+"), f"results={r}")
+
+    def test_methods_finds_operator_plus_assign(self):
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        self.assertTrue(has(r, "operator+="), f"results={r}")
+
+    def test_methods_finds_operator_equal_equal(self):
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        self.assertTrue(has(r, "operator=="), f"results={r}")
+
+    def test_methods_finds_operator_subscript(self):
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        self.assertTrue(has(r, "operator[]"), f"results={r}")
+
+    def test_methods_finds_deleted_copy_assign(self):
+        """NonCopyable::operator=(const NonCopyable&) = delete must appear."""
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        # At least one operator= should be found in NonCopyable
+        matches = [t for _, t in r if "operator=" in t and "NonCopyable" in t]
+        self.assertTrue(len(matches) > 0, f"results={r}")
+
+    # ── Bug 1 fix: operator overloads found by declarations ───────────────────
+
+    def test_declarations_finds_operator_plus(self):
+        from src.query.cpp import cpp_q_declarations
+        r = cpp_q_declarations(*self._fx(), "operator+")
+        self.assertGreater(len(r), 0, f"operator+ not found in declarations")
+
+    def test_declarations_finds_operator_assign(self):
+        from src.query.cpp import cpp_q_declarations
+        r = cpp_q_declarations(*self._fx(), "operator=")
+        self.assertGreater(len(r), 0, f"operator= not found in declarations")
+
+    # ── Bug 2 fix: destructor names include '~' ───────────────────────────────
+
+    def test_methods_destructor_has_tilde(self):
+        """~NonCopyable() must show as '~NonCopyable', not 'NonCopyable'."""
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        destructors = [t for _, t in r if "~" in t]
+        self.assertTrue(len(destructors) > 0, f"No destructor with '~' found: {r}")
+        self.assertTrue(any("~NonCopyable" in t for t in destructors),
+                        f"~NonCopyable not found; destructor entries: {destructors}")
+
+    def test_methods_iwidget_destructor_has_tilde(self):
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        self.assertTrue(has(r, "~IWidget"), f"~IWidget not found: {r}")
+
+    def test_declarations_destructor_has_tilde(self):
+        from src.query.cpp import cpp_q_declarations
+        r = cpp_q_declarations(*self._fx(), "~NonCopyable")
+        self.assertGreater(len(r), 0, "~NonCopyable not found via declarations")
+
+    # ── Bug 3 fix: trailing-return-type prototypes found ─────────────────────
+
+    def test_methods_trailing_return_free_function(self):
+        """auto compute_sum(int a, int b) -> int must appear in methods."""
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        self.assertTrue(has(r, "compute_sum"), f"compute_sum not in methods: {r}")
+
+    def test_methods_trailing_return_second_prototype(self):
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        self.assertTrue(has(r, "make_label"), f"make_label not in methods: {r}")
+
+    def test_declarations_trailing_return_type(self):
+        from src.query.cpp import cpp_q_declarations
+        r = cpp_q_declarations(*self._fx(), "compute_sum")
+        self.assertGreater(len(r), 0, "compute_sum not found via declarations")
+
+    def test_declarations_trailing_return_second(self):
+        from src.query.cpp import cpp_q_declarations
+        r = cpp_q_declarations(*self._fx(), "make_label")
+        self.assertGreater(len(r), 0, "make_label not found via declarations")
+
+    # ── Other corner cases: classes ───────────────────────────────────────────
+
+    def test_classes_finds_vec2(self):
+        from src.query.cpp import cpp_q_classes
+        r = cpp_q_classes(*self._fx())
+        self.assertTrue(has(r, "Vec2"))
+
+    def test_classes_finds_nested_label(self):
+        from src.query.cpp import cpp_q_classes
+        r = cpp_q_classes(*self._fx())
+        self.assertTrue(has(r, "Label"))
+
+    def test_classes_finds_template_class(self):
+        from src.query.cpp import cpp_q_classes
+        r = cpp_q_classes(*self._fx())
+        self.assertTrue(has(r, "RingBuffer"))
+
+    # ── Other corner cases: implements ────────────────────────────────────────
+
+    def test_implements_multiple_inheritance(self):
+        """Sensor : ISerializable, ILoggable — both bases should match."""
+        from src.query.cpp import cpp_q_implements
+        r_ser = cpp_q_implements(*self._fx(), "ISerializable")
+        r_log = cpp_q_implements(*self._fx(), "ILoggable")
+        self.assertTrue(has(r_ser, "Sensor"), f"ISerializable results={r_ser}")
+        self.assertTrue(has(r_log, "Sensor"), f"ILoggable results={r_log}")
+
+    def test_implements_virtual_base(self):
+        """Plane : virtual VehicleBase — VehicleBase should match."""
+        from src.query.cpp import cpp_q_implements
+        r = cpp_q_implements(*self._fx(), "VehicleBase")
+        self.assertTrue(has(r, "Plane"), f"VehicleBase results={r}")
+
+    def test_implements_diamond(self):
+        """VTOL : Plane, Copter — both bases should match."""
+        from src.query.cpp import cpp_q_implements
+        r_plane = cpp_q_implements(*self._fx(), "Plane")
+        r_copter = cpp_q_implements(*self._fx(), "Copter")
+        self.assertTrue(has(r_plane, "VTOL"), f"Plane results={r_plane}")
+        self.assertTrue(has(r_copter, "VTOL"), f"Copter results={r_copter}")
+
+    def test_implements_nested_class_inherits_iwidget(self):
+        """Panel::Label : IWidget — Label should match IWidget."""
+        from src.query.cpp import cpp_q_implements
+        r = cpp_q_implements(*self._fx(), "IWidget")
+        self.assertTrue(has(r, "Label"), f"IWidget results={r}")
+        self.assertTrue(has(r, "Panel"), f"Panel not in IWidget results={r}")
+
+    # ── Other corner cases: calls ─────────────────────────────────────────────
+
+    def test_calls_inside_lambda(self):
+        """helper() called inside a lambda in fire_all must be found."""
+        from src.query.cpp import cpp_q_calls
+        r = cpp_q_calls(*self._fx(), "helper")
+        self.assertGreater(len(r), 0, f"helper call not found: {r}")
+
+    def test_calls_register_cb(self):
+        from src.query.cpp import cpp_q_calls
+        r = cpp_q_calls(*self._fx(), "register_cb")
+        self.assertGreater(len(r), 0)
 
 
 if __name__ == "__main__":
