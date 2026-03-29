@@ -1,7 +1,7 @@
 """
 Tests for C/C++ support: extract_cpp_metadata and query_cpp functions.
 
-No server needed — all tests run against tests/query_fixture.cpp.
+No server needed — all tests run against sample/root1/query_fixture.cpp.
 
 Run from WSL:
     ~/.local/indexserver-venv/bin/pytest tests/test_cpp.py -v
@@ -29,12 +29,13 @@ _SKIP = not _CPP_AVAILABLE
 _SKIP_MSG = "tree-sitter-cpp not installed"
 
 FIXTURE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sample", "root1", "query_fixture.cpp")
+HAL_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sample", "root1", "cpp", "hal_fixture.h")
 
 
-def _setup_parser():
+def _setup_parser(path=None):
     lang = Language(tscpp.language())
     parser = Parser(lang)
-    src = open(FIXTURE_PATH, "rb").read()
+    src = open(path or FIXTURE_PATH, "rb").read()
     tree = parser.parse(src)
     lines = src.decode("utf-8", errors="replace").splitlines()
     return src, tree, lines
@@ -284,6 +285,136 @@ class TestProcessCppFile(unittest.TestCase):
         self.assertIn("process", meta["call_sites"])
         n, out = self._run("calls", "process")
         self.assertGreater(n, 0)
+
+
+@unittest.skipIf(_SKIP, _SKIP_MSG)
+class TestHALFixture(unittest.TestCase):
+    """Tests against hal_fixture.h — covers the four previously-buggy scenarios."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src, cls.tree, cls.lines = _setup_parser(HAL_FIXTURE_PATH)
+
+    def _fx(self):
+        return self.src, self.tree, self.lines
+
+    # ── Bug 1: qualified base class — only base name, not namespace ───────────
+
+    def test_implements_qualified_base(self):
+        """ChibiOSAnalogIn : public HAL::AnalogIn → base is 'AnalogIn'."""
+        from src.query.cpp import cpp_q_implements
+        r = cpp_q_implements(*self._fx(), "AnalogIn")
+        self.assertTrue(has(r, "ChibiOSAnalogIn"), f"results={r}")
+
+    def test_implements_no_namespace_as_base(self):
+        """'HAL' must NOT appear as a base class name."""
+        from src.query.cpp import cpp_q_implements
+        r = cpp_q_implements(*self._fx(), "HAL")
+        self.assertEqual(len(r), 0, f"HAL spuriously matched: {r}")
+
+    def test_template_base_name_not_arg(self):
+        """LinuxScheduler : Scheduler<TimerTask> → base is 'Scheduler', not 'TimerTask'."""
+        from src.query.cpp import cpp_q_implements
+        r_sched = cpp_q_implements(*self._fx(), "Scheduler")
+        self.assertTrue(has(r_sched, "LinuxScheduler"), f"results={r_sched}")
+        r_task = cpp_q_implements(*self._fx(), "TimerTask")
+        self.assertEqual(len(r_task), 0, f"TimerTask spuriously matched: {r_task}")
+
+    def test_multiple_qualified_bases(self):
+        """FullHALImpl : HAL::AnalogIn, HAL::AnalogSource → both bases found."""
+        from src.query.cpp import cpp_q_implements
+        r_ain  = cpp_q_implements(*self._fx(), "AnalogIn")
+        r_asrc = cpp_q_implements(*self._fx(), "AnalogSource")
+        self.assertTrue(has(r_ain,  "FullHALImpl"), f"AnalogIn results={r_ain}")
+        self.assertTrue(has(r_asrc, "FullHALImpl"), f"AnalogSource results={r_asrc}")
+
+    # ── Bug 1 (metadata): extract_cpp_metadata base_types ─────────────────────
+
+    def test_metadata_qualified_base_types(self):
+        """extract_cpp_metadata must list 'AnalogIn', not 'HAL', as base type."""
+        from indexserver.indexer import extract_cpp_metadata
+        meta = extract_cpp_metadata(open(HAL_FIXTURE_PATH, "rb").read())
+        self.assertIn("AnalogIn",   meta["base_types"])
+        self.assertNotIn("HAL",     meta["base_types"])
+        self.assertIn("Scheduler",  meta["base_types"])
+        self.assertNotIn("TimerTask", meta["base_types"])
+
+    # ── Bug 2: qualified class declarations ────────────────────────────────────
+
+    def test_declarations_finds_namespace_class(self):
+        """cpp_q_declarations finds HAL::AnalogIn by short name 'AnalogIn'."""
+        from src.query.cpp import cpp_q_declarations
+        r = cpp_q_declarations(*self._fx(), "AnalogIn")
+        self.assertGreater(len(r), 0, "AnalogIn declaration not found")
+
+    def test_declarations_finds_nested_class(self):
+        """cpp_q_declarations finds ChibiOSAnalogIn (top-level, qualified parent)."""
+        from src.query.cpp import cpp_q_declarations
+        r = cpp_q_declarations(*self._fx(), "ChibiOSAnalogIn")
+        self.assertGreater(len(r), 0)
+
+    # ── Bug 3: qualified call sites ────────────────────────────────────────────
+
+    def test_calls_qualified_function(self):
+        """AP::panic() calls are found by bare name 'panic'."""
+        from src.query.cpp import cpp_q_calls
+        r = cpp_q_calls(*self._fx(), "panic")
+        self.assertGreater(len(r), 0, f"panic calls not found: {r}")
+
+    def test_calls_qualified_multiple(self):
+        """AP::panic() appears at least twice (two call sites)."""
+        from src.query.cpp import cpp_q_calls
+        r = cpp_q_calls(*self._fx(), "panic")
+        self.assertGreaterEqual(len(r), 2)
+
+    def test_metadata_qualified_call_sites(self):
+        """extract_cpp_metadata includes 'panic' from AP::panic() call sites."""
+        from indexserver.indexer import extract_cpp_metadata
+        meta = extract_cpp_metadata(open(HAL_FIXTURE_PATH, "rb").read())
+        self.assertIn("panic", meta["call_sites"])
+        self.assertIn("hal_channel", meta["call_sites"])
+
+    # ── Bug 4: pure-virtual / member function declarations ────────────────────
+
+    def test_methods_finds_pure_virtual(self):
+        """cpp_q_methods finds pure-virtual 'read' declared inside AnalogSource."""
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        self.assertTrue(has(r, "read"), f"'read' not in methods: {r}")
+
+    def test_methods_finds_pure_virtual_with_args(self):
+        """cpp_q_methods finds pure-virtual 'set_pin' (has parameter)."""
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        self.assertTrue(has(r, "set_pin"))
+
+    def test_methods_pointer_return_member(self):
+        """cpp_q_methods finds pointer-return pure-virtual 'get_source' in SensorManager."""
+        from src.query.cpp import cpp_q_methods
+        r = cpp_q_methods(*self._fx())
+        self.assertTrue(has(r, "get_source"), f"'get_source' not in methods: {r}")
+
+    def test_declarations_finds_pure_virtual_method(self):
+        """cpp_q_declarations finds pure-virtual 'init' in AnalogIn."""
+        from src.query.cpp import cpp_q_declarations
+        r = cpp_q_declarations(*self._fx(), "init")
+        self.assertGreater(len(r), 0)
+
+    def test_metadata_member_sigs_pure_virtual(self):
+        """extract_cpp_metadata indexes signatures of pure-virtual methods."""
+        from indexserver.indexer import extract_cpp_metadata
+        meta = extract_cpp_metadata(open(HAL_FIXTURE_PATH, "rb").read())
+        self.assertTrue(any("read" in s for s in meta["member_sigs"]),
+                        f"member_sigs={meta['member_sigs']}")
+        self.assertTrue(any("init" in s for s in meta["member_sigs"]))
+
+    def test_metadata_method_names_pure_virtual(self):
+        """extract_cpp_metadata indexes names of pure-virtual member functions."""
+        from indexserver.indexer import extract_cpp_metadata
+        meta = extract_cpp_metadata(open(HAL_FIXTURE_PATH, "rb").read())
+        self.assertIn("init",     meta["method_names"])
+        self.assertIn("read",     meta["method_names"])
+        self.assertIn("set_pin",  meta["method_names"])
 
 
 if __name__ == "__main__":

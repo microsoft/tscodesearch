@@ -24,6 +24,7 @@ from ..ast.cpp import (
     _find_all, _text, _in_literal, _line,
     _TYPE_DECL_NODES, _FUNCTION_NODES, _LITERAL_NODES,
     _class_name, _base_class_names, _fn_name, _fn_sig,
+    _member_fn_name, _member_fn_sig,
 )
 
 
@@ -44,24 +45,56 @@ def cpp_q_classes(src, tree, lines):
 
 
 def cpp_q_methods(src, tree, lines):
-    """List function definitions."""
+    """List function definitions and member function declarations."""
     results = []
+
+    def _enclosing_class(node):
+        p = node.parent
+        while p:
+            if p.type in _TYPE_DECL_NODES:
+                return _class_name(p, src)
+            p = p.parent
+        return ""
+
     for node in _find_all(tree.root_node, lambda n: n.type == "function_definition"):
         name = _fn_name(node, src)
         if not name:
             continue
         sig = _fn_sig(node, src)
-        # Determine enclosing class (for methods)
-        p = node.parent
-        cls_name = ""
-        while p:
-            if p.type in _TYPE_DECL_NODES:
-                cls_name = _class_name(p, src)
-                break
-            p = p.parent
+        cls_name = _enclosing_class(node)
         prefix = f"[in {cls_name}] " if cls_name else ""
         kind = "method" if cls_name else "function"
         results.append((_line(node), f"[{kind}] {prefix}{sig}"))
+
+    # Trailing-return-type free-function prototypes: `auto foo() -> T;`
+    # These are `declaration` nodes (not `function_declaration`) because tree-sitter
+    # treats `auto` as the placeholder type.
+    for node in _find_all(tree.root_node, lambda n: n.type == "declaration"):
+        if _enclosing_class(node):
+            continue  # member declarations handled via field_declaration below
+        fn_decl = next(
+            (c for c in node.children if c.type == "function_declarator"), None
+        )
+        if fn_decl is None:
+            continue
+        name_node = fn_decl.child_by_field_name("declarator")
+        name = _fn_declarator_name(name_node, src) if name_node else ""
+        if not name:
+            continue
+        sig = _text(node, src).rstrip(";").strip()
+        results.append((_line(node), f"[function] {sig}"))
+
+    # Also include member function declarations (pure virtual, prototypes)
+    for node in _find_all(tree.root_node, lambda n: n.type == "field_declaration"):
+        name = _member_fn_name(node, src)
+        if not name:
+            continue
+        sig = _member_fn_sig(node, src)
+        cls_name = _enclosing_class(node)
+        prefix = f"[in {cls_name}] " if cls_name else ""
+        results.append((_line(node), f"[method] {prefix}{sig}"))
+
+    results.sort(key=lambda r: r[0])
     return results
 
 
@@ -141,21 +174,17 @@ def cpp_q_implements(src, tree, lines, base_name):
 def cpp_q_declarations(src, tree, lines, name, include_body=False):
     """Find declaration(s) named NAME."""
     results = []
-    target_types = _TYPE_DECL_NODES | _FUNCTION_NODES
 
-    for node in _find_all(tree.root_node, lambda n: n.type in target_types):
-        if node.type in _TYPE_DECL_NODES:
-            decl_name = _class_name(node, src)
-        else:
-            decl_name = _fn_name(node, src)
+    def _matches(decl_name):
+        if not decl_name:
+            return False
+        # Accept short name (last :: segment) or full qualified name.
+        short = decl_name.split("::")[-1]
+        return short == name or decl_name == name
 
-        if not decl_name or decl_name != name:
-            continue
-
-        kind = node.type.replace("_specifier", "").replace("_definition", "").replace("_declaration", "")
+    def _append(node, decl_name, kind):
         start_row = node.start_point[0]
         end_row = node.end_point[0]
-
         if include_body:
             content = "\n".join(lines[start_row:end_row + 1])
         else:
@@ -165,9 +194,44 @@ def cpp_q_declarations(src, tree, lines, name, include_body=False):
                 content = "\n".join(lines[start_row:sig_end]).rstrip()
             else:
                 content = "\n".join(lines[start_row:end_row + 1])
-
         header = f"── [{kind}] {name}  (lines {start_row + 1}–{end_row + 1}) ──"
         results.append((_line(node), f"{header}\n{content}"))
+
+    # Classes / structs / enums
+    for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
+        decl_name = _class_name(node, src)
+        if _matches(decl_name):
+            kind = node.type.replace("_specifier", "")
+            _append(node, decl_name, kind)
+
+    # Function definitions and non-trailing-return-type declarations
+    for node in _find_all(tree.root_node, lambda n: n.type in _FUNCTION_NODES):
+        decl_name = _fn_name(node, src)
+        if _matches(decl_name):
+            kind = node.type.replace("_definition", "").replace("_declaration", "")
+            _append(node, decl_name, kind)
+
+    # Trailing-return-type free-function prototypes:
+    #   `auto foo(int x) -> T;` is a `declaration` node (not `function_declaration`)
+    #   because `auto` is the placeholder type and the declarator contains the real signature.
+    for node in _find_all(tree.root_node, lambda n: n.type == "declaration"):
+        fn_decl = next(
+            (c for c in node.children if c.type == "function_declarator"), None
+        )
+        if fn_decl is None:
+            continue
+        name_node = fn_decl.child_by_field_name("declarator")
+        decl_name = _fn_declarator_name(name_node, src) if name_node else ""
+        if _matches(decl_name):
+            _append(node, decl_name, "function")
+
+    # Member function declarations in class bodies (pure virtual, prototypes)
+    for node in _find_all(tree.root_node, lambda n: n.type == "field_declaration"):
+        decl_name = _member_fn_name(node, src)
+        if _matches(decl_name):
+            _append(node, decl_name, "method")
+
+    results.sort(key=lambda r: r[0])
     return results
 
 

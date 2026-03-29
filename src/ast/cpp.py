@@ -67,15 +67,79 @@ def _class_name(node, src: bytes) -> str:
 
 
 def _base_class_names(node, src: bytes) -> list:
-    """Get base class names from a class_specifier's base_class_clause."""
+    """Get base class names from a class_specifier's base_class_clause.
+
+    Iterates direct children only — does NOT recurse — so template type
+    arguments (e.g. the T in Base<T>) are never mistaken for base classes.
+    Handles simple types (Foo), qualified types (A::Foo), and template
+    types (Foo<T>).
+    """
     names = []
     for child in node.children:
-        if child.type == "base_class_clause":
-            for bc in _find_all(child, lambda n: n.type in ("type_identifier", "identifier")):
-                t = _text(bc, src).strip()
+        if child.type != "base_class_clause":
+            continue
+        for item in child.children:
+            if item.type == "type_identifier":
+                t = _text(item, src).strip()
                 if t not in ("public", "private", "protected", "virtual") and t:
                     names.append(t)
+            elif item.type == "qualified_identifier":
+                # A::B::Foo → Foo  /  A::B::Foo<T> → Foo
+                name_node = item.child_by_field_name("name")
+                if name_node:
+                    if name_node.type == "template_type":
+                        tname = name_node.child_by_field_name("name")
+                        if tname:
+                            names.append(_text(tname, src).strip())
+                    else:
+                        names.append(_text(name_node, src).strip())
+            elif item.type == "template_type":
+                # Foo<T> → Foo (ignore template args)
+                name_node = item.child_by_field_name("name")
+                if name_node:
+                    names.append(_text(name_node, src).strip())
     return names
+
+
+def _member_fn_name(node, src: bytes) -> str:
+    """Return the function name if node is a field_declaration for a member function.
+
+    Handles pure virtual (virtual void init() = 0), const, and pointer-return
+    variants.  Returns "" for ordinary field declarations (int x, etc.).
+    """
+    if node.type != "field_declaration":
+        return ""
+    decl = node.child_by_field_name("declarator")
+    if decl is None:
+        return ""
+    if decl.type == "function_declarator":
+        inner = decl.child_by_field_name("declarator")
+        return _fn_declarator_name(inner, src) if inner else ""
+    if decl.type in ("pointer_declarator", "reference_declarator"):
+        inner = decl.child_by_field_name("declarator")
+        if inner and inner.type == "function_declarator":
+            name_node = inner.child_by_field_name("declarator")
+            return _fn_declarator_name(name_node, src) if name_node else ""
+    return ""
+
+
+def _member_fn_sig(node, src: bytes) -> str:
+    """Build a signature string for a field_declaration member function."""
+    name = _member_fn_name(node, src)
+    if not name:
+        return ""
+    type_node = node.child_by_field_name("type")
+    ret_txt = _text(type_node, src).strip() if type_node else ""
+    decl = node.child_by_field_name("declarator")
+    params_node = None
+    if decl:
+        fn_decl = decl if decl.type == "function_declarator" else None
+        if fn_decl is None and decl.type in ("pointer_declarator", "reference_declarator"):
+            fn_decl = decl.child_by_field_name("declarator")
+        if fn_decl and fn_decl.type == "function_declarator":
+            params_node = fn_decl.child_by_field_name("parameters")
+    params_txt = _text(params_node, src).strip() if params_node else "()"
+    return f"{ret_txt} {name}{params_txt}".strip()
 
 
 def _fn_declarator_name(node, src: bytes) -> str:
@@ -84,11 +148,16 @@ def _fn_declarator_name(node, src: bytes) -> str:
     if node.type in ("identifier", "field_identifier"):
         return _text(node, src).strip()
     if node.type == "qualified_identifier":
-        # A::B::foo → just return the last part
-        scope = node.child_by_field_name("scope")
+        # A::B::foo → just return the last part (may itself be operator_name)
         name_node = node.child_by_field_name("name")
         if name_node:
-            return _text(name_node, src).strip()
+            return _fn_declarator_name(name_node, src)
+        return _text(node, src).strip()
+    if node.type == "operator_name":
+        # operator+, operator[], operator=, etc. — return the full token
+        return _text(node, src).strip()
+    if node.type == "destructor_name":
+        # ~ClassName — return as-is so it's distinguishable from the constructor
         return _text(node, src).strip()
     # recurse into declarator / pointer_declarator
     decl = node.child_by_field_name("declarator")

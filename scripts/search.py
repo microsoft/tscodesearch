@@ -102,9 +102,19 @@ def search(query, ext=None, sub=None, limit=10,
     else:
         query_by = "filename,class_names,method_names,tokens"
 
+    # When a C/C++ source extension is requested, automatically include C/C++ header
+    # extensions as well, because class declarations and inheritance live in headers.
+    _CPP_SRC = {"cpp", "cc", "cxx", "c"}
+    _CPP_HDR = {"h", "hpp", "hxx"}
     filter_parts = []
     if ext:
-        filter_parts.append(f"extension:={ext.lstrip('.')}")
+        exts = {e.lstrip(".") for e in ext.split(",")}
+        if exts & _CPP_SRC:
+            exts |= _CPP_HDR
+        if len(exts) == 1:
+            filter_parts.append(f"extension:={next(iter(exts))}")
+        else:
+            filter_parts.append(f"extension:=[{','.join(sorted(exts))}]")
     if sub:
         filter_parts.append(f"subsystem:={sub}")
     filter_by = " && ".join(filter_parts) if filter_parts else ""

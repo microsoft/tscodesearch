@@ -1,8 +1,8 @@
 """
 Tests for JavaScript and TypeScript support: extract metadata and query functions.
 
-No server needed — all tests run against tests/query_fixture.js and
-tests/query_fixture.ts.
+No server needed — all tests run against sample/root1/query_fixture.js and
+sample/root1/query_fixture.ts.
 
 Run from WSL:
     ~/.local/indexserver-venv/bin/pytest tests/test_js_ts.py -v
