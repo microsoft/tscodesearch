@@ -189,6 +189,7 @@ namespace MyApp {
 """
 
 _FOO_PY = """\
+from __future__ import annotations
 import os
 from typing import Optional
 
@@ -212,6 +213,12 @@ class Foo(IFoo, IComparable):
 
     def compute(self, value: int) -> Optional[str]:
         return str(value)
+
+def variadic(*args: str, **kwargs: int) -> None:
+    pass
+
+def kw_only(name: str, *, debug: bool = False, timeout: int = 30) -> None:
+    pass
 """
 
 _BAR_PY = """\
