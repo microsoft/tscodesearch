@@ -245,7 +245,9 @@ Args:
                 calls, implements, ident, declarations, params, decorators (Python)
   pattern:      Type/method/name to search for.
   sub:          Narrow to a subsystem (first path component only).
-  ext:          File extension ("cs" or "py"). Default: cs.
+  ext:          File extension filter. Common values: "cs", "py", "cpp".
+                For C/C++, "cpp" automatically includes header files (.h, .hpp, .hxx).
+                Omit to search all indexed languages. Default: cs.
   context_lines: Surrounding source lines per match.
   root:         Named source root (empty = default).
   include_body: For declarations — include full body. Default false.
@@ -278,7 +280,7 @@ Examples:
     let result: HttpResult;
     try {
       result = await httpPost(API_PORT, "/query-codebase", {
-        mode: m, pattern, sub: sub || "", ext: (ext || "cs").replace(/^\./, ""),
+        mode: m, pattern, sub: sub || "", ext: (ext || "").replace(/^\./, ""),
         root: root || "", limit: QUERY_CODEBASE_LIMIT,
         include_body, symbol_kind: symbol_kind || "", uses_kind: uses_kind || "",
       });

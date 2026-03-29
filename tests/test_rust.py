@@ -1,7 +1,7 @@
 """
 Tests for Rust support: extract_rust_metadata and query_rust functions.
 
-No server needed — all tests run against tests/query_fixture.rs.
+No server needed — all tests run against sample/root1/query_fixture.rs.
 
 Run from WSL:
     ~/.local/indexserver-venv/bin/pytest tests/test_rust.py -v

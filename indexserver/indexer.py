@@ -800,6 +800,14 @@ def extract_cpp_metadata(src_bytes: bytes) -> dict:
             method_names.append(name)
             member_sigs.append(_cfn_sig(node, src_bytes))
 
+    # Member function declarations in class bodies (pure virtual, prototypes)
+    from src.ast.cpp import _member_fn_name as _cmfn_name, _member_fn_sig as _cmfn_sig
+    for node in _cfa(root, lambda n: n.type == "field_declaration"):
+        name = _cmfn_name(node, src_bytes)
+        if name:
+            method_names.append(name)
+            member_sigs.append(_cmfn_sig(node, src_bytes))
+
     # Call sites
     for node in _cfa(root, lambda n: n.type == "call_expression"):
         fn = node.child_by_field_name("function")
@@ -810,6 +818,11 @@ def extract_cpp_metadata(src_bytes: bytes) -> dict:
                 f = fn.child_by_field_name("field")
                 if f:
                     call_sites.append(_ct(f, src_bytes).strip())
+            elif fn.type == "qualified_identifier":
+                # e.g. AP_HAL::panic() or Scheduler::from_socket()
+                name_node = fn.child_by_field_name("name")
+                if name_node:
+                    call_sites.append(_ct(name_node, src_bytes).strip())
 
     # #include → usings
     for node in _cfa(root, lambda n: n.type == "preproc_include"):
