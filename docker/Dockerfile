@@ -37,7 +37,10 @@ RUN mkdir -p ${TYPESENSE_DIR} && \
     chmod +x ${TYPESENSE_DIR}/typesense-server && \
     ln -s ${TYPESENSE_DIR}/typesense-server /usr/local/bin/typesense-server
 
-# Python dependencies
+# Python dependencies — build tree-sitter-sql from gh-pages for T-SQL
+# CREATE PROCEDURE support (PyPI wheel uses an older grammar version)
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc libc6-dev && \
+    rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir \
     tree-sitter \
     tree-sitter-c-sharp \
@@ -46,11 +49,15 @@ RUN pip install --no-cache-dir \
     tree-sitter-javascript \
     tree-sitter-typescript \
     tree-sitter-cpp \
-    tree-sitter-sql \
     typesense \
     watchdog \
     pathspec \
     pytest
+RUN git clone --branch gh-pages --depth 1 \
+        https://github.com/DerekStride/tree-sitter-sql.git /tmp/tree-sitter-sql && \
+    pip install --no-cache-dir /tmp/tree-sitter-sql && \
+    python -c "import importlib; p=importlib.import_module('tree_sitter_sql'); open(p.__path__[0]+'/__init__.py','w').write('from ._binding import language\n')" && \
+    rm -rf /tmp/tree-sitter-sql
 
 # Copy application code
 COPY . /app/

@@ -16,6 +16,8 @@ _TYPE_DECL_NODES = {"create_table", "create_view", "alter_table"}
 
 _FUNCTION_DECL_NODES = {"create_function"}
 
+_PROC_DECL_NODES = {"create_procedure"}
+
 # ── Basic helpers ──────────────────────────────────────────────────────────────
 
 def _line(node) -> int:
@@ -87,6 +89,48 @@ def extract_function_names(root, src: bytes) -> list:
         if name:
             names.append(name)
     return names
+
+
+def extract_proc_names_ast(root, src: bytes) -> list:
+    """Extract stored procedure names from CREATE PROCEDURE AST nodes."""
+    names = []
+    for node in _find_all(root, lambda n: n.type in _PROC_DECL_NODES):
+        ref = next((c for c in node.children if c.type == "object_reference"), None)
+        name = _full_object_name(ref, src)
+        if name:
+            names.append(name)
+    return names
+
+
+def extract_proc_sigs(root, src: bytes) -> list:
+    """Extract procedure signatures as 'ProcName(@param TYPE, ...)' strings."""
+    sigs = []
+    for node in _find_all(root, lambda n: n.type in _PROC_DECL_NODES):
+        ref = next((c for c in node.children if c.type == "object_reference"), None)
+        name = _full_object_name(ref, src)
+        args = next((c for c in node.children if c.type == "function_arguments"), None)
+        if name:
+            args_text = _text(args, src).strip() if args else "()"
+            sigs.append(f"{name}{args_text}")
+    return sigs
+
+
+def extract_proc_body_refs(root, src: bytes) -> list:
+    """Extract table names referenced inside procedure bodies.
+    Returns list of (proc_name, table_name) tuples."""
+    refs = []
+    for node in _find_all(root, lambda n: n.type in _PROC_DECL_NODES):
+        proc_ref = next((c for c in node.children if c.type == "object_reference"), None)
+        proc_name = _full_object_name(proc_ref, src)
+        body = next((c for c in node.children if c.type == "procedure_body"), None)
+        if not body or not proc_name:
+            continue
+        # Find all table references inside the procedure body
+        for table_ref in _find_all(body, lambda n: n.type == "object_reference"):
+            table_name = _full_object_name(table_ref, src)
+            if table_name and table_name != proc_name:
+                refs.append((proc_name, table_name))
+    return refs
 
 
 def extract_proc_names_regex(src: bytes) -> list:
