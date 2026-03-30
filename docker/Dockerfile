@@ -53,9 +53,13 @@ RUN pip install --no-cache-dir \
     watchdog \
     pathspec \
     pytest
-RUN git clone --branch gh-pages --depth 1 \
+# tree-sitter-sql: build from gh-pages for T-SQL CREATE PROCEDURE support.
+# Pin to a known-good commit to avoid surprise breakage.
+ARG TREE_SITTER_SQL_COMMIT=851e9cb257ba7c66cc8c14214a31c44d2f1e954e
+RUN git clone --depth 1 \
         https://github.com/DerekStride/tree-sitter-sql.git /tmp/tree-sitter-sql && \
-    pip install --no-cache-dir /tmp/tree-sitter-sql && \
+    cd /tmp/tree-sitter-sql && git fetch origin ${TREE_SITTER_SQL_COMMIT} && git checkout ${TREE_SITTER_SQL_COMMIT} && \
+    pip install --no-cache-dir . && \
     python -c "import importlib; p=importlib.import_module('tree_sitter_sql'); open(p.__path__[0]+'/__init__.py','w').write('from ._binding import language\n')" && \
     rm -rf /tmp/tree-sitter-sql
 
