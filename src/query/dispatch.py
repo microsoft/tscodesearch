@@ -6,7 +6,57 @@ For the CLI entry point see indexserver/query_util.py.
 """
 
 import os
+import re
 import sys
+
+# ── C# preprocessor normaliser ────────────────────────────────────────────────
+
+_PP_RE = re.compile(rb'^\s*#\s*(\w+)')
+
+def _strip_else_branches(src_bytes: bytes) -> bytes:
+    """Pre-process C# source for tree-sitter: assume all #if conditions are true.
+
+    - Keeps code in #if / #ifdef / #ifndef branches.
+    - Blanks out code in #else / #elif branches (replaces each line with a bare newline).
+    - Replaces all preprocessor directive lines with bare newlines.
+
+    Line count and therefore line numbers are preserved exactly, so AST
+    start_point row values still correspond to the original file.
+    """
+    lines = src_bytes.splitlines(keepends=True)
+    result: list[bytes] = []
+    # Stack of booleans: True = we are currently inside a skipped (else) branch.
+    skip_stack: list[bool] = []
+
+    def _skipping() -> bool:
+        return bool(skip_stack) and skip_stack[-1]
+
+    for line in lines:
+        m = _PP_RE.match(line)
+        directive = m.group(1).lower() if m else b""
+
+        if directive in (b"if", b"ifdef", b"ifndef"):
+            # Enter a new if-block.  If already skipping (parent else branch),
+            # the whole nested block is skipped too.
+            skip_stack.append(_skipping())
+            result.append(b"\n")
+        elif directive in (b"elif", b"else"):
+            # Switch from the if-branch (keep) to the else-branch (skip).
+            if skip_stack:
+                skip_stack[-1] = True
+            result.append(b"\n")
+        elif directive == b"endif":
+            if skip_stack:
+                skip_stack.pop()
+            result.append(b"\n")
+        elif directive:
+            # Any other preprocessor directive (#pragma, #region, #nullable, …)
+            result.append(b"\n")
+        else:
+            result.append(b"\n" if _skipping() else line)
+
+    return b"".join(result)
+
 
 # ── base tree-sitter (required) ───────────────────────────────────────────────
 
@@ -153,6 +203,12 @@ def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, 
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
         return []
+    # Normalise preprocessor directives before handing to tree-sitter.
+    # tree-sitter-c-sharp cannot evaluate #if conditions; directives that split
+    # a syntactic construct (e.g. #else inside a property accessor) produce
+    # cascading ERROR nodes that hide the rest of the file's declarations.
+    # We assume every #if condition is true and blank out #else/#elif branches.
+    src_bytes = _strip_else_branches(src_bytes)
     try:
         tree = _parser.parse(src_bytes)
     except Exception as e:
