@@ -4,13 +4,10 @@ Python AST query functions — extracted from query.py.
 All public functions are re-exported from query.py for backward compatibility.
 """
 
-import sys
+EXTENSIONS = frozenset({".py"})
 
-try:
-    import tree_sitter_python as tspython
-    _PY_AVAILABLE = True
-except ImportError:
-    _PY_AVAILABLE = False
+import sys
+import tree_sitter_python as tspython
 
 from ..ast.cs import _find_all, _text  # shared traversal helpers
 from ..ast.py import (
@@ -187,11 +184,6 @@ def py_q_params(src, tree, lines, method_name):
 
 def process_py_file(path, mode, mode_arg, show_path, count_only, context=0,
                     src_root=None, include_body=False, symbol_kind=None, uses_kind=None):
-    if not _PY_AVAILABLE:
-        print("ERROR: tree-sitter-python not installed. Run: pip install tree-sitter-python",
-              file=sys.stderr)
-        return 0
-
     from tree_sitter import Language, Parser
     _PY = Language(tspython.language())
     _py_parser = Parser(_PY)

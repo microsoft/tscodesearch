@@ -4,6 +4,8 @@ C# AST query functions — extracted from query.py.
 All public functions are re-exported from query.py for backward compatibility.
 """
 
+EXTENSIONS = frozenset({".cs"})
+
 import re
 import sys
 
@@ -602,7 +604,7 @@ def _q_field_type(src, tree, lines, type_name):
                 if vn:
                     cls = _enclosing_type_name(node, src)
                     cls_prefix = f"[in {cls}] " if cls else ""
-                    results.append((_line(node), f"{label} {type_txt} {_text(vn, src)}  {cls_prefix}"))
+                    results.append((_line(node), f"{label} {type_txt} {_text(vn, src)}  {cls_prefix}".rstrip()))
         else:
             type_node = node.child_by_field_name("type")
             if not type_node:
@@ -613,7 +615,7 @@ def _q_field_type(src, tree, lines, type_name):
             name_node = node.child_by_field_name("name")
             if name_node:
                 cls_prefix = _cls_prefix(node, src)
-                results.append((_line(node), f"[prop]  {type_txt} {_text(name_node, src)}  {cls_prefix}"))
+                results.append((_line(node), f"[prop]  {type_txt} {_text(name_node, src)}  {cls_prefix}".rstrip()))
     return results
 
 

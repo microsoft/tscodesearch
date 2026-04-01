@@ -12,13 +12,10 @@ Modes:
   params       - Show parameter list of FUNC
 """
 
-import sys
+EXTENSIONS = frozenset({".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"})
 
-try:
-    import tree_sitter_cpp as tscpp
-    _CPP_AVAILABLE = True
-except ImportError:
-    _CPP_AVAILABLE = False
+import sys
+import tree_sitter_cpp as tscpp
 
 from ..ast.cpp import (
     _find_all, _text, _in_literal, _line,
@@ -230,11 +227,6 @@ def cpp_q_params(src, tree, lines, func_name):
 
 def process_cpp_file(path, mode, mode_arg, show_path, count_only, context=0,
                      src_root=None, include_body=False, **kwargs):
-    if not _CPP_AVAILABLE:
-        print("ERROR: tree-sitter-cpp not installed. Run: pip install tree-sitter-cpp",
-              file=sys.stderr)
-        return 0
-
     from tree_sitter import Language, Parser
     _CPP = Language(tscpp.language())
     _parser = Parser(_CPP)

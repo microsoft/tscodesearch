@@ -315,25 +315,8 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
     """
     _q = _get_query_module()
 
-    # Extension → process_file function.  Unlisted extensions (e.g. .cs) fall
-    # through to process_cs_file as the default.
-    _EXT_PROCESS = {
-        ".py":  _q.process_py_file,
-        ".rs":  _q.process_rust_file,
-        ".js":  _q.process_js_file,
-        ".jsx": _q.process_js_file,
-        ".mjs": _q.process_js_file,
-        ".cjs": _q.process_js_file,
-        ".ts":  _q.process_js_file,
-        ".tsx": _q.process_js_file,
-        ".cpp": _q.process_cpp_file,
-        ".cc":  _q.process_cpp_file,
-        ".cxx": _q.process_cpp_file,
-        ".c":   _q.process_cpp_file,
-        ".h":   _q.process_cpp_file,
-        ".hpp": _q.process_cpp_file,
-        ".hxx": _q.process_cpp_file,
-    }
+    # Extension → process_file function, built from each language module's EXTENSIONS set.
+    _EXT_PROCESS = _q._EXT_TO_PROCESSOR
 
     results = []
     for file_path in files:
