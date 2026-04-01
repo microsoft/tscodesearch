@@ -15,19 +15,13 @@ Modes:
   attrs        - List decorators (TS), optionally filtered by NAME
 """
 
+EXTENSIONS = frozenset({".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"})
+TS_EXTENSIONS = frozenset({".ts", ".tsx"})
+TSX_EXTENSIONS = frozenset({".tsx"})
+
 import sys
-
-try:
-    import tree_sitter_javascript as tsjs
-    _JS_AVAILABLE = True
-except ImportError:
-    _JS_AVAILABLE = False
-
-try:
-    import tree_sitter_typescript as tsts
-    _TS_AVAILABLE = True
-except ImportError:
-    _TS_AVAILABLE = False
+import tree_sitter_javascript as tsjs
+import tree_sitter_typescript as tsts
 
 from ..ast.js import (
     _find_all, _text, _in_literal, _line,
@@ -253,33 +247,16 @@ def js_q_attrs(src, tree, lines, attr_name=None):
 
 # ── Process function ──────────────────────────────────────────────────────────
 
-def _get_parser(ext: str):
-    """Return (parser, available) for the given file extension."""
-    from tree_sitter import Language, Parser
-    if ext in (".ts", ".tsx"):
-        if not _TS_AVAILABLE:
-            return None, False
-        if ext == ".tsx":
-            lang = Language(tsts.language_tsx())
-        else:
-            lang = Language(tsts.language_typescript())
-        return Parser(lang), True
-    else:
-        if not _JS_AVAILABLE:
-            return None, False
-        lang = Language(tsjs.language())
-        return Parser(lang), True
-
-
 def process_js_file(path, mode, mode_arg, show_path, count_only, context=0,
                     src_root=None, include_body=False, **kwargs):
     import os
+    from tree_sitter import Language, Parser
     ext = os.path.splitext(path)[1].lower()
-    parser, available = _get_parser(ext)
-    if not available:
-        pkg = "tree-sitter-typescript" if ext in (".ts", ".tsx") else "tree-sitter-javascript"
-        print(f"ERROR: {pkg} not installed. Run: pip install {pkg}", file=sys.stderr)
-        return 0
+    if ext in TS_EXTENSIONS:
+        lang = Language(tsts.language_tsx() if ext in TSX_EXTENSIONS else tsts.language_typescript())
+    else:
+        lang = Language(tsjs.language())
+    parser = Parser(lang)
 
     try:
         src_bytes = open(path, "rb").read()

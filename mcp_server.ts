@@ -367,12 +367,15 @@ Args:
   include_body: For declarations — include full body. Default false.
   symbol_kind:  For declarations — restrict to a specific kind.
   uses_kind:    For uses — all, field, param, return, cast, base, locals.
+  head_limit:   Max results to return (default 250). Use with offset to page through large files.
+  offset:       Skip first N results before applying head_limit (default 0).
 
 Examples:
   query_single_file("methods", file="$SRC_ROOT/services/Widget.cs")
   query_single_file("calls", "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
   query_single_file("uses", "IRepository", uses_kind="param", file="$SRC_ROOT/services/Widget.cs")
-  query_single_file("accesses_on", "IDataStore", file="$SRC_ROOT/services/DataManager.cs")`,
+  query_single_file("accesses_on", "IDataStore", file="$SRC_ROOT/services/DataManager.cs")
+  query_single_file("methods", file="$SRC_ROOT/Core/BigFile.cs", offset=250)`,
   {
     mode:          z.string(),
     pattern:       z.string().default(""),
@@ -382,8 +385,10 @@ Examples:
     include_body:  z.boolean().default(false),
     symbol_kind:   z.string().default(""),
     uses_kind:     z.string().default(""),
+    head_limit:    z.number().int().default(250),
+    offset:        z.number().int().default(0),
   },
-  async ({ mode, pattern, file, context_lines, root, include_body, symbol_kind, uses_kind }) => {
+  async ({ mode, pattern, file, context_lines, root, include_body, symbol_kind, uses_kind, head_limit, offset }) => {
     if (!file) return { content: [{ type: "text" as const, text: "file= is required." }] };
 
     let srcRoot: string;
@@ -420,17 +425,25 @@ Examples:
     const fileResult = (result.data?.results ?? [])[0];
     if (!fileResult?.matches?.length) return { content: [{ type: "text" as const, text: header + "No matches found." }] };
 
-    const outLines: string[] = fileResult.matches.map((m: any) => `${rel}:${m.line}: ${(m.text ?? "").trimEnd()}`);
+    const allLines: string[] = fileResult.matches.map((m: any) => `${rel}:${m.line}: ${(m.text ?? "").trimEnd()}`);
+    const total = allLines.length;
+    const pageStart = Math.min(offset, total);
+    const pageEnd   = Math.min(pageStart + head_limit, total);
+    const outLines  = allLines.slice(pageStart, pageEnd);
+
+    const pageHeader = (pageStart > 0 || pageEnd < total)
+      ? `[${pageStart + 1}–${pageEnd} of ${total} results]\n\n`
+      : "";
     const output = outLines.join("\n");
 
     if (output.length > MAX_OUTPUT_CHARS) {
       const trunc = output.slice(0, MAX_OUTPUT_CHARS);
       const nl    = trunc.lastIndexOf("\n");
       const shown = (nl > 0 ? trunc.slice(0, nl) : trunc).split("\n").length;
-      const summary = `[Result truncated — ${outLines.length} lines. Showing first ${shown} lines.]\n\n`;
-      return { content: [{ type: "text" as const, text: header + summary + (nl > 0 ? trunc.slice(0, nl) : trunc) }] };
+      const summary = `[Result truncated — ${outLines.length} lines in page. Showing first ${shown} lines. Use offset= to page.]\n\n`;
+      return { content: [{ type: "text" as const, text: header + pageHeader + summary + (nl > 0 ? trunc.slice(0, nl) : trunc) }] };
     }
-    return { content: [{ type: "text" as const, text: header + output }] };
+    return { content: [{ type: "text" as const, text: header + pageHeader + output }] };
   }
 );
 

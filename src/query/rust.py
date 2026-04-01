@@ -12,13 +12,10 @@ Modes:
   params       - Show parameter list of FUNC
 """
 
-import sys
+EXTENSIONS = frozenset({".rs"})
 
-try:
-    import tree_sitter_rust as tsrust
-    _RUST_AVAILABLE = True
-except ImportError:
-    _RUST_AVAILABLE = False
+import sys
+import tree_sitter_rust as tsrust
 
 from ..ast.rust import (
     _find_all, _text, _in_literal, _line,
@@ -235,11 +232,6 @@ def rust_q_params(src, tree, lines, func_name):
 
 def process_rust_file(path, mode, mode_arg, show_path, count_only, context=0,
                       src_root=None, include_body=False, **kwargs):
-    if not _RUST_AVAILABLE:
-        print("ERROR: tree-sitter-rust not installed. Run: pip install tree-sitter-rust",
-              file=sys.stderr)
-        return 0
-
     from tree_sitter import Language, Parser
     _RUST = Language(tsrust.language())
     _parser = Parser(_RUST)

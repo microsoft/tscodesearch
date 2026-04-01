@@ -6,23 +6,65 @@ For the CLI entry point see indexserver/query_util.py.
 """
 
 import os
+import re
 import sys
 
-# ── base tree-sitter (required) ───────────────────────────────────────────────
+# ── C# preprocessor normaliser ────────────────────────────────────────────────
+
+_PP_RE = re.compile(rb'^\s*#\s*(\w+)')
+
+def _strip_else_branches(src_bytes: bytes) -> bytes:
+    """Pre-process C# source for tree-sitter: assume all #if conditions are true.
+
+    - Keeps code in #if / #ifdef / #ifndef branches.
+    - Blanks out code in #else / #elif branches (replaces each line with a bare newline).
+    - Replaces all preprocessor directive lines with bare newlines.
+
+    Line count and therefore line numbers are preserved exactly, so AST
+    start_point row values still correspond to the original file.
+    """
+    lines = src_bytes.splitlines(keepends=True)
+    result: list[bytes] = []
+    # Stack of booleans: True = we are currently inside a skipped (else) branch.
+    skip_stack: list[bool] = []
+
+    def _skipping() -> bool:
+        return bool(skip_stack) and skip_stack[-1]
+
+    for line in lines:
+        m = _PP_RE.match(line)
+        directive = m.group(1).lower() if m else b""
+
+        if directive in (b"if", b"ifdef", b"ifndef"):
+            # Enter a new if-block.  If already skipping (parent else branch),
+            # the whole nested block is skipped too.
+            skip_stack.append(_skipping())
+            result.append(b"\n")
+        elif directive in (b"elif", b"else"):
+            # Switch from the if-branch (keep) to the else-branch (skip).
+            if skip_stack:
+                skip_stack[-1] = True
+            result.append(b"\n")
+        elif directive == b"endif":
+            if skip_stack:
+                skip_stack.pop()
+            result.append(b"\n")
+        elif directive:
+            # Any other preprocessor directive (#pragma, #region, #nullable, …)
+            result.append(b"\n")
+        else:
+            result.append(b"\n" if _skipping() else line)
+
+    return b"".join(result)
+
+
+# ── tree-sitter parsers ───────────────────────────────────────────────────────
 
 from tree_sitter import Language, Parser
 
-# ── C# parser (optional) ──────────────────────────────────────────────────────
-
-try:
-    import tree_sitter_c_sharp as tscsharp
-    _CS_AVAILABLE = True
-    CS = Language(tscsharp.language())
-    _parser = Parser(CS)
-except ImportError:
-    _CS_AVAILABLE = False
-    tscsharp = None
-    _parser = None
+import tree_sitter_c_sharp as tscsharp
+CS = Language(tscsharp.language())
+_parser = Parser(CS)
 
 from ..ast.cs import (
     _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
@@ -34,6 +76,7 @@ from ..ast.cs import (
 # ── C# query functions (imported from cs.py) ─────────────────────────────────
 
 from .cs import (
+    EXTENSIONS as CS_EXTENSIONS,
     q_classes, q_methods, q_fields, q_calls, q_accesses_of, q_implements,
     q_uses, q_attrs, q_usings, q_declarations, q_params, q_casts,
     q_accesses_on, q_all_refs,
@@ -43,82 +86,51 @@ from .cs import (
     _q_local_type, _q_base_uses,
 )
 
-# ── Python parser (optional) ──────────────────────────────────────────────────
-
-try:
-    import tree_sitter_python as tspython
-    _PY_AVAILABLE = True
-    _PY = Language(tspython.language())
-    _py_parser = Parser(_PY)
-except ImportError:
-    _PY_AVAILABLE = False
-    tspython = None
-    _py_parser = None
+import tree_sitter_python as tspython
+_PY = Language(tspython.language())
+_py_parser = Parser(_PY)
 
 from .py import (
+    EXTENSIONS as PY_EXTENSIONS,
     py_q_classes, py_q_methods, py_q_calls, py_q_implements, py_q_ident,
     py_q_declarations, py_q_decorators, py_q_imports, py_q_params,
     _py_in_literal, _py_enclosing_class, _py_base_names,
 )
 
-# ── Rust parser (optional) ────────────────────────────────────────────────────
-
-try:
-    import tree_sitter_rust as tsrust
-    _RUST_AVAILABLE = True
-    _RUST = Language(tsrust.language())
-    _rust_parser = Parser(_RUST)
-except ImportError:
-    _RUST_AVAILABLE = False
-    _rust_parser = None
+import tree_sitter_rust as tsrust
+_RUST = Language(tsrust.language())
+_rust_parser = Parser(_RUST)
 
 from .rust import (
+    EXTENSIONS as RUST_EXTENSIONS,
     rust_q_classes, rust_q_methods, rust_q_calls, rust_q_implements,
     rust_q_declarations, rust_q_all_refs, rust_q_imports, rust_q_params,
 )
 
-# ── JavaScript parser (optional) ─────────────────────────────────────────────
+import tree_sitter_javascript as tsjs
+_JS = Language(tsjs.language())
+_js_parser = Parser(_JS)
 
-try:
-    import tree_sitter_javascript as tsjs
-    _JS_AVAILABLE = True
-    _JS = Language(tsjs.language())
-    _js_parser = Parser(_JS)
-except ImportError:
-    _JS_AVAILABLE = False
-    _js_parser = None
-
-# ── TypeScript parsers (optional) ─────────────────────────────────────────────
-
-try:
-    import tree_sitter_typescript as tsts
-    _TS_AVAILABLE = True
-    _TS = Language(tsts.language_typescript())
-    _ts_parser = Parser(_TS)
-    _TSX = Language(tsts.language_tsx())
-    _tsx_parser = Parser(_TSX)
-except ImportError:
-    _TS_AVAILABLE = False
-    _ts_parser = None
-    _tsx_parser = None
+import tree_sitter_typescript as tsts
+_TS = Language(tsts.language_typescript())
+_ts_parser = Parser(_TS)
+_TSX = Language(tsts.language_tsx())
+_tsx_parser = Parser(_TSX)
 
 from .js import (
+    EXTENSIONS as JS_EXTENSIONS,
+    TS_EXTENSIONS as JS_TS_EXTENSIONS,
+    TSX_EXTENSIONS as JS_TSX_EXTENSIONS,
     js_q_classes, js_q_methods, js_q_calls, js_q_implements,
     js_q_declarations, js_q_all_refs, js_q_imports, js_q_params, js_q_attrs,
 )
 
-# ── C/C++ parser (optional) ───────────────────────────────────────────────────
-
-try:
-    import tree_sitter_cpp as tscpp
-    _CPP_AVAILABLE = True
-    _CPP = Language(tscpp.language())
-    _cpp_parser = Parser(_CPP)
-except ImportError:
-    _CPP_AVAILABLE = False
-    _cpp_parser = None
+import tree_sitter_cpp as tscpp
+_CPP = Language(tscpp.language())
+_cpp_parser = Parser(_CPP)
 
 from .cpp import (
+    EXTENSIONS as CPP_EXTENSIONS,
     cpp_q_classes, cpp_q_methods, cpp_q_calls, cpp_q_implements,
     cpp_q_declarations, cpp_q_all_refs, cpp_q_includes, cpp_q_params,
 )
@@ -144,15 +156,17 @@ def _make_matches(results):
 
 def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
     """Process a C# file. Returns list[{"line": N, "text": "..."}]."""
-    if not _CS_AVAILABLE or _parser is None:
-        print("ERROR: tree-sitter and tree-sitter-c-sharp are required. "
-              "Run: pip install tree-sitter tree-sitter-c-sharp", file=sys.stderr)
-        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
         return []
+    # Normalise preprocessor directives before handing to tree-sitter.
+    # tree-sitter-c-sharp cannot evaluate #if conditions; directives that split
+    # a syntactic construct (e.g. #else inside a property accessor) produce
+    # cascading ERROR nodes that hide the rest of the file's declarations.
+    # We assume every #if condition is true and blank out #else/#elif branches.
+    src_bytes = _strip_else_branches(src_bytes)
     try:
         tree = _parser.parse(src_bytes)
     except Exception as e:
@@ -180,15 +194,13 @@ def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, 
     }
 
     fn = dispatch.get(mode)
-    return _make_matches(fn() or []) if fn else []
+    if fn is None:
+        raise ValueError(f"Unknown mode: {mode!r}")
+    return _make_matches(fn() or [])
 
 
 def process_py_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
     """Process a Python file. Returns list[{"line": N, "text": "..."}]."""
-    if not _PY_AVAILABLE or _py_parser is None:
-        print("ERROR: tree-sitter-python not installed. "
-              "Run: pip install tree-sitter-python", file=sys.stderr)
-        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
@@ -225,10 +237,6 @@ def process_py_file(path, mode, mode_arg, include_body=False, symbol_kind=None, 
 
 def process_rust_file(path, mode, mode_arg, include_body=False, **kwargs):
     """Process a Rust file. Returns list[{"line": N, "text": "..."}]."""
-    if not _RUST_AVAILABLE or _rust_parser is None:
-        print("ERROR: tree-sitter-rust not installed. "
-              "Run: pip install tree-sitter-rust", file=sys.stderr)
-        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
@@ -264,17 +272,9 @@ def process_rust_file(path, mode, mode_arg, include_body=False, **kwargs):
 def process_js_file(path, mode, mode_arg, include_body=False, **kwargs):
     """Process a JS/TS file. Returns list[{"line": N, "text": "..."}]."""
     ext = os.path.splitext(path)[1].lower()
-    if ext in (".ts", ".tsx"):
-        if not _TS_AVAILABLE:
-            print("ERROR: tree-sitter-typescript not installed. "
-                  "Run: pip install tree-sitter-typescript", file=sys.stderr)
-            return []
-        parser = _tsx_parser if ext == ".tsx" else _ts_parser
+    if ext in JS_TS_EXTENSIONS:
+        parser = _tsx_parser if ext in JS_TSX_EXTENSIONS else _ts_parser
     else:
-        if not _JS_AVAILABLE:
-            print("ERROR: tree-sitter-javascript not installed. "
-                  "Run: pip install tree-sitter-javascript", file=sys.stderr)
-            return []
         parser = _js_parser
 
     try:
@@ -312,10 +312,6 @@ def process_js_file(path, mode, mode_arg, include_body=False, **kwargs):
 
 def process_cpp_file(path, mode, mode_arg, include_body=False, **kwargs):
     """Process a C/C++ file. Returns list[{"line": N, "text": "..."}]."""
-    if not _CPP_AVAILABLE or _cpp_parser is None:
-        print("ERROR: tree-sitter-cpp not installed. "
-              "Run: pip install tree-sitter-cpp", file=sys.stderr)
-        return []
     try:
         src_bytes = open(path, "rb").read()
     except OSError as e:
@@ -349,18 +345,14 @@ def process_cpp_file(path, mode, mode_arg, include_body=False, **kwargs):
 
 
 # ── Extension → process function routing ─────────────────────────────────────
+# Built from EXTENSIONS constants defined in each language module.
 
 _EXT_TO_PROCESSOR = {
-    ".cs":   process_cs_file,
-    ".py":   process_py_file,
-    ".rs":   process_rust_file,
-    ".js":   process_js_file,  ".jsx":  process_js_file,
-    ".mjs":  process_js_file,  ".cjs":  process_js_file,
-    ".ts":   process_js_file,  ".tsx":  process_js_file,
-    ".cpp":  process_cpp_file, ".cc":   process_cpp_file,
-    ".cxx":  process_cpp_file, ".c":    process_cpp_file,
-    ".hpp":  process_cpp_file, ".h":    process_cpp_file,
-    ".hxx":  process_cpp_file,
+    **{ext: process_cs_file  for ext in CS_EXTENSIONS},
+    **{ext: process_py_file  for ext in PY_EXTENSIONS},
+    **{ext: process_rust_file for ext in RUST_EXTENSIONS},
+    **{ext: process_js_file  for ext in JS_EXTENSIONS},
+    **{ext: process_cpp_file for ext in CPP_EXTENSIONS},
 }
 
 def process_any_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
