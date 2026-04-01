@@ -7,6 +7,7 @@ tree-sitter-rust
 tree-sitter-javascript
 tree-sitter-typescript
 tree-sitter-cpp
-tree-sitter-sql
+# tree-sitter-sql: installed from gh-pages branch in Dockerfile
+# (PyPI wheel doesn't include T-SQL CREATE PROCEDURE support)
 watchdog
 pathspec

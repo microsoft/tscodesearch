@@ -61,10 +61,13 @@ def symbol_kind_query_by(kind: str) -> str:
 def _find_all(node, predicate, results=None):
     if results is None:
         results = []
-    if predicate(node):
-        results.append(node)
-    for child in node.children:
-        _find_all(child, predicate, results)
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if predicate(n):
+            results.append(n)
+        # Reverse so leftmost children are processed first
+        stack.extend(reversed(n.children))
     return results
 
 

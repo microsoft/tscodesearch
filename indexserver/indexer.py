@@ -855,9 +855,9 @@ def extract_cpp_metadata(src_bytes: bytes) -> dict:
 def extract_sql_metadata(src_bytes: bytes) -> dict:
     """Extract SQL metadata for semantic indexing.
 
-    Uses tree-sitter for CREATE TABLE / VIEW / FUNCTION, and regex
-    fallback for CREATE PROCEDURE (T-SQL isn't fully supported by
-    the tree-sitter-sql grammar).
+    Uses tree-sitter for CREATE TABLE / VIEW / FUNCTION / PROCEDURE.
+    Falls back to regex for CREATE OR ALTER PROCEDURE (not in grammar)
+    and any procs the AST misses.
     """
     _empty = {
         "namespace": "", "class_names": [], "method_names": [],
@@ -869,13 +869,14 @@ def extract_sql_metadata(src_bytes: bytes) -> dict:
 
     from src.ast.sql import (
         extract_table_names, extract_function_names,
+        extract_proc_names_ast, extract_proc_sigs, extract_proc_body_refs,
         extract_proc_names_regex, extract_column_info,
         extract_column_sigs, extract_referenced_tables, extract_invocations,
     )
 
     class_names = []   # tables, views
     method_names = []  # stored procs, functions
-    member_sigs = []   # column signatures: TableName.ColName TYPE
+    member_sigs = []   # column signatures + proc signatures
     type_refs = []     # column types
     call_sites = []    # referenced tables, function calls
 
@@ -889,13 +890,20 @@ def extract_sql_metadata(src_bytes: bytes) -> dict:
             root = tree.root_node
             class_names.extend(extract_table_names(root, src_bytes))
             method_names.extend(extract_function_names(root, src_bytes))
+            # AST-based proc extraction (works with gh-pages grammar)
+            method_names.extend(extract_proc_names_ast(root, src_bytes))
+            member_sigs.extend(extract_proc_sigs(root, src_bytes))
+            # Tables referenced inside proc bodies
+            for _proc, table in extract_proc_body_refs(root, src_bytes):
+                call_sites.append(table)
             _, col_types = extract_column_info(root, src_bytes)
             type_refs.extend(col_types)
             member_sigs.extend(extract_column_sigs(root, src_bytes))
             call_sites.extend(extract_referenced_tables(root, src_bytes))
             call_sites.extend(extract_invocations(root, src_bytes))
 
-    # Regex fallback for T-SQL stored procedures
+    # Regex fallback catches CREATE OR ALTER PROCEDURE and any procs
+    # the AST missed (dedupe removes overlap)
     method_names.extend(extract_proc_names_regex(src_bytes))
 
     return {
