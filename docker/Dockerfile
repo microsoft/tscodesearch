@@ -19,7 +19,6 @@ FROM python:3.11-slim
 # System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -37,10 +36,7 @@ RUN mkdir -p ${TYPESENSE_DIR} && \
     chmod +x ${TYPESENSE_DIR}/typesense-server && \
     ln -s ${TYPESENSE_DIR}/typesense-server /usr/local/bin/typesense-server
 
-# Python dependencies — build tree-sitter-sql from gh-pages for T-SQL
-# CREATE PROCEDURE support (PyPI wheel uses an older grammar version)
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc libc6-dev && \
-    rm -rf /var/lib/apt/lists/*
+# Python dependencies
 RUN pip install --no-cache-dir \
     tree-sitter \
     tree-sitter-c-sharp \
@@ -49,19 +45,11 @@ RUN pip install --no-cache-dir \
     tree-sitter-javascript \
     tree-sitter-typescript \
     tree-sitter-cpp \
+    tree-sitter-sql \
     typesense \
     watchdog \
     pathspec \
     pytest
-# tree-sitter-sql: build from gh-pages for T-SQL CREATE PROCEDURE support.
-# Pin to a known-good commit to avoid surprise breakage.
-ARG TREE_SITTER_SQL_COMMIT=851e9cb257ba7c66cc8c14214a31c44d2f1e954e
-RUN git clone --depth 1 \
-        https://github.com/DerekStride/tree-sitter-sql.git /tmp/tree-sitter-sql && \
-    cd /tmp/tree-sitter-sql && git fetch origin ${TREE_SITTER_SQL_COMMIT} && git checkout ${TREE_SITTER_SQL_COMMIT} && \
-    pip install --no-cache-dir . && \
-    python -c "import importlib; p=importlib.import_module('tree_sitter_sql'); open(p.__path__[0]+'/__init__.py','w').write('from ._binding import language\n')" && \
-    rm -rf /tmp/tree-sitter-sql
 
 # Copy application code
 COPY . /app/
