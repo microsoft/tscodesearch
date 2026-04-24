@@ -374,7 +374,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
 
     def _read_body(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
