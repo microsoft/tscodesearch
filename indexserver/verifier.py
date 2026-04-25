@@ -130,6 +130,7 @@ def check_ready(src_root: str | None = None,
         }
     """
     src  = _to_native_path(src_root or SRC_ROOT)
+    src_real = os.path.realpath(src)
     coll = collection or COLLECTION
 
     t0        = time.time()
@@ -158,8 +159,14 @@ def check_ready(src_root: str | None = None,
     try:
         for full_path, rel in walk_source_files(src, extensions=extensions):
             fs_files += 1
+            full_real = os.path.realpath(full_path)
             try:
-                mtime = int(os.stat(full_path).st_mtime)  # lgtm[py/path-injection]
+                if os.path.commonpath([src_real, full_real]) != src_real:
+                    continue
+            except ValueError:
+                continue
+            try:
+                mtime = int(os.stat(full_real).st_mtime)  # lgtm[py/path-injection]
             except OSError:
                 continue
             doc_id = file_id(rel)
