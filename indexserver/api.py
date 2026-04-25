@@ -308,98 +308,15 @@ def _get_query_module():
 def _run_query(mode: str, pattern: str, files: list, include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
     """Run a tree-sitter AST query against a list of absolute file paths.
 
-    Dispatches to the Python parser for .py files, C# parser otherwise.
+    Delegates to the process_*_file functions in src.query.dispatch, which
+    handle reading, preprocessing, parsing, and mode dispatch per language.
     Returns a list of {"file": path, "matches": [{"line": N, "text": "..."}]}
     where line is 1-indexed.  Only files with at least one match are included.
     """
     _q = _get_query_module()
 
-    cs_dispatch = {
-        "classes":         lambda s, t, l: _q.q_classes(s, t, l),
-        "methods":         lambda s, t, l: _q.q_methods(s, t, l),
-        "fields":          lambda s, t, l: _q.q_fields(s, t, l),
-        "usings":          lambda s, t, l: _q.q_usings(s, t, l),
-        "calls":           lambda s, t, l: _q.q_calls(s, t, l, pattern),
-        "implements":      lambda s, t, l: _q.q_implements(s, t, l, pattern),
-        "uses":            lambda s, t, l: _q.q_uses(s, t, l, pattern, uses_kind=uses_kind),
-        "accesses_on":     lambda s, t, l: _q.q_accesses_on(s, t, l, pattern),
-        "all_refs":        lambda s, t, l: _q.q_all_refs(s, t, l, pattern),
-        "casts":           lambda s, t, l: _q.q_casts(s, t, l, pattern),
-        "attrs":           lambda s, t, l: _q.q_attrs(s, t, l, pattern or None),
-        "accesses_of":     lambda s, t, l: _q.q_accesses_of(s, t, l, pattern),
-        "declarations":    lambda s, t, l: _q.q_declarations(s, t, l, pattern, include_body=include_body, symbol_kind=symbol_kind),
-        "params":          lambda s, t, l: _q.q_params(s, t, l, pattern),
-    }
-
-    py_dispatch = {
-        "classes":      lambda s, t, l: _q.py_q_classes(s, t, l),
-        "methods":      lambda s, t, l: _q.py_q_methods(s, t, l),
-        "imports":      lambda s, t, l: _q.py_q_imports(s, t, l),
-        "calls":        lambda s, t, l: _q.py_q_calls(s, t, l, pattern),
-        "implements":   lambda s, t, l: _q.py_q_implements(s, t, l, pattern),
-        "all_refs":     lambda s, t, l: _q.py_q_ident(s, t, l, pattern),
-        "ident":        lambda s, t, l: _q.py_q_ident(s, t, l, pattern),
-        "declarations": lambda s, t, l: _q.py_q_declarations(s, t, l, pattern, include_body=include_body, symbol_kind=symbol_kind),
-        "decorators":   lambda s, t, l: _q.py_q_decorators(s, t, l, pattern),
-        "params":       lambda s, t, l: _q.py_q_params(s, t, l, pattern),
-    }
-
-    rust_dispatch = {
-        "classes":      lambda s, t, l: _q.rust_q_classes(s, t, l),
-        "methods":      lambda s, t, l: _q.rust_q_methods(s, t, l),
-        "calls":        lambda s, t, l: _q.rust_q_calls(s, t, l, pattern),
-        "implements":   lambda s, t, l: _q.rust_q_implements(s, t, l, pattern),
-        "all_refs":     lambda s, t, l: _q.rust_q_all_refs(s, t, l, pattern),
-        "declarations": lambda s, t, l: _q.rust_q_declarations(s, t, l, pattern, include_body=include_body),
-        "imports":      lambda s, t, l: _q.rust_q_imports(s, t, l),
-        "params":       lambda s, t, l: _q.rust_q_params(s, t, l, pattern),
-    }
-
-    js_dispatch = {
-        "classes":      lambda s, t, l: _q.js_q_classes(s, t, l),
-        "methods":      lambda s, t, l: _q.js_q_methods(s, t, l),
-        "calls":        lambda s, t, l: _q.js_q_calls(s, t, l, pattern),
-        "implements":   lambda s, t, l: _q.js_q_implements(s, t, l, pattern),
-        "all_refs":     lambda s, t, l: _q.js_q_all_refs(s, t, l, pattern),
-        "declarations": lambda s, t, l: _q.js_q_declarations(s, t, l, pattern, include_body=include_body),
-        "imports":      lambda s, t, l: _q.js_q_imports(s, t, l),
-        "params":       lambda s, t, l: _q.js_q_params(s, t, l, pattern),
-        "attrs":        lambda s, t, l: _q.js_q_attrs(s, t, l, pattern or None),
-    }
-
-    cpp_dispatch = {
-        "classes":      lambda s, t, l: _q.cpp_q_classes(s, t, l),
-        "methods":      lambda s, t, l: _q.cpp_q_methods(s, t, l),
-        "calls":        lambda s, t, l: _q.cpp_q_calls(s, t, l, pattern),
-        "implements":   lambda s, t, l: _q.cpp_q_implements(s, t, l, pattern),
-        "all_refs":     lambda s, t, l: _q.cpp_q_all_refs(s, t, l, pattern),
-        "declarations": lambda s, t, l: _q.cpp_q_declarations(s, t, l, pattern, include_body=include_body),
-        "includes":     lambda s, t, l: _q.cpp_q_includes(s, t, l),
-        "params":       lambda s, t, l: _q.cpp_q_params(s, t, l, pattern),
-    }
-
-    all_modes = set(cs_dispatch) | set(py_dispatch) | set(rust_dispatch) | set(js_dispatch) | set(cpp_dispatch)
-    if mode not in all_modes:
-        raise ValueError(f"Unknown mode: {mode!r}")
-
-    # Extension → (dispatch_table, parser_attr, available_attr)
-    _EXT_DISPATCH = {
-        ".py":  (py_dispatch,   "_py_parser",   "_PY_AVAILABLE"),
-        ".rs":  (rust_dispatch, "_rust_parser",  "_RUST_AVAILABLE"),
-        ".js":  (js_dispatch,   "_js_parser",    "_JS_AVAILABLE"),
-        ".jsx": (js_dispatch,   "_js_parser",    "_JS_AVAILABLE"),
-        ".mjs": (js_dispatch,   "_js_parser",    "_JS_AVAILABLE"),
-        ".cjs": (js_dispatch,   "_js_parser",    "_JS_AVAILABLE"),
-        ".ts":  (js_dispatch,   "_ts_parser",    "_TS_AVAILABLE"),
-        ".tsx": (js_dispatch,   "_tsx_parser",   "_TS_AVAILABLE"),
-        ".cpp": (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
-        ".cc":  (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
-        ".cxx": (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
-        ".c":   (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
-        ".h":   (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
-        ".hpp": (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
-        ".hxx": (cpp_dispatch,  "_cpp_parser",   "_CPP_AVAILABLE"),
-    }
+    # Extension → process_file function, built from each language module's EXTENSIONS set.
+    _EXT_PROCESS = _q._EXT_TO_PROCESSOR
 
     results = []
     for file_path in files:
@@ -415,69 +332,13 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
                 break
         native = to_native_path(resolved)
         ext = os.path.splitext(native)[1].lower()
-
-        # SQL files: use regex-based query (tree-sitter-sql can't handle T-SQL)
-        if ext == ".sql":
-            try:
-                src_bytes = open(native, "rb").read()
-            except OSError:
-                continue
-            text = src_bytes.decode("utf-8", errors="replace")
-            lines = text.splitlines()
-            from src.query.sql import (
-                sql_q_text, sql_q_declarations, sql_q_fields,
-                sql_q_calls, sql_q_classes, sql_q_methods,
-            )
-            sql_dispatch = {
-                "text":         lambda: sql_q_text(lines, pattern),
-                "declarations": lambda: sql_q_declarations(text, lines, pattern),
-                "fields":       lambda: sql_q_fields(text, lines, pattern),
-                "calls":        lambda: sql_q_calls(text, lines, pattern),
-                "classes":      lambda: sql_q_classes(text, lines),
-                "methods":      lambda: sql_q_methods(text, lines),
-                "all_refs":     lambda: sql_q_text(lines, pattern),
-            }
-            fn = sql_dispatch.get(mode)
-            if fn is None:
-                fn = lambda: sql_q_text(lines, pattern) if pattern else []
-            raw = fn()
-            if raw:
-                results.append({
-                    "file":    file_path,
-                    "matches": [{"line": ln, "text": text} for ln, text in raw],
-                })
-            continue
-
-        # Get dispatch table and parser for this extension
-        lang_info = _EXT_DISPATCH.get(ext)
-        if lang_info:
-            dispatch, parser_attr, avail_attr = lang_info
-            if not getattr(_q, avail_attr, False):
-                continue
-            parser_obj = getattr(_q, parser_attr, None)
-        else:
-            # Default: C#
-            dispatch = cs_dispatch
-            parser_obj = _q._parser
-
-        fn = dispatch.get(mode)
-        if fn is None:
-            continue
-        try:
-            src_bytes = open(native, "rb").read()
-        except OSError:
-            continue
-        try:
-            tree = parser_obj.parse(src_bytes)
-        except Exception:
-            continue
-        lines = src_bytes.decode("utf-8", errors="replace").splitlines()
-        raw = fn(src_bytes, tree, lines)
-        if raw:
-            results.append({
-                "file":    file_path,   # return original path so caller can match it back
-                "matches": [{"line": ln, "text": text} for ln, text in raw],
-            })
+        process_fn = _EXT_PROCESS.get(ext, _q.process_cs_file)
+        matches = process_fn(native, mode, pattern,
+                             include_body=include_body,
+                             symbol_kind=symbol_kind,
+                             uses_kind=uses_kind)
+        if matches:
+            results.append({"file": file_path, "matches": matches})
     return results
 
 

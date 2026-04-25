@@ -140,16 +140,6 @@ from .sql import (
     sql_q_classes, sql_q_methods,
 )
 
-# Availability flags checked by api.py to skip parsers whose grammar failed to load.
-# All grammars are hard dependencies here (import errors would have already raised),
-# so these are unconditionally True.
-_PY_AVAILABLE   = True
-_RUST_AVAILABLE = True
-_JS_AVAILABLE   = True
-_TS_AVAILABLE   = True
-_CPP_AVAILABLE  = True
-
-
 # ── Per-file process functions ────────────────────────────────────────────────
 # These use module-level parsers for efficiency (api.py accesses _q._parser etc.)
 #
