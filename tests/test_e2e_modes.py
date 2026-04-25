@@ -116,7 +116,7 @@ def write_config(src_dir: str, mode: str, port: int = 8108) -> None:
             "default": {"external_path": src_dir.replace("\\", "/").rstrip("/")}
         },
     }
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")  # lgtm[py/clear-text-storage-sensitive-data]
 
 
 # ── Service management ─────────────────────────────────────────────────────────

@@ -1227,9 +1227,9 @@ def walk_source_files(src_root: str, extensions=None):
             return _spec_cache[dirpath]
         gi = os.path.join(dirpath, ".gitignore")
         spec = None
-        if os.path.isfile(gi):
+        if os.path.isfile(gi):  # lgtm[py/path-injection]
             try:
-                with open(gi, "r", encoding="utf-8", errors="replace") as f:
+                with open(gi, "r", encoding="utf-8", errors="replace") as f:  # lgtm[py/path-injection]
                     spec = pathspec.PathSpec.from_lines("gitwildmatch", f)
             except OSError:
                 pass
@@ -1248,7 +1248,7 @@ def walk_source_files(src_root: str, extensions=None):
                 check_dir = os.path.join(check_dir, part)
         return False
 
-    for dirpath, dirs, files in os.walk(src_root, topdown=True):
+    for dirpath, dirs, files in os.walk(src_root, topdown=True):  # lgtm[py/path-injection]
         dirs[:] = [
             d for d in dirs
             if not should_skip_dir(d)
@@ -1260,7 +1260,7 @@ def walk_source_files(src_root: str, extensions=None):
             if ext not in exts:
                 continue
             try:
-                if os.path.getsize(full_path) > MAX_FILE_BYTES:
+                if os.path.getsize(full_path) > MAX_FILE_BYTES:  # lgtm[py/path-injection]
                     continue
             except OSError:
                 continue

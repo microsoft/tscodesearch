@@ -762,6 +762,11 @@ class _Handler(BaseHTTPRequestHandler):
                 abs_path = to_native_path(
                     src_root.rstrip("/\\") + "/" + rel
                 )
+                # Reject paths that escape the configured root (e.g. via "../" in rel).
+                if not os.path.realpath(abs_path).startswith(
+                    os.path.realpath(src_root) + os.sep
+                ):
+                    continue
                 if os.path.isfile(abs_path):
                     file_list.append(abs_path)
                     hit_by_path[abs_path] = hit

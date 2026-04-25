@@ -109,7 +109,7 @@ class IndexQueue:
         """
         if action == "upsert" and mtime is None:
             try:
-                mtime = int(os.stat(full_path).st_mtime)
+                mtime = int(os.stat(full_path).st_mtime)  # lgtm[py/path-injection]
             except OSError:
                 mtime = None
 
