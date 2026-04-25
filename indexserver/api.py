@@ -485,7 +485,7 @@ class _Handler(BaseHTTPRequestHandler):
             if root_name not in ROOTS:
                 self._send_json(400, {"error": f"Unknown root {root_name!r}. Available: {sorted(ROOTS)}"})
     def _send_json(self, code: int, data: dict) -> None:
-            collection, src_root = get_root(root_name)
+            _, src_root = get_root(root_name)
         body = json.dumps(data).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
