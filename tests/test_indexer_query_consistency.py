@@ -23,8 +23,7 @@ from tree_sitter import Language, Parser
 
 from indexserver.indexer import extract_cs_metadata
 from src.query.dispatch import (
-    q_classes, q_methods, q_fields, q_calls, q_implements, q_uses,
-    q_attrs, q_usings, q_uses, q_casts, q_all_refs,
+    q_classes, q_methods, q_fields, q_calls, q_implements, q_attrs, q_usings, q_uses, q_casts, q_all_refs,
 )
 
 # ---------------------------------------------------------------------------
@@ -717,8 +716,6 @@ class TestFieldParamTypeConsistency:
 
     def test_field_type_results_in_type_refs(self, fx, meta):
         """Every type returned by q_field_type should be in type_refs."""
-        from src.ast.cs import _unqualify_type
-        import re
         for _, txt in q_uses(*fx, "IWidget", uses_kind="field"):
             # type_refs stores individual type names, not full qualified strings
             assert "IWidget" in meta["type_refs"], \

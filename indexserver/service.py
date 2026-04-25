@@ -33,7 +33,7 @@ if _base not in sys.path:
     sys.path.insert(0, _base)
 
 from indexserver.config import (
-    API_KEY, PORT, API_PORT, HOST, COLLECTION, ROOTS, collection_for_root,
+    API_KEY, PORT, API_PORT, HOST, ROOTS, collection_for_root,
 )
 
 # ── paths ──────────────────────────────────────────────────────────────────────

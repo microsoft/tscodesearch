@@ -33,7 +33,7 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
@@ -254,8 +254,6 @@ class TestRunQueryPathResolution(unittest.TestCase):
     def test_result_file_key_is_original_external_path(self):
         """_run_query returns the original Windows path as 'file' key."""
         import indexserver.api as _api
-        import tree_sitter_c_sharp as tscsharp
-        from tree_sitter import Language, Parser
 
         src = b"namespace Widget { public class Widget { } }"
         with tempfile.NamedTemporaryFile(suffix=".cs", delete=False) as f:
@@ -442,7 +440,6 @@ class TestPathIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _assert_api_ok()
-        import json, urllib.request
         from indexserver.config import HOST, API_PORT, API_KEY, HOST_ROOTS, ROOTS
         cls.host      = HOST
         cls.api_port  = API_PORT

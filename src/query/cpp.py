@@ -19,8 +19,7 @@ import tree_sitter_cpp as tscpp
 
 from ..ast.cpp import (
     _find_all, _text, _in_literal, _line,
-    _TYPE_DECL_NODES, _FUNCTION_NODES, _LITERAL_NODES,
-    _class_name, _base_class_names, _fn_name, _fn_sig,
+    _TYPE_DECL_NODES, _FUNCTION_NODES, _class_name, _base_class_names, _fn_name, _fn_sig,
     _fn_declarator_name, _member_fn_name, _member_fn_sig,
 )
 

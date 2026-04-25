@@ -24,7 +24,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from tests.helpers import (
-    _server_ok, _assert_server_ok, _search, _delete_collection, _make_git_repo,
+    _assert_server_ok, _search, _delete_collection, _make_git_repo,
     _FOO_CS, _BAR_CS,
 )
 from indexserver.indexer import run_index, file_id

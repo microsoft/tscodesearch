@@ -8,7 +8,6 @@ Run (from WSL):
     ~/.local/indexserver-venv/bin/pytest codesearch/tests/test_python.py -v
 """
 
-import io
 import os
 import shutil
 import sys
@@ -21,7 +20,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from tests.helpers import (
-    _server_ok, _assert_server_ok, _search, _delete_collection, _make_git_repo,
+    _assert_server_ok, _search, _delete_collection, _make_git_repo,
     _FOO_PY, _BAR_PY,
 )
 from indexserver.indexer import run_index, extract_py_metadata

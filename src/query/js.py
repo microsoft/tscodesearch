@@ -25,7 +25,6 @@ import tree_sitter_typescript as tsts
 
 from ..ast.js import (
     _find_all, _text, _in_literal, _line,
-    _TYPE_DECL_NODES, _FUNCTION_NODES, _LITERAL_NODES,
     _class_bases, _fn_name_from_node, _fn_sig,
 )
 

@@ -23,7 +23,7 @@ from tests.fixtures import (
     SIG_HAS_PARAM, FIELD_NAME_ONLY, CALLS_ONLY, NAME_CONTAINS,
     LISTING_TARGET, CALLS_IBLOBSERVICE, CONTENT_ONLY_BLOBSTORE,
 )
-from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
+from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, run_index
 from src.query.dispatch import q_methods, q_classes, q_fields
 
@@ -261,7 +261,6 @@ class TestSigSearchLive(LiveTestBase):
     @classmethod
     def setUpClass(cls):
         _assert_server_ok()
-        from tests.helpers import _make_git_repo, _delete_collection
         stamp   = int(time.time())
         cls.coll   = f"test_sig_{stamp}"
         cls.tmpdir = _make_git_repo({

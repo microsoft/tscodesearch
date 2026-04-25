@@ -34,7 +34,6 @@ from src.query.dispatch import (
     q_accesses_on,
     q_methods,
     q_classes,
-    q_uses,
 )
 
 # ---------------------------------------------------------------------------

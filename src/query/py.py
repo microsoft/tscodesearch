@@ -11,7 +11,6 @@ import tree_sitter_python as tspython
 
 from ..ast.cs import _find_all, _text  # shared traversal helpers
 from ..ast.py import (
-    _PY_LITERAL_NODES,
     _line,
     _py_in_literal,
     _py_enclosing_class,
@@ -239,7 +238,6 @@ def process_py_file(path, mode, mode_arg, show_path, count_only, context=0,
     if not results:
         return 0
 
-    import os
     from .config import SRC_ROOT as _SRC_ROOT
     _effective_root = (src_root or _SRC_ROOT).rstrip("/").replace("\\", "/")
     _path_norm = path.replace("\\", "/")
