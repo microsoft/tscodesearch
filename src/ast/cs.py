@@ -66,6 +66,7 @@ def _find_all(node, predicate, results=None):
         n = stack.pop()
         if predicate(n):
             results.append(n)
+        # Reverse so leftmost children are processed first
         stack.extend(reversed(n.children))
     return results
 
