@@ -20,7 +20,6 @@ import unittest
 from tests.base import _parse
 from tests.fixtures import (
     PARAM_TYPED_BLOBSTORE_MULTI, FIELD_ONLY_NO_PARAMS, PARAM_TYPED_WITH_MODIFIERS,
-    LISTING_TARGET,
 )
 from indexserver.indexer import extract_cs_metadata
 from src.query.dispatch import q_uses

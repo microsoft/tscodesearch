@@ -65,8 +65,7 @@ from indexserver.config import (
     collection_for_root,
 )
 from src.ast.cs import (
-    _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
-    _find_all, _text, _unqualify, _unqualify_type,
+    _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _find_all, _text, _unqualify, _unqualify_type,
     _base_type_names, _collect_ctor_names,
 )
 _node_text = _text  # local alias — indexer historically used _node_text
@@ -560,8 +559,7 @@ def extract_rust_metadata(src_bytes: bytes) -> dict:
         _find_all as _rfa, _text as _rt,
         _TYPE_DECL_NODES as _RUST_TYPE_NODES,
         _fn_name as _rfn_name, _type_name as _rtype_name,
-        _impl_trait_name as _rimpl_trait, _impl_type_name as _rimpl_type,
-        _fn_sig as _rfn_sig,
+        _impl_trait_name as _rimpl_trait, _fn_sig as _rfn_sig,
     )
 
     root = tree.root_node
@@ -652,7 +650,6 @@ def extract_js_metadata(src_bytes: bytes, parser=None) -> dict:
 
     from src.ast.js import (
         _find_all as _jfa, _text as _jt,
-        _TYPE_DECL_NODES as _JS_TYPE_NODES,
         _class_bases, _fn_name_from_node, _fn_sig as _jfn_sig,
     )
 
@@ -1151,7 +1148,7 @@ def verify_all_schemas(client) -> dict:
     Returns a dict keyed by root name:
         {"ok": bool, "warnings": [str, ...], "collection": str}
     """
-    from indexserver.config import ROOTS, collection_for_root
+    from indexserver.config import ROOTS
     results = {}
     for name in ROOTS:
         coll = collection_for_root(name)

@@ -21,9 +21,9 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from tests.helpers import (
-    _server_ok, _assert_server_ok, _search, _delete_collection, _FakeEvent,
+    _assert_server_ok, _search, _delete_collection, _FakeEvent,
 )
-from indexserver.index_queue import IndexQueue, MTIME_DELETE
+from indexserver.index_queue import IndexQueue
 from indexserver.indexer import build_schema
 
 

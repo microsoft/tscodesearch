@@ -7,7 +7,6 @@ Run (from WSL):
     ~/.local/indexserver-venv/bin/pytest codesearch/tests/test_process_cs.py -v
 """
 
-import io
 import os
 import shutil
 import sys

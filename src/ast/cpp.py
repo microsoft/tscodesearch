@@ -5,7 +5,6 @@ Used by both indexserver/extractors.py (index building) and query_cpp.py
 (per-file AST queries).
 """
 
-import re
 
 # ── Node type sets ─────────────────────────────────────────────────────────────
 

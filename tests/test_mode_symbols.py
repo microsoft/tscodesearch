@@ -20,12 +20,12 @@ import tempfile
 import time
 import unittest
 
-from tests.base import _parse, LiveTestBase
+from tests.base import LiveTestBase
 from tests.fixtures import (
     CLASS_NAMED_INVENTORYMANAGER, METHOD_NAMED_PROCESSINVENTORY, LITERAL_ONLY,
     CALLS_FETCHWIDGET, USES_IDATASTORE_PARAM,
 )
-from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
+from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, build_document, run_index
 
 

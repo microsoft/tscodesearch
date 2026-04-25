@@ -6,7 +6,7 @@ consistent.  All functions operate on already-parsed tree-sitter nodes
 — no parser state here.
 """
 
-from .cs import _find_all, _text  # shared traversal helpers
+from .cs import _text  # shared traversal helpers
 
 # ── Node type sets ─────────────────────────────────────────────────────────────
 

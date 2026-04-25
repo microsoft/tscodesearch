@@ -50,15 +50,13 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-import typesense
 
 from indexserver.config import (
     API_KEY, API_PORT, PORT, HOST, ROOTS, HOST_ROOTS, get_root,
-    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES,
-    to_native_path, collection_for_root, extensions_for_root, TYPESENSE_CLIENT_CONFIG,
+    EXCLUDE_DIRS, to_native_path, collection_for_root, extensions_for_root,
 )
 from indexserver.index_queue import IndexQueue
-from indexserver.indexer import walk_source_files, ensure_collection, get_client, verify_all_schemas, verify_schema
+from indexserver.indexer import get_client, verify_all_schemas
 from indexserver.verifier import check_ready, run_verify
 from indexserver.watcher import run_watcher
 

@@ -66,12 +66,6 @@ import tree_sitter_c_sharp as tscsharp
 CS = Language(tscsharp.language())
 _parser = Parser(CS)
 
-from ..ast.cs import (
-    _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _QUALIFIED_RE,
-    _find_all, _text, _unqualify, _unqualify_type,
-    _base_type_names, _collect_ctor_names,
-    SYMBOL_KIND_TO_NODES,
-)
 
 # ── C# query functions (imported from cs.py) ─────────────────────────────────
 
@@ -80,10 +74,6 @@ from .cs import (
     q_classes, q_methods, q_fields, q_calls, q_accesses_of, q_implements,
     q_uses, q_attrs, q_usings, q_declarations, q_params, q_casts,
     q_accesses_on, q_all_refs,
-    _line, _strip_generic, _type_names, _in_literal,
-    _field_type, _build_sig, _enclosing_type_name,
-    _q_uses_all, _q_field_type, _q_param_type, _q_return_type,
-    _q_local_type, _q_base_uses,
 )
 
 import tree_sitter_python as tspython
@@ -94,7 +84,6 @@ from .py import (
     EXTENSIONS as PY_EXTENSIONS,
     py_q_classes, py_q_methods, py_q_calls, py_q_implements, py_q_ident,
     py_q_declarations, py_q_decorators, py_q_imports, py_q_params,
-    _py_in_literal, _py_enclosing_class, _py_base_names,
 )
 
 import tree_sitter_rust as tsrust

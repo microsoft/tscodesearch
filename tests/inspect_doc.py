@@ -30,7 +30,7 @@ _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _root)
 
 from src.query.config import SRC_ROOT, HOST, PORT, API_KEY, COLLECTION, to_native_path
-from indexserver.indexer import build_document, subsystem_from_path, file_id
+from indexserver.indexer import build_document, file_id
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,7 @@ from tests.fixtures import (
     CALLS_FETCHWIDGET, IMPLEMENTS_IDATASTORE,
     LOCAL_VAR_IDATASTORE, STATIC_RECEIVER_IDATASTORE,
 )
-from tests.helpers import _server_ok, _assert_server_ok, _make_git_repo, _delete_collection
+from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
 from indexserver.indexer import extract_cs_metadata, run_index
 from src.query.dispatch import q_uses
 

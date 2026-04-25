@@ -19,13 +19,12 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from tests.helpers import (
-    _server_ok, _assert_server_ok, _search, _collection_info, _delete_collection, _make_git_repo,
+    _assert_server_ok, _search, _collection_info, _delete_collection, _make_git_repo,
     _MockTypesenseClient,
     _FOO_CS, _BAR_CS, _BLOBSTORE_CS, _QUALIFIED_CS, _GENERIC_WRAPPER_CS,
 )
 from indexserver.indexer import (
-    run_index, index_file_list, build_document,
-    extract_cs_metadata, extract_py_metadata,
+    run_index, index_file_list, extract_cs_metadata,
 )
 from indexserver.index_queue import IndexQueue, MTIME_DELETE
 

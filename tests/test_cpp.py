@@ -9,7 +9,6 @@ Run from WSL:
 
 import os
 import sys
-import io
 import shutil
 import tempfile
 import unittest

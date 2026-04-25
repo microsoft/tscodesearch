@@ -8,7 +8,6 @@ PROCEDURE, etc.).  Regex is reliable for SQL's keyword-heavy syntax.
 
 import re
 
-from ..ast.cs import _find_all, _text
 
 
 # ── Regex patterns ─────────────────────────────────────────────────────────────
