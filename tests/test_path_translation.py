@@ -264,7 +264,7 @@ class TestRunQueryPathResolution(unittest.TestCase):
             external_path = "C:/repos/src/Widget.cs"
             # Map the fake Windows path to our real temp file
             local_dir = os.path.dirname(tmp_path).replace("\\", "/")
-            fname = os.path.basename(tmp_path)
+            os.path.basename(tmp_path)
             with patch.dict("indexserver.api.HOST_ROOTS",
                             {"default": "C:/repos/src"}, clear=True), \
                  patch.dict("indexserver.api.ROOTS",

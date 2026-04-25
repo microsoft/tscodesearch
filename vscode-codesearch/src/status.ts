@@ -15,7 +15,7 @@
 
 import * as vscode from 'vscode';
 import { FileWatcher } from './watcher';
-import { RootsTreeProvider, StatusDetail } from './treeview';
+import type { RootsTreeProvider } from './treeview';
 
 interface StatusResponse {
     watcher?:   { state?: string; queue_depth?: number; paused?: boolean };

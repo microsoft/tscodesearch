@@ -22,7 +22,6 @@ from tests.helpers import (
 )
 from indexserver.api import _run_query
 from indexserver.indexer import extract_cs_metadata
-from src.query.dispatch import process_cs_file as _query_process_file
 import src.query.dispatch as _q
 
 
@@ -49,7 +48,7 @@ class TestQueryCs(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, path, mode, mode_arg=None, uses_kind=None):
-        matches = _query_process_file(
+        matches = _q.process_cs_file(
             path=path, mode=mode, mode_arg=mode_arg, uses_kind=uses_kind,
         )
         path_norm = path.replace("\\", "/")
@@ -293,7 +292,8 @@ class TestQueryApi(unittest.TestCase):
 
     def _direct(self, path, fn):
         """Call a query function directly (as query_ast MCP tool does)."""
-        src = open(path, "rb").read()
+        with open(path, "rb") as _f:
+            src = _f.read()
         tree = _q._parser.parse(src)
         lines = src.decode("utf-8", errors="replace").splitlines()
         return fn(src, tree, lines)
@@ -377,7 +377,7 @@ class TestQueryApi(unittest.TestCase):
 
     def test_methods_matches_direct_q_methods(self):
         """_run_query('methods', ...) returns same pairs as q_methods directly."""
-        direct = self._direct(self.foo_path, lambda s, t, l: _q.q_methods(s, t, l))
+        direct = self._direct(self.foo_path, _q.q_methods)
         via_api = _run_query("methods", "", [self.foo_path])
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))

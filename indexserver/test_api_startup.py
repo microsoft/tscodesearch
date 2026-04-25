@@ -225,7 +225,7 @@ def _poll_with_progress(port, api_key, status_path: str,
 def _get_config() -> tuple[int, str]:
     r = subprocess.run(
         [PYTHON, "-c",
-         "from indexserver.config import API_PORT, API_KEY; "
+         "from indexserver.config import API_PORT, API_KEY; " +
          "print(API_PORT); print(API_KEY)"],
         capture_output=True, text=True, cwd=str(_REPO_ROOT),
     )
@@ -280,7 +280,7 @@ def _launch(port: int, api_key: str) -> subprocess.Popen | None:
     r = subprocess.run(
         [PYTHON, "-c",
          f"import sys; sys.path.insert(0,'{_REPO_ROOT}'); "
-         f"import py_compile; py_compile.compile('{_API_PY}', doraise=True)"],
+         + f"import py_compile; py_compile.compile('{_API_PY}', doraise=True)"],
         capture_output=True, text=True,
     )
     if r.returncode != 0:

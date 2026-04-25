@@ -65,7 +65,8 @@ _WATCHER_STATS = str(_RUN_DIR / "watcher_stats.json")
 def _pid_alive(pid_file: str) -> tuple[bool, str]:
     if not os.path.exists(pid_file):
         return False, ""
-    pid_str = open(pid_file).read().strip()
+    with open(pid_file) as _f:
+        pid_str = _f.read().strip()
     if not pid_str:
         return False, ""
     try:

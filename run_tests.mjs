@@ -98,12 +98,6 @@ function runOrDie(cmd, args, opts = {}) {
   if (run(cmd, args, opts) !== 0) process.exit(1);
 }
 
-function capture(cmd, args, opts = {}) {
-  const r = spawnSync(cmd, args, { encoding: 'utf8', ...opts });
-  if (r.error || r.status !== 0) return null;
-  return r.stdout.trim();
-}
-
 // ── Pytest log splitting ───────────────────────────────────────────────────────
 
 /**
@@ -206,14 +200,6 @@ function httpHealth(port) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function die(msg) { console.error(`ERROR: ${msg}`); process.exit(1); }
-
-// ── Read config.json ──────────────────────────────────────────────────────────
-
-function readConfig() {
-  const cfgPath = join(REPO, 'config.json');
-  if (!existsSync(cfgPath)) return {};
-  try { return JSON.parse(readFileSync(cfgPath, 'utf8')); } catch { return {}; }
-}
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -351,7 +337,7 @@ async function runDocker() {
       'codesearch_root1', 'codesearch_root2',
       '--', ...extraArgs,
     ]);
-    const { passedLog, errorsLog } = writePytestLogs(logDir, r.output);
+    const { errorsLog } = writePytestLogs(logDir, r.output);
     if (r.status !== 0) {
       s.fail(errorsLog, pytestSummary(r.output));
       const d = pytestDetail(r.output); if (d) console.log(d);
@@ -441,7 +427,7 @@ async function runWsl() {
   ]);
   writeFileSync(join(logDir, 'all.log'), r.output);
 
-  const { passedLog, errorsLog } = writePytestLogs(logDir, r.output);
+  const { passedLog: _passedLog, errorsLog } = writePytestLogs(logDir, r.output);
 
   {
     const s = step('wsl/pytest');
@@ -530,7 +516,7 @@ async function runLinux() {
   });
   writeFileSync(join(logDir, 'all.log'), r.output);
 
-  const { passedLog, errorsLog } = writePytestLogs(logDir, r.output);
+  const { passedLog: _passedLog, errorsLog } = writePytestLogs(logDir, r.output);
 
   {
     const s = step('linux/pytest');

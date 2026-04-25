@@ -96,10 +96,10 @@ class _MockDocuments:
     def __getitem__(self, doc_id: str):
         parent = self
         class _Doc:
-            def delete(self_):
+            def delete(self):
                 parent.deleted.append(doc_id)
                 parent._stored.pop(doc_id, None)
-            def retrieve(self_):
+            def retrieve(self):
                 if doc_id in parent._stored:
                     return parent._stored[doc_id]
                 raise Exception(f"404 not found: {doc_id}")

@@ -931,7 +931,8 @@ def process_cs_file(path, mode, mode_arg, show_path, count_only, context=0,
     _parser = Parser(_CS)
 
     try:
-        src_bytes = open(path, "rb").read()
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
         return 0

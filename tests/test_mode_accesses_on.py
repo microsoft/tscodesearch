@@ -43,7 +43,7 @@ class TestQMemberAccesses(unittest.TestCase):
 
     def test_finds_all_members_on_param(self):
         r = self._accesses(MEMBER_ACCESS_BLOBSTORE_PARAM, "BlobStore")
-        members = {t.split(".")[1].split(" ")[0] if "." in t else t
+        {t.split(".")[1].split(" ")[0] if "." in t else t
                    for _, t in r}
         # Write, Size, Flush are accessed on 'store'
         text = " ".join(t for _, t in r)

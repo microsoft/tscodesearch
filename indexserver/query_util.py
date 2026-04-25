@@ -152,7 +152,8 @@ def _print_file_matches(matches, disp, show_path, count_only, context, mode, pat
     lines = None
     if context > 0 and mode != "declarations":
         try:
-            lines = open(path, "rb").read().decode("utf-8", errors="replace").splitlines()
+            with open(path, "rb") as _f:
+                lines = _f.read().decode("utf-8", errors="replace").splitlines()
         except OSError:
             pass
     for m in matches:
