@@ -7,6 +7,31 @@ on:
     branches: [main]
 
 jobs:
+  # ── Job 3: CodeQL analysis ─────────────────────────────────────────────────
+  codeql:
+    name: CodeQL analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+
+    strategy:
+      matrix:
+        language: [python, javascript-typescript]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          config-file: .github/codeql/codeql-config.yml
+
+      - uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+
   # ── Job 1: full native test suite ──────────────────────────────────────────
   # Downloads Typesense, creates a venv, runs all tests directly on the runner.
   native:
