@@ -604,7 +604,7 @@ def extract_rust_metadata(src_bytes: bytes) -> dict:
 
     # use declarations
     for node in _rfa(root, lambda n: n.type == "use_declaration"):
-        txt = _rt(node, src_bytes).strip()
+        _rt(node, src_bytes).strip()
         # extract first path segment: use std::... → "std"
         for id_node in _rfa(node, lambda n: n.type == "identifier"):
             seg = _rt(id_node, src_bytes).strip()
@@ -989,8 +989,6 @@ _LANGUAGE: dict[str, str] = {
     ".ps1":   "powershell",  ".psm1":  "powershell",  ".psd1":  "powershell",
     # Batch
     ".cmd":   "batch",  ".bat":   "batch",
-    # SQL
-    ".sql":   "sql",
     # IDL
     ".idl":   "idl",
 }
@@ -1008,7 +1006,8 @@ def should_skip_dir(dirname: str) -> bool:
 def build_document(full_path: str, relative_path: str, host_root: str = "") -> dict:
     try:
         stat = os.stat(full_path)
-        src_bytes = open(full_path, "rb").read()
+        with open(full_path, "rb") as _f:
+            src_bytes = _f.read()
     except OSError:
         return None
 

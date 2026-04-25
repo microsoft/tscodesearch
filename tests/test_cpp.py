@@ -35,7 +35,8 @@ CORNER_CASES_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sa
 def _setup_parser(path=None):
     lang = Language(tscpp.language())
     parser = Parser(lang)
-    src = open(path or FIXTURE_PATH, "rb").read()
+    with open(path or FIXTURE_PATH, "rb") as _f:
+        src = _f.read()
     tree = parser.parse(src)
     lines = src.decode("utf-8", errors="replace").splitlines()
     return src, tree, lines
@@ -52,7 +53,8 @@ class TestExtractCppMetadata(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from indexserver.indexer import extract_cpp_metadata
-        cls._meta = extract_cpp_metadata(open(FIXTURE_PATH, "rb").read())
+        with open(FIXTURE_PATH, "rb") as _f:
+            cls._meta = extract_cpp_metadata(_f.read())
 
     def test_class_names_indexed(self):
         self.assertIn("TextProcessor", self._meta["class_names"])
@@ -274,14 +276,16 @@ class TestProcessCppFile(unittest.TestCase):
 
     def test_class_names_consistent(self):
         from indexserver.indexer import extract_cpp_metadata
-        meta = extract_cpp_metadata(open(FIXTURE_PATH, "rb").read())
+        with open(FIXTURE_PATH, "rb") as _f:
+            meta = extract_cpp_metadata(_f.read())
         self.assertIn("TextProcessor", meta["class_names"])
         n, out = self._run("classes")
         self.assertIn("TextProcessor", out)
 
     def test_call_sites_consistent(self):
         from indexserver.indexer import extract_cpp_metadata
-        meta = extract_cpp_metadata(open(FIXTURE_PATH, "rb").read())
+        with open(FIXTURE_PATH, "rb") as _f:
+            meta = extract_cpp_metadata(_f.read())
         self.assertIn("process", meta["call_sites"])
         n, out = self._run("calls", "process")
         self.assertGreater(n, 0)
@@ -333,7 +337,8 @@ class TestHALFixture(unittest.TestCase):
     def test_metadata_qualified_base_types(self):
         """extract_cpp_metadata must list 'AnalogIn', not 'HAL', as base type."""
         from indexserver.indexer import extract_cpp_metadata
-        meta = extract_cpp_metadata(open(HAL_FIXTURE_PATH, "rb").read())
+        with open(HAL_FIXTURE_PATH, "rb") as _f:
+            meta = extract_cpp_metadata(_f.read())
         self.assertIn("AnalogIn",   meta["base_types"])
         self.assertNotIn("HAL",     meta["base_types"])
         self.assertIn("Scheduler",  meta["base_types"])
@@ -370,7 +375,8 @@ class TestHALFixture(unittest.TestCase):
     def test_metadata_qualified_call_sites(self):
         """extract_cpp_metadata includes 'panic' from AP::panic() call sites."""
         from indexserver.indexer import extract_cpp_metadata
-        meta = extract_cpp_metadata(open(HAL_FIXTURE_PATH, "rb").read())
+        with open(HAL_FIXTURE_PATH, "rb") as _f:
+            meta = extract_cpp_metadata(_f.read())
         self.assertIn("panic", meta["call_sites"])
         self.assertIn("hal_channel", meta["call_sites"])
 
@@ -403,7 +409,8 @@ class TestHALFixture(unittest.TestCase):
     def test_metadata_member_sigs_pure_virtual(self):
         """extract_cpp_metadata indexes signatures of pure-virtual methods."""
         from indexserver.indexer import extract_cpp_metadata
-        meta = extract_cpp_metadata(open(HAL_FIXTURE_PATH, "rb").read())
+        with open(HAL_FIXTURE_PATH, "rb") as _f:
+            meta = extract_cpp_metadata(_f.read())
         self.assertTrue(any("read" in s for s in meta["member_sigs"]),
                         f"member_sigs={meta['member_sigs']}")
         self.assertTrue(any("init" in s for s in meta["member_sigs"]))
@@ -411,7 +418,8 @@ class TestHALFixture(unittest.TestCase):
     def test_metadata_method_names_pure_virtual(self):
         """extract_cpp_metadata indexes names of pure-virtual member functions."""
         from indexserver.indexer import extract_cpp_metadata
-        meta = extract_cpp_metadata(open(HAL_FIXTURE_PATH, "rb").read())
+        with open(HAL_FIXTURE_PATH, "rb") as _f:
+            meta = extract_cpp_metadata(_f.read())
         self.assertIn("init",     meta["method_names"])
         self.assertIn("read",     meta["method_names"])
         self.assertIn("set_pin",  meta["method_names"])

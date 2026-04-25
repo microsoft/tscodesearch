@@ -72,7 +72,8 @@ def _health_ok() -> bool:
 def _pid_alive(pid_file: str) -> bool:
     if not os.path.exists(pid_file):
         return False
-    pid_str = open(pid_file).read().strip()
+    with open(pid_file) as _f:
+        pid_str = _f.read().strip()
     if not pid_str:
         return False
     try:
@@ -145,14 +146,16 @@ def _restart_watcher() -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    open(_WATCHER_PID, "w").write(str(p.pid))
+    with open(_WATCHER_PID, "w") as _f:
+        _f.write(str(p.pid))
     _log(f"Watcher started (PID {p.pid})")
 
 
 # ── main loop ──────────────────────────────────────────────────────────────────
 
 def run() -> None:
-    open(_HEARTBEAT_PID, "w").write(str(os.getpid()))
+    with open(_HEARTBEAT_PID, "w") as _f:
+        _f.write(str(os.getpid()))
     _log(
         f"Heartbeat started  PID={os.getpid()}  "
         f"interval={CHECK_INTERVAL}s  threshold={FAIL_THRESHOLD}"

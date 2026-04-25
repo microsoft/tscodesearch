@@ -48,7 +48,8 @@ def _parse(fixture_path, is_ts=False, is_tsx=False):
     else:
         lang = Language(tsjs.language())
     parser = _Parser(lang)
-    src = open(fixture_path, "rb").read()
+    with open(fixture_path, "rb") as _f:
+        src = _f.read()
     tree = parser.parse(src)
     lines = src.decode("utf-8", errors="replace").splitlines()
     return src, tree, lines
@@ -67,7 +68,8 @@ class TestExtractJsMetadata(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from indexserver.indexer import extract_js_metadata
-        cls._meta = extract_js_metadata(open(JS_FIXTURE, "rb").read())
+        with open(JS_FIXTURE, "rb") as _f:
+            cls._meta = extract_js_metadata(_f.read())
 
     def test_class_names_indexed(self):
         self.assertIn("TextProcessor", self._meta["class_names"])
@@ -184,7 +186,8 @@ class TestExtractTsMetadata(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from indexserver.indexer import extract_ts_metadata
-        cls._meta = extract_ts_metadata(open(TS_FIXTURE, "rb").read())
+        with open(TS_FIXTURE, "rb") as _f:
+            cls._meta = extract_ts_metadata(_f.read())
 
     def test_class_names_indexed(self):
         self.assertIn("TextProcessor", self._meta["class_names"])
@@ -330,14 +333,16 @@ class TestProcessJsFile(unittest.TestCase):
 
     def test_class_names_consistent(self):
         from indexserver.indexer import extract_js_metadata
-        meta = extract_js_metadata(open(JS_FIXTURE, "rb").read())
+        with open(JS_FIXTURE, "rb") as _f:
+            meta = extract_js_metadata(_f.read())
         self.assertIn("TextProcessor", meta["class_names"])
         n, out = self._run(self.js_path, "classes")
         self.assertIn("TextProcessor", out)
 
     def test_call_sites_consistent(self):
         from indexserver.indexer import extract_js_metadata
-        meta = extract_js_metadata(open(JS_FIXTURE, "rb").read())
+        with open(JS_FIXTURE, "rb") as _f:
+            meta = extract_js_metadata(_f.read())
         self.assertIn("process", meta["call_sites"])
         n, out = self._run(self.js_path, "calls", "process")
         self.assertGreater(n, 0)

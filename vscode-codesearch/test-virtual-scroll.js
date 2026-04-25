@@ -208,7 +208,6 @@ async function run() {
     console.log(`Row breakdown: ${fmtCounts(rows)}`);
 
     const allCollapsed = Object.create(null);
-    const allDirIds    = Object.create(null);
 
     // ── 3. Fully-expanded initial state ──────────────────────────────────────
     console.log('\n[1] Fully-expanded state');

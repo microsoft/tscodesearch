@@ -95,7 +95,7 @@ namespace Synth {
     def test_ident_finds_call_targets(self):
         """q_ident finds call targets; q_uses does not."""
         ident_r = self._ident(CALLS_FETCHWIDGET, "FetchWidget")
-        uses_r  = q_uses(*_parse(CALLS_FETCHWIDGET), type_name="FetchWidget")
+        q_uses(*_parse(CALLS_FETCHWIDGET), type_name="FetchWidget")
         assert ident_r, "q_ident must find FetchWidget call site"
         # uses_r could be empty (call target is not a type use)
 

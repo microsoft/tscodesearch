@@ -150,7 +150,8 @@ def _make_matches(results):
 def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
     """Process a C# file. Returns list[{"line": N, "text": "..."}]."""
     try:
-        src_bytes = open(path, "rb").read()
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
         return []
@@ -195,7 +196,8 @@ def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, 
 def process_py_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
     """Process a Python file. Returns list[{"line": N, "text": "..."}]."""
     try:
-        src_bytes = open(path, "rb").read()
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
         return []
@@ -231,7 +233,8 @@ def process_py_file(path, mode, mode_arg, include_body=False, symbol_kind=None, 
 def process_rust_file(path, mode, mode_arg, include_body=False, **kwargs):
     """Process a Rust file. Returns list[{"line": N, "text": "..."}]."""
     try:
-        src_bytes = open(path, "rb").read()
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
         return []
@@ -271,7 +274,8 @@ def process_js_file(path, mode, mode_arg, include_body=False, **kwargs):
         parser = _js_parser
 
     try:
-        src_bytes = open(path, "rb").read()
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
         return []
@@ -306,7 +310,8 @@ def process_js_file(path, mode, mode_arg, include_body=False, **kwargs):
 def process_cpp_file(path, mode, mode_arg, include_body=False, **kwargs):
     """Process a C/C++ file. Returns list[{"line": N, "text": "..."}]."""
     try:
-        src_bytes = open(path, "rb").read()
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
         return []
@@ -341,7 +346,8 @@ def process_sql_file(path, mode, mode_arg, include_body=False, **kwargs):
     """Process a SQL file. Returns list[{"line": N, "text": "..."}].
     Uses regex-based matching (T-SQL not fully supported by tree-sitter-sql)."""
     try:
-        src_bytes = open(path, "rb").read()
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
         return []

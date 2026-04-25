@@ -34,7 +34,8 @@ _FIXTURE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sample
 @pytest.fixture(scope="module")
 def fx():
     """Parse query_fixture.cs once for the entire module."""
-    src = open(_FIXTURE_PATH, "rb").read()
+    with open(_FIXTURE_PATH, "rb") as _f:
+        src = _f.read()
     tree = _PARSER.parse(src)
     lines = src.decode("utf-8", errors="replace").splitlines()
     return src, tree, lines

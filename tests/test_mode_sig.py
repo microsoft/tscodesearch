@@ -302,7 +302,7 @@ class TestSigSearchLive(LiveTestBase):
 
     def test_old_query_by_would_include_method_names_hits(self):
         """Regression proof: old query_by included method_names — the fixed one has fewer hits."""
-        old = self._ts_search("BlobStore", "member_sigs,method_names,filename")
+        self._ts_search("BlobStore", "member_sigs,method_names,filename")
         new = self._ts_search("BlobStore", "member_sigs,filename")
         # True positives must not be lost
         for fname in ("DataPipeline.cs", "ListingTarget.cs"):

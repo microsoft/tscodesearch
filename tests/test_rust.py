@@ -33,7 +33,8 @@ FIXTURE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sample"
 def _setup_parser():
     lang = Language(tsrust.language())
     parser = Parser(lang)
-    src = open(FIXTURE_PATH, "rb").read()
+    with open(FIXTURE_PATH, "rb") as _f:
+        src = _f.read()
     tree = parser.parse(src)
     lines = src.decode("utf-8", errors="replace").splitlines()
     return src, tree, lines
@@ -54,7 +55,8 @@ class TestExtractRustMetadata(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from indexserver.indexer import extract_rust_metadata
-        cls._meta = extract_rust_metadata(open(FIXTURE_PATH, "rb").read())
+        with open(FIXTURE_PATH, "rb") as _f:
+            cls._meta = extract_rust_metadata(_f.read())
 
     def test_struct_names_indexed(self):
         self.assertIn("ProcessResult", self._meta["class_names"])
@@ -292,28 +294,32 @@ class TestProcessRustFile(unittest.TestCase):
 
     def test_class_names_consistent(self):
         from indexserver.indexer import extract_rust_metadata
-        meta = extract_rust_metadata(open(FIXTURE_PATH, "rb").read())
+        with open(FIXTURE_PATH, "rb") as _f:
+            meta = extract_rust_metadata(_f.read())
         self.assertIn("ProcessResult", meta["class_names"])
         n, out = self._run("classes")
         self.assertIn("ProcessResult", out)
 
     def test_method_names_consistent(self):
         from indexserver.indexer import extract_rust_metadata
-        meta = extract_rust_metadata(open(FIXTURE_PATH, "rb").read())
+        with open(FIXTURE_PATH, "rb") as _f:
+            meta = extract_rust_metadata(_f.read())
         self.assertIn("create_processor", meta["method_names"])
         n, out = self._run("methods")
         self.assertIn("create_processor", out)
 
     def test_call_sites_consistent(self):
         from indexserver.indexer import extract_rust_metadata
-        meta = extract_rust_metadata(open(FIXTURE_PATH, "rb").read())
+        with open(FIXTURE_PATH, "rb") as _f:
+            meta = extract_rust_metadata(_f.read())
         self.assertIn("process", meta["call_sites"])
         n, out = self._run("calls", "process")
         self.assertGreater(n, 0)
 
     def test_base_types_consistent(self):
         from indexserver.indexer import extract_rust_metadata
-        meta = extract_rust_metadata(open(FIXTURE_PATH, "rb").read())
+        with open(FIXTURE_PATH, "rb") as _f:
+            meta = extract_rust_metadata(_f.read())
         self.assertIn("Processor", meta["base_types"])
         n, out = self._run("implements", "Processor")
         self.assertGreater(n, 0)

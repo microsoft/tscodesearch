@@ -168,7 +168,7 @@ def _drain_sync_queue() -> None:
     enqueues upserts, deletes orphans synchronously, then places a fence
     so progress is updated only after all files reach Typesense.
     """
-    global _sync_pending, _sync_stop
+    global _sync_stop
     while True:
         with _sync_lock:
             if not _sync_pending:
@@ -387,7 +387,7 @@ class _Handler(BaseHTTPRequestHandler):
         return {}
 
     def _handle(self) -> None:
-        global _sync_thread, _sync_pending, _sync_stop, _watcher_paused
+        global _sync_thread, _watcher_paused
 
         path   = self.path.split("?")[0].rstrip("/")
         method = self.command
@@ -771,7 +771,7 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
     (and answer /health) before Typesense is ready.  Sets _ts_initializing=False
     once the client, queue, schemas, watcher, and heartbeat are all up.
     """
-    global _ts_client, _schema_status, _ts_initializing, _sync_thread, _sync_pending
+    global _ts_client, _schema_status, _ts_initializing, _sync_thread
 
     print("[api] Waiting for Typesense to become ready…", flush=True)
     while not stop_event.is_set():

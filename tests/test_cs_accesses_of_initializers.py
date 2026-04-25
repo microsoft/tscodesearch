@@ -91,7 +91,7 @@ class TestAccessesOfObjectInitializer(unittest.TestCase):
     def test_other_member_not_in_value_results(self):
         """Name is a different member — must not appear in Value results."""
         r = q_accesses_of(*_OBJ_PARSED, member_name="Value")
-        lns = _lns(r)
+        _lns(r)
         # Name appears on same lines in multi-member init — those lines are in results
         # but for the Name member query, Value lines should not dominate
         r_name = q_accesses_of(*_OBJ_PARSED, member_name="Name")

@@ -53,7 +53,7 @@ class TestQCasts(unittest.TestCase):
         # The 'as BlobStore' line only has an as-expression, not a cast_expression
         # We verify the explicit cast IS found but 'as' doesn't add extra results
         # (both are on separate lines in the fixture)
-        lines_with_as = [t for t in texts if " as " in t]
+        [t for t in texts if " as " in t]
         # as-casts may appear on same line as explicit cast, but the cast_expression
         # node specifically targets (TYPE)expr — just verify explicit cast found
         assert any("(BlobStore)" in t or "BlobStore" in t for t in texts)
