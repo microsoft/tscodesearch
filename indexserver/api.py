@@ -125,7 +125,11 @@ def _enqueue_file_events(events: list) -> dict:
     Filtering (extension, excluded dirs) is applied before enqueuing.
     """
     root_map = [
-        (to_native_path(win_root).rstrip("/"), collection_for_root(name), extensions_for_root(name))
+        (
+            os.path.normpath(to_native_path(win_root).rstrip("/")),
+            collection_for_root(name),
+            extensions_for_root(name),
+        )
         for name, win_root in ROOTS.items()
     ]
 
@@ -135,20 +139,23 @@ def _enqueue_file_events(events: list) -> dict:
         action   = ev.get("action", "upsert")
         ext      = os.path.splitext(raw_path)[1].lower()
 
-        native_path = to_native_path(raw_path)
+        native_path = os.path.normpath(to_native_path(raw_path))
 
         coll = native_root = root_exts = None
         for nr, c, exts in root_map:
-            if native_path.startswith(nr + "/"):
-                native_root, coll, root_exts = nr, c, exts
-                break
+            try:
+                if os.path.commonpath([native_path, nr]) == nr:
+                    native_root, coll, root_exts = nr, c, exts
+                    break
+            except ValueError:
+                continue
         if coll is None:
             continue
 
         if ext not in root_exts:
             continue
 
-        rel   = native_path[len(native_root) + 1:]
+        rel   = os.path.relpath(native_path, native_root).replace("\\", "/")
         parts = rel.split("/")
         if any(p in EXCLUDE_DIRS or p.startswith(".") for p in parts[:-1]):
             continue
