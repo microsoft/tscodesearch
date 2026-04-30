@@ -4,6 +4,7 @@ import json
 import os
 import re as _re
 import sys as _sys
+from dataclasses import dataclass
 
 HOST = "localhost"
 
@@ -33,7 +34,7 @@ API_PORT: int = PORT + 1   # management API (indexserver/api.py)
 API_KEY: str = _CONFIG.get("api_key", "codesearch-local")
 
 
-# ── Platform helpers (defined before _parse_roots so it can call them) ────────
+# ── Platform helpers ──────────────────────────────────────────────────────────
 
 def _is_wsl() -> bool:
     """Detect if running in WSL (vs native Linux like Docker)."""
@@ -71,32 +72,69 @@ def to_native_path(path: str) -> str:
     return path
 
 
-# ── Roots ─────────────────────────────────────────────────────────────────────
-# Each root entry in config.json should have both:
-#   local_path   — path as seen by this process (WSL: /mnt/c/…, Docker: /source/…)
-#   external_path — Windows-side path (C:/…), stored as relative_path prefix in index
+# ── Extension and exclusion sets ─────────────────────────────────────────────
+# Defined before Root so the global set can be stored directly in Root.extensions.
 
-def _parse_roots(raw: dict) -> tuple[dict, dict, dict]:
-    """Parse roots config.  Each entry should have both:
-      local_path   — path as seen by the current process (WSL: /mnt/c/…, Docker: /source/…)
+INCLUDE_EXTENSIONS = frozenset({
+    ".cs",
+    ".cpp", ".c", ".cc", ".cxx", ".h", ".hpp", ".hxx", ".idl",
+    ".dsc", ".inc", ".props", ".targets", ".csproj",
+    ".py", ".sh", ".cmd", ".bat", ".ps1",
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".json", ".xml", ".yaml", ".yml",
+    ".rs",
+    ".md", ".txt",
+    ".sql",
+})
+
+EXCLUDE_DIRS = {
+    "Target", "Build", "Import", "nugetcache",
+    ".git", "obj", "bin", "node_modules", ".venv",
+    "target", "debug", "ship", "x64", "x86",
+    "__pycache__", ".vs",
+}
+
+
+# ── Collection naming ─────────────────────────────────────────────────────────
+
+def _sanitize_root_name(name: str) -> str:
+    return _re.sub(r"[^a-z0-9_]", "_", name.lower())
+
+
+def collection_for_root(name: str = "default") -> str:
+    return f"codesearch_{_sanitize_root_name(name)}"
+
+
+# ── Root ──────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Root:
+    """All configuration for one indexed source tree."""
+    name: str             # logical root name (the key in config.json "roots")
+    local_path: str       # server-side path (WSL: /mnt/c/…, Docker: /source/…)
+    external_path: str    # Windows-side path (C:/…), empty string if not configured
+    collection: str       # Typesense collection name, e.g. "codesearch_default"
+    extensions: frozenset # file extensions to index; defaults to INCLUDE_EXTENSIONS
+
+
+# ── Roots ─────────────────────────────────────────────────────────────────────
+
+def _parse_roots(raw: dict) -> "dict[str, Root]":
+    """Parse the 'roots' section of config.json into Root objects.
+
+    Each entry should have:
+      local_path    — path as seen by this process (WSL: /mnt/c/…, Docker: /source/…)
       external_path — original Windows path (C:/…), stored as relative_path prefix in indexed docs
 
     If only external_path is provided, local_path is auto-derived:
       - In WSL: C:/foo/bar  →  /mnt/c/foo/bar
-      - In Docker/native Linux: cannot auto-derive; falls back to external_path (add local_path
-        explicitly in config.json when running Docker with non-standard mount points)
+      - In Docker/native Linux: falls back to external_path (add local_path explicitly for
+        non-standard mount points)
 
     Optional per-root field:
-      extensions — list of file extensions to index for this root (e.g. [".cs", ".py"]).
-                   When absent or empty, the global INCLUDE_EXTENSIONS set is used.
-
-    ROOTS uses local_path (the server-side filesystem path to use for file access).
-    HOST_ROOTS stores external_path (the Windows-side path used as relative_path prefix).
-    ROOT_EXTENSIONS stores per-root extension sets (None means use global INCLUDE_EXTENSIONS).
+      extensions — list of file extensions (e.g. [".cs", ".py"]); defaults to INCLUDE_EXTENSIONS.
     """
-    local_paths: dict[str, str] = {}
-    external_paths: dict[str, str] = {}
-    root_extensions: dict[str, frozenset | None] = {}
+    result: dict[str, Root] = {}
     for name, val in raw.items():
         lp = val.get("local_path", "").replace("\\", "/").rstrip("/")
         wp = val.get("external_path", "").replace("\\", "/").rstrip("/")
@@ -108,69 +146,44 @@ def _parse_roots(raw: dict) -> tuple[dict, dict, dict]:
                 lp = f"/mnt/{m.group(1).lower()}{m.group(2)}"
             else:
                 lp = wp  # Docker/native: no conversion; add local_path explicitly
-        local_paths[name] = lp
-        if wp:
-            external_paths[name] = wp
-        exts = val.get("extensions")
-        if exts:
-            root_extensions[name] = frozenset(
-                e.lower() if e.startswith(".") else f".{e.lower()}" for e in exts
+        exts_raw = val.get("extensions")
+        if exts_raw:
+            exts: frozenset = frozenset(
+                e.lower() if e.startswith(".") else f".{e.lower()}" for e in exts_raw
             )
         else:
-            root_extensions[name] = None  # use global INCLUDE_EXTENSIONS
-    return local_paths, external_paths, root_extensions
-
-ROOTS, HOST_ROOTS, ROOT_EXTENSIONS = _parse_roots(_CONFIG.get("roots", {}))
-
-SRC_ROOT: str = ROOTS.get("default") or next(iter(ROOTS.values()), "")
-
-
-def _sanitize_root_name(name: str) -> str:
-    return _re.sub(r"[^a-z0-9_]", "_", name.lower())
-
-
-def collection_for_root(name: str = "default") -> str:
-    return f"codesearch_{_sanitize_root_name(name)}"
+            exts = INCLUDE_EXTENSIONS
+        result[name] = Root(
+            name=name,
+            local_path=lp,
+            external_path=wp,
+            collection=collection_for_root(name),
+            extensions=exts,
+        )
+    return result
 
 
-def extensions_for_root(name: str) -> frozenset:
-    """Return the extension set for a root, falling back to the global INCLUDE_EXTENSIONS."""
-    exts = ROOT_EXTENSIONS.get(name)
-    return exts if exts is not None else INCLUDE_EXTENSIONS
+ALL_ROOTS: dict[str, Root] = _parse_roots(_CONFIG.get("roots", {}))
 
+SRC_ROOT: str = (
+    ALL_ROOTS["default"].local_path if "default" in ALL_ROOTS
+    else next((r.local_path for r in ALL_ROOTS.values()), "")
+)
 
-def get_root(name: str = "") -> tuple[str, str]:
-    """Resolve root name → (collection_name, src_path). Empty = first root."""
-    if not name:
-        name = "default" if "default" in ROOTS else next(iter(ROOTS))
-    if name not in ROOTS:
-        raise ValueError(f"Unknown root {name!r}. Available: {sorted(ROOTS)}")
-    return collection_for_root(name), ROOTS[name]
-
-
-_default_root_name = "default" if "default" in ROOTS else next(iter(ROOTS), "default")
+_default_root_name = "default" if "default" in ALL_ROOTS else next(iter(ALL_ROOTS), "default")
 COLLECTION: str = collection_for_root(_default_root_name)
 
+
+def get_root(name: str = "") -> Root:
+    """Resolve root name → Root.  Empty name resolves to 'default' or the first root."""
+    if not name:
+        name = "default" if "default" in ALL_ROOTS else next(iter(ALL_ROOTS))
+    if name not in ALL_ROOTS:
+        raise ValueError(f"Unknown root {name!r}. Available: {sorted(ALL_ROOTS)}")
+    return ALL_ROOTS[name]
+
+
 TYPESENSE_VERSION = "27.1"
-
-INCLUDE_EXTENSIONS = {
-    ".cs",
-    ".cpp", ".c", ".cc", ".cxx", ".h", ".hpp", ".hxx", ".idl",
-    ".dsc", ".inc", ".props", ".targets", ".csproj",
-    ".py", ".sh", ".cmd", ".bat", ".ps1",
-    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-    ".json", ".xml", ".yaml", ".yml",
-    ".rs",
-    ".md", ".txt",
-    ".sql",
-}
-
-EXCLUDE_DIRS = {
-    "Target", "Build", "Import", "nugetcache",
-    ".git", "obj", "bin", "node_modules", ".venv",
-    "target", "debug", "ship", "x64", "x86",
-    "__pycache__", ".vs",
-}
 
 MAX_FILE_BYTES = 3 * 1024 * 1024
 MAX_CONTENT_CHARS = 30000
@@ -180,5 +193,3 @@ TYPESENSE_CLIENT_CONFIG = {
     "api_key": API_KEY,
     "connection_timeout_seconds": 5,
 }
-
-

@@ -25,7 +25,7 @@ from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 
 from indexserver.config import (
-    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, ROOTS, collection_for_root, extensions_for_root,
+    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, ALL_ROOTS,
 )
 
 DEBOUNCE_SECONDS  = 2.0
@@ -135,8 +135,8 @@ def run_watcher(src_root=None, collection=None, stop_event=None, queue=None):
         roots_map = {wsl_path: (collection, None)}
     else:
         roots_map = {
-            _to_wsl_path(r): (collection_for_root(name), extensions_for_root(name))
-            for name, r in ROOTS.items()
+            _to_wsl_path(r.local_path): (r.collection, r.extensions)
+            for r in ALL_ROOTS.values()
         }
 
     observers = []

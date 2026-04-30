@@ -33,7 +33,7 @@ if _base not in sys.path:
     sys.path.insert(0, _base)
 
 from indexserver.config import (
-    API_KEY, PORT, API_PORT, HOST, ROOTS, collection_for_root,
+    API_KEY, PORT, API_PORT, HOST, ALL_ROOTS,
 )
 
 # ── paths ──────────────────────────────────────────────────────────────────────
@@ -197,8 +197,9 @@ def cmd_status(args) -> None:
 
     missing_collections = []
     api_collections = (api_info or {}).get("collections", {})
-    for root_name, _src in ROOTS.items():
-        coll_name = collection_for_root(root_name)
+    for root in ALL_ROOTS.values():
+        coll_name = root.collection
+        root_name = root.name
         coll_info = api_collections.get(root_name)
         if coll_info:
             # api is up — use its validated collection status (schema checked server-side)
@@ -383,11 +384,11 @@ def cmd_start(args) -> None:
         print("       Delete config.json and re-run setup.cmd to regenerate it.")
         sys.exit(1)
 
-    for root_name, raw_path in ROOTS.items():
-        native = _to_native_path(raw_path)
+    for root in ALL_ROOTS.values():
+        native = _to_native_path(root.local_path)
         if not os.path.isdir(native):
-            print(f"ERROR: Source directory for root '{root_name}' does not exist: {native}")
-            print(f"       Check 'roots.{root_name}' in config.json, then run: ts restart")
+            print(f"ERROR: Source directory for root '{root.name}' does not exist: {native}")
+            print(f"       Check 'roots.{root.name}' in config.json, then run: ts restart")
             sys.exit(1)
 
     if not _check_typesense_locks():
@@ -498,18 +499,16 @@ def cmd_index(args) -> None:
         sys.exit(1)
 
     root_name = getattr(args, "root", None) or (
-        "default" if "default" in ROOTS else next(iter(ROOTS))
+        "default" if "default" in ALL_ROOTS else next(iter(ALL_ROOTS))
     )
-    if root_name not in ROOTS:
-        print(f"ERROR: Unknown root '{root_name}'. Available: {sorted(ROOTS)}")
+    if root_name not in ALL_ROOTS:
+        print(f"ERROR: Unknown root '{root_name}'. Available: {sorted(ALL_ROOTS)}")
         sys.exit(1)
 
-    coll_name = collection_for_root(root_name)
-    src_path  = ROOTS[root_name]
-
+    root = ALL_ROOTS[root_name]
     print(f"Starting indexer for root '{root_name}' {'(--resethard) ' if args.resethard else ''}...")
-    print(f"  Collection : {coll_name}")
-    print(f"  Source     : {src_path}")
+    print(f"  Collection : {root.collection}")
+    print(f"  Source     : {root.local_path}")
 
     code, result = _api_post("/index/start", {
         "root":      root_name,
@@ -533,12 +532,13 @@ def cmd_verify(args) -> None:
         sys.exit(1)
 
     root_name = getattr(args, "root", None) or (
-        "default" if "default" in ROOTS else next(iter(ROOTS))
+        "default" if "default" in ALL_ROOTS else next(iter(ALL_ROOTS))
     )
-    if root_name not in ROOTS:
-        print(f"ERROR: Unknown root '{root_name}'. Available: {sorted(ROOTS)}")
+    if root_name not in ALL_ROOTS:
+        print(f"ERROR: Unknown root '{root_name}'. Available: {sorted(ALL_ROOTS)}")
         sys.exit(1)
 
+    root = ALL_ROOTS[root_name]
     delete_orphans = not getattr(args, "no_delete_orphans", False)
 
     code, result = _api_post("/verify/start", {
@@ -554,7 +554,7 @@ def cmd_verify(args) -> None:
         sys.exit(1)
 
     print(f"Verification scan started.")
-    print(f"  Root       : '{root_name}' → {ROOTS[root_name]}")
+    print(f"  Root       : '{root_name}' → {root.local_path}")
     print(f"  Collection : {result.get('collection', '?')}")
     print(f"  Monitor with: ts status")
 

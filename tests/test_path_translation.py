@@ -104,7 +104,7 @@ class TestToNativePath(unittest.TestCase):
 class TestParseRoots(unittest.TestCase):
     """_parse_roots() — config parsing and local_path auto-derivation."""
 
-    def _parse(self, raw: dict, platform: str = "linux", wsl: bool = False) -> tuple:
+    def _parse(self, raw: dict, platform: str = "linux", wsl: bool = False):
         from indexserver import config as _cfg
         with patch.object(_cfg, "_sys") as mock_sys, \
              patch.object(_cfg, "_is_wsl", return_value=wsl):
@@ -112,84 +112,88 @@ class TestParseRoots(unittest.TestCase):
             return _cfg._parse_roots(raw)
 
     def test_both_paths_explicit_uses_local_path(self):
-        local, windows, _ = self._parse({
+        roots = self._parse({
             "default": {"local_path": "/source/default", "external_path": "C:/repos/src"}
         })
-        self.assertEqual(local["default"], "/source/default")
-        self.assertEqual(windows["default"], "C:/repos/src")
+        self.assertEqual(roots["default"].local_path, "/source/default")
+        self.assertEqual(roots["default"].external_path, "C:/repos/src")
 
     def test_only_external_path_wsl_derives_local(self):
-        local, windows, _ = self._parse(
+        roots = self._parse(
             {"default": {"external_path": "C:/repos/src"}},
             platform="linux", wsl=True,
         )
-        self.assertEqual(local["default"], "/mnt/c/repos/src")
-        self.assertEqual(windows["default"], "C:/repos/src")
+        self.assertEqual(roots["default"].local_path, "/mnt/c/repos/src")
+        self.assertEqual(roots["default"].external_path, "C:/repos/src")
 
     def test_only_external_path_docker_falls_back_to_windows(self):
         # Docker mode: cannot auto-derive — must be explicit in config.json
-        local, windows, _ = self._parse(
+        roots = self._parse(
             {"default": {"external_path": "C:/repos/src"}},
             platform="linux", wsl=False,
         )
-        self.assertEqual(local["default"], "C:/repos/src")
-        self.assertEqual(windows["default"], "C:/repos/src")
+        self.assertEqual(roots["default"].local_path, "C:/repos/src")
+        self.assertEqual(roots["default"].external_path, "C:/repos/src")
 
     def test_only_local_path_no_host_root(self):
-        local, windows, _ = self._parse({
+        roots = self._parse({
             "default": {"local_path": "/source/default"}
         })
-        self.assertEqual(local["default"], "/source/default")
-        self.assertNotIn("default", windows)
+        self.assertEqual(roots["default"].local_path, "/source/default")
+        self.assertEqual(roots["default"].external_path, "")
 
     def test_trailing_slashes_stripped(self):
-        local, windows, _ = self._parse({
+        roots = self._parse({
             "default": {"local_path": "/source/default/", "external_path": "C:/repos/src/"}
         })
-        self.assertEqual(local["default"], "/source/default")
-        self.assertEqual(windows["default"], "C:/repos/src")
+        self.assertEqual(roots["default"].local_path, "/source/default")
+        self.assertEqual(roots["default"].external_path, "C:/repos/src")
 
     def test_multiple_roots(self):
-        local, windows, _ = self._parse({
+        roots = self._parse({
             "app":  {"local_path": "/source/app",  "external_path": "C:/app/src"},
             "libs": {"local_path": "/source/libs", "external_path": "D:/libs/src"},
         })
-        self.assertEqual(local["app"],  "/source/app")
-        self.assertEqual(local["libs"], "/source/libs")
-        self.assertEqual(windows["libs"], "D:/libs/src")
+        self.assertEqual(roots["app"].local_path,  "/source/app")
+        self.assertEqual(roots["libs"].local_path, "/source/libs")
+        self.assertEqual(roots["libs"].external_path, "D:/libs/src")
 
     def test_local_path_not_overridden_when_both_set(self):
         # explicit local_path must always win over auto-derived
-        local, _, _2 = self._parse(
+        roots = self._parse(
             {"default": {"local_path": "/custom/local", "external_path": "C:/repos/src"}},
             platform="linux", wsl=True,
         )
-        self.assertEqual(local["default"], "/custom/local")
+        self.assertEqual(roots["default"].local_path, "/custom/local")
 
     def test_wsl_drive_letter_lowercase_in_mnt(self):
-        local, _, _2 = self._parse(
+        roots = self._parse(
             {"default": {"external_path": "Q:/myproject/src"}},
             platform="linux", wsl=True,
         )
-        self.assertEqual(local["default"], "/mnt/q/myproject/src")
+        self.assertEqual(roots["default"].local_path, "/mnt/q/myproject/src")
 
     def test_extensions_parsed_and_normalized(self):
-        _, _, exts = self._parse({
+        from indexserver.config import INCLUDE_EXTENSIONS
+        roots = self._parse({
             "default": {"local_path": "/source/default", "extensions": [".CS", "py", ".Ts"]}
         })
-        self.assertEqual(exts["default"], frozenset({".cs", ".py", ".ts"}))
+        self.assertEqual(roots["default"].extensions, frozenset({".cs", ".py", ".ts"}))
+        self.assertNotEqual(roots["default"].extensions, INCLUDE_EXTENSIONS)
 
-    def test_extensions_absent_is_none(self):
-        _, _, exts = self._parse({
+    def test_extensions_absent_defaults_to_include_extensions(self):
+        from indexserver.config import INCLUDE_EXTENSIONS
+        roots = self._parse({
             "default": {"local_path": "/source/default"}
         })
-        self.assertIsNone(exts["default"])
+        self.assertIs(roots["default"].extensions, INCLUDE_EXTENSIONS)
 
-    def test_extensions_empty_list_is_none(self):
-        _, _, exts = self._parse({
+    def test_extensions_empty_list_defaults_to_include_extensions(self):
+        from indexserver.config import INCLUDE_EXTENSIONS
+        roots = self._parse({
             "default": {"local_path": "/source/default", "extensions": []}
         })
-        self.assertIsNone(exts["default"])
+        self.assertIs(roots["default"].extensions, INCLUDE_EXTENSIONS)
 
 
 # ── _resolve_query_paths path resolution ─────────────────────────────────────
@@ -198,10 +202,20 @@ class TestRunQueryPathResolution(unittest.TestCase):
     """_resolve_query_paths() translates and validates paths from client requests."""
 
     def _resolve(self, file_path: str, host_roots: dict, roots: dict) -> list[Path]:
-        """Call _resolve_query_paths with patched HOST_ROOTS/ROOTS."""
+        """Call _resolve_query_paths with patched ALL_ROOTS built from host_roots + roots dicts."""
         import indexserver.api as _api
-        with patch.dict("indexserver.api.HOST_ROOTS", host_roots, clear=True), \
-             patch.dict("indexserver.api.ROOTS", roots, clear=True):
+        from indexserver.config import Root, collection_for_root, INCLUDE_EXTENSIONS
+        patched = {
+            name: Root(
+                name=name,
+                local_path=roots.get(name, ""),
+                external_path=host_roots.get(name, ""),
+                collection=collection_for_root(name),
+                extensions=INCLUDE_EXTENSIONS,
+            )
+            for name in set(list(roots) + list(host_roots))
+        }
+        with patch.dict("indexserver.api.ALL_ROOTS", patched, clear=True):
             return _api._resolve_query_paths([file_path])
 
     def test_docker_windows_to_container_path(self):
@@ -429,12 +443,11 @@ class TestPathIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _assert_api_ok()
-        from indexserver.config import HOST, API_PORT, API_KEY, HOST_ROOTS, ROOTS
+        from indexserver.config import HOST, API_PORT, API_KEY, ALL_ROOTS
         cls.host      = HOST
         cls.api_port  = API_PORT
         cls.api_key   = API_KEY
-        cls.host_roots = HOST_ROOTS
-        cls.roots      = ROOTS
+        cls.all_roots = ALL_ROOTS
 
     def _post(self, endpoint: str, body: dict) -> dict:
         import json, urllib.request
@@ -452,27 +465,27 @@ class TestPathIntegration(unittest.TestCase):
 
     def _external_path_for(self, rel: str, root_name: str = "default") -> str:
         """Build a Windows path for a file relative to a root."""
-        wp = self.host_roots.get(root_name, "")
-        if not wp:
-            wp = self.roots.get(root_name, "")
+        root = self.all_roots.get(root_name)
+        wp = (root.external_path or root.local_path) if root else ""
         return f"{wp.rstrip('/')}/{rel}"
 
     def _local_path_for(self, rel: str, root_name: str = "default") -> str:
         from indexserver.config import to_native_path
-        lp = self.roots.get(root_name, "")
+        root = self.all_roots.get(root_name)
+        lp = root.local_path if root else ""
         return to_native_path(f"{lp.rstrip('/')}/{rel}")
 
     def test_query_accepts_external_path_and_returns_it(self):
         """/query: Windows path sent → same Windows path in result 'file' key."""
         root_name = "default"
-        local = self.local_root = self.roots.get(root_name, "")
-        if not local:
+        root = self.all_roots.get(root_name)
+        if not root or not root.local_path:
             self.skipTest("no root configured")
 
         # Find any .cs file in the local root
         cs_file = None
         from indexserver.config import to_native_path
-        native_root = to_native_path(local)
+        native_root = to_native_path(root.local_path)
         for dirpath, _, files in os.walk(native_root):
             for fname in files:
                 if fname.endswith(".cs"):
@@ -485,12 +498,11 @@ class TestPathIntegration(unittest.TestCase):
             self.skipTest("no .cs files found in root")
 
         # Convert local path → Windows path for the request
-        host_root = self.host_roots.get(root_name, "")
-        if host_root:
+        if root.external_path:
             # e.g. /mnt/c/repos/src/sub/Foo.cs → C:/repos/src/sub/Foo.cs
-            lp = to_native_path(local)
+            lp = to_native_path(root.local_path)
             rel = cs_file[len(lp.rstrip("/")) + 1:]
-            external_path = host_root.rstrip("/") + "/" + rel
+            external_path = root.external_path.rstrip("/") + "/" + rel
         else:
             external_path = cs_file
 
@@ -503,7 +515,8 @@ class TestPathIntegration(unittest.TestCase):
 
     def test_query_codebase_relative_path_is_external_path(self):
         """/query-codebase: relative_path in results must be a Windows path."""
-        if not self.host_roots.get("default"):
+        root = self.all_roots.get("default")
+        if not root or not root.external_path:
             self.skipTest("no external_path configured for default root")
 
         result = self._post("/query-codebase", {
@@ -515,7 +528,7 @@ class TestPathIntegration(unittest.TestCase):
         if not hits:
             return  # no data indexed in test env — nothing to assert
 
-        host_root = self.host_roots["default"].replace("\\", "/").rstrip("/")
+        host_root = root.external_path.replace("\\", "/").rstrip("/")
         for hit in hits:
             rel = hit.get("document", {}).get("relative_path", "")
             self.assertTrue(

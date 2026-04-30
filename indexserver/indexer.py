@@ -389,16 +389,15 @@ def verify_all_schemas(client) -> dict:
     Returns a dict keyed by root name:
         {"ok": bool, "warnings": [str, ...], "collection": str}
     """
-    from indexserver.config import ROOTS
+    from indexserver.config import ALL_ROOTS
     results = {}
-    for name in ROOTS:
-        coll = collection_for_root(name)
-        exists, warnings = verify_schema(client, coll)
-        results[name] = {
+    for root in ALL_ROOTS.values():
+        exists, warnings = verify_schema(client, root.collection)
+        results[root.name] = {
             "ok":                 exists and not warnings,
             "collection_exists":  exists,
             "warnings":           warnings,
-            "collection":         coll,
+            "collection":         root.collection,
         }
         if not exists:
             print(f"[schema] MISSING {coll} (not yet indexed)", flush=True)
@@ -623,13 +622,13 @@ def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, coll
     root_exts = None
     if src_root is None:
         # Derive src_root (and host_root if not supplied) from config using collection name.
-        from indexserver.config import ROOTS, HOST_ROOTS, collection_for_root, extensions_for_root
-        for name in ROOTS:
-            if collection_for_root(name) == coll_name:
-                src_root = ROOTS[name]
+        from indexserver.config import ALL_ROOTS
+        for root in ALL_ROOTS.values():
+            if root.collection == coll_name:
+                src_root = root.local_path
                 if not host_root:
-                    host_root = HOST_ROOTS.get(name, "")
-                root_exts = extensions_for_root(name)
+                    host_root = root.external_path
+                root_exts = root.extensions
                 break
         if src_root is None:
             src_root = _SRC_ROOT_NATIVE

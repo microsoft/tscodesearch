@@ -52,8 +52,8 @@ if _base not in sys.path:
 
 
 from indexserver.config import (
-    API_KEY, API_PORT, PORT, HOST, ROOTS, HOST_ROOTS, get_root,
-    EXCLUDE_DIRS, to_native_path, collection_for_root, extensions_for_root,
+    API_KEY, API_PORT, PORT, HOST, ALL_ROOTS, get_root,
+    EXCLUDE_DIRS, to_native_path,
 )
 from indexserver.index_queue import IndexQueue
 from indexserver.indexer import get_client, verify_all_schemas
@@ -123,8 +123,8 @@ def _enqueue_file_events(events: list) -> dict:
     Filtering (extension, excluded dirs) is applied before enqueuing.
     """
     root_map = [
-        (to_native_path(win_root).rstrip("/"), collection_for_root(name), extensions_for_root(name))
-        for name, win_root in ROOTS.items()
+        (r.local_path.rstrip("/"), r.collection, r.extensions)
+        for r in ALL_ROOTS.values()
     ]
 
     n_new = n_dedup = 0
@@ -334,24 +334,24 @@ def _run_query(mode: str, pattern: str, files: list[Path], include_body: bool = 
 def _resolve_query_paths(raw_files: list) -> list[Path]:
     """Translate and validate a list of raw file paths from a client request.
 
-    1. Translates Windows host paths to native paths via HOST_ROOTS → ROOTS.
+    1. Translates Windows host paths to native paths via Root.external_path → Root.local_path.
     2. Normalizes each path with Path.resolve().
     3. Rejects any path that isn't relative to a configured root.
 
     Returns the list of safe, resolved Path objects.
     Raises ValueError if any path falls outside every configured root.
     """
-    allowed_roots = [Path(os.path.realpath(to_native_path(r))) for r in ROOTS.values() if r]
+    allowed_roots = [Path(os.path.realpath(r.local_path)) for r in ALL_ROOTS.values() if r.local_path]
     safe: list[Path] = []
     for file_path in raw_files:
-        # Translate Windows host path (e.g. C:/myproject/src/Foo.cs) to the
-        # server-local path (/mnt/c/myproject/src/Foo.cs) using HOST_ROOTS → ROOTS.
         resolved = file_path.replace("\\", "/")
-        for name, host_root in HOST_ROOTS.items():
-            hr = host_root.replace("\\", "/").rstrip("/")
+        for root in ALL_ROOTS.values():
+            if not root.external_path:
+                continue
+            hr = root.external_path.rstrip("/")
             if resolved.lower().startswith(hr.lower() + "/") or resolved.lower() == hr.lower():
                 rel = resolved[len(hr):]  # includes leading /
-                resolved = ROOTS[name].rstrip("/") + rel
+                resolved = root.local_path.rstrip("/") + rel
                 break
         native = Path(os.path.realpath(to_native_path(resolved))).resolve()
         # Guard: resolved path must be relative to a known configured root.
@@ -459,21 +459,20 @@ class _Handler(BaseHTTPRequestHandler):
 
             # Per-root collection status: live doc count + cached schema check
             collections: dict = {}
-            for root_name in ROOTS:
-                coll = collection_for_root(root_name)
-                schema = _schema_status.get(root_name, {})
+            for root in ALL_ROOTS.values():
+                schema = _schema_status.get(root.name, {})
                 ndocs: int | None = None
                 if _ts_client is not None:
                     try:
-                        info = _ts_client.collections[coll].retrieve()
+                        info = _ts_client.collections[root.collection].retrieve()
                         ndocs = info.get("num_documents")
                     except Exception:
                         pass
                 # Use the live Typesense retrieve() as the authoritative existence check;
                 # the cached _schema_status may be stale (e.g. collection just created).
                 col_live_exists = ndocs is not None
-                collections[root_name] = {
-                    "collection":        coll,
+                collections[root.name] = {
+                    "collection":        root.collection,
                     "num_documents":     ndocs,
                     "collection_exists": col_live_exists,
                     "schema_ok":         col_live_exists and schema.get("ok", False),
@@ -493,15 +492,13 @@ class _Handler(BaseHTTPRequestHandler):
                                       "error": "Typesense is still loading"})
                 return
             body = self._read_body()
-            root_arg  = body.get("root", "")
-            root_name = root_arg if root_arg else ("default" if "default" in ROOTS else next(iter(ROOTS)))
             try:
-                collection, src_root = get_root(root_name)
+                root = get_root(body.get("root", ""))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
-            result = check_ready(src_root=src_root, collection=collection,
-                                 extensions=extensions_for_root(root_name))
+            result = check_ready(src_root=root.local_path, collection=root.collection,
+                                 extensions=root.extensions)
             self._send_json(200, result)
             return
 
@@ -551,20 +548,17 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "Typesense is still loading, please wait", "loading": True})
                 return
             body = self._read_body()
-            root_arg  = body.get("root", "")
-            root_name = root_arg if root_arg else ("default" if "default" in ROOTS else next(iter(ROOTS)))
             try:
-                collection, src_root = get_root(root_name)
+                root = get_root(body.get("root", ""))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
             resethard = bool(body.get("resethard", False))
-            host_root = HOST_ROOTS.get(root_name, "")
 
             with _sync_lock:
-                job = {"root_name": root_name, "src_root": src_root, "collection": collection,
-                       "resethard": resethard, "host_root": host_root,
-                       "extensions": extensions_for_root(root_name)}
+                job = {"root_name": root.name, "src_root": root.local_path,
+                       "collection": root.collection, "resethard": resethard,
+                       "host_root": root.external_path, "extensions": root.extensions}
                 _sync_pending.append(job)
                 queued_pos = len(_sync_pending)
                 if not (_sync_thread and _sync_thread.is_alive()):
@@ -580,8 +574,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "started":    queued_pos == 0,
                 "queued":     queued_pos > 0,
                 "position":   queued_pos,
-                "collection": collection,
-                "src_root":   src_root,
+                "collection": root.collection,
+                "src_root":   root.local_path,
             })
             return
 
@@ -595,7 +589,6 @@ class _Handler(BaseHTTPRequestHandler):
             pattern      = body.get("pattern", "")
             sub          = body.get("sub", "") or None
             ext          = body.get("ext", "") or None
-            root         = body.get("root", "")
             try:
                 limit = int(body.get("limit", 50))
             except (TypeError, ValueError):
@@ -614,24 +607,20 @@ class _Handler(BaseHTTPRequestHandler):
 
             ts_mode_flag, ast_mode = _EXT_TO_TS_AND_AST[mode]
 
-            if not ROOTS:
+            if not ALL_ROOTS:
                 self._send_json(400, {"error": "No roots configured. Add a root with: ts root --add NAME /path/to/src"})
-                return
-            
-            root_name = root if root else "default";
-            # check if root matches exactly on of our known roots
-            if ROOTS.get(root_name) is None:
-                self._send_json(400, {"error": f"unknown root: {root_name!r}"})
                 return
 
             try:
-                collection, src_root = get_root(root_name)
+                root = get_root(body.get("root", ""))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
+            collection = root.collection
+            src_root   = root.local_path
             # Windows path prefix stored in Typesense relative_path (e.g. "C:/repos/src").
             # Must be stripped before prepending the server-local src_root.
-            host_root_prefix = HOST_ROOTS.get(root_name, "").replace("\\", "/").rstrip("/")
+            host_root_prefix = root.external_path.rstrip("/")
 
             # Import search lazily from scripts/search.py (not a package, use importlib)
             import importlib.util as _ilu
@@ -838,18 +827,14 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
 
     # Auto-sync all roots on every startup so the index is repaired after downtime
     with _sync_lock:
-        for root_name in ROOTS:
-            try:
-                collection, src_root = get_root(root_name)
-            except ValueError:
-                continue
+        for root in ALL_ROOTS.values():
             _sync_pending.append({
-                "root_name":  root_name,
-                "src_root":   src_root,
-                "collection": collection,
+                "root_name":  root.name,
+                "src_root":   root.local_path,
+                "collection": root.collection,
                 "resethard":  False,
-                "host_root":  HOST_ROOTS.get(root_name, ""),
-                "extensions": extensions_for_root(root_name),
+                "host_root":  root.external_path,
+                "extensions": root.extensions,
             })
         if _sync_pending:
             _sync_thread = threading.Thread(
