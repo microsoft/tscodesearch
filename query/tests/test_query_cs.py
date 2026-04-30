@@ -8,27 +8,22 @@ Run from WSL:
 """
 
 import os
-import sys
 import pytest
-
-# ── path setup ────────────────────────────────────────────────────────────────
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
 
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
 
-from query.dispatch import (
+from ..cs import (
     q_classes, q_methods, q_fields, q_calls, q_implements, q_attrs, q_usings, q_declarations, q_params, q_uses,
     q_casts, q_all_refs, q_accesses_on,
 )
+from .conftest import SAMPLE_ROOT1
 
 # ── fixture setup ─────────────────────────────────────────────────────────────
 
 _CS = Language(tscsharp.language())
 _PARSER = Parser(_CS)
-_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sample", "root1", "query_fixture.cs")
+_FIXTURE_PATH = os.path.join(SAMPLE_ROOT1, "query_fixture.cs")
 
 
 @pytest.fixture(scope="module")

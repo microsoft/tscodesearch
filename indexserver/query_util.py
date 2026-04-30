@@ -1,12 +1,11 @@
 """
-Structural AST query CLI — supports C#, Python, Rust, JavaScript, TypeScript, C/C++.
+Structural AST query CLI for the indexserver — supports C#, Python, Rust, JavaScript, TypeScript, C/C++.
 
-Use instead of grep when you need semantically precise searches that understand
-syntax: distinguishes type references from method calls, skips comments and
-string literals, understands inheritance hierarchies.
+Extends query/dispatch.py with Typesense-backed file discovery (--search), filesystem
+glob expansion, and display helpers (expand_files, print_file_matches).
 
 Usage:
-    python query_util.py MODE [OPTIONS] FILE [FILE ...] [GLOB_PATTERN ...]
+    python -m indexserver.query_util MODE [OPTIONS] FILE [FILE ...] [GLOB_PATTERN ...]
 
 Modes (C#):
     --classes              List all type declarations with their base types
@@ -37,24 +36,88 @@ Options:
 
 import os
 import sys
-import glob as _glob
 import argparse
 import json as _json
 import urllib.request
 import urllib.parse
 
-# Add the tscodesearch root to sys.path so query is importable.
+# Add the tscodesearch root to sys.path so query/indexserver are importable.
 _ts_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ts_root not in sys.path:
     sys.path.insert(0, _ts_root)
 
-from query.dispatch import process_any_file, _ALL_EXTS
+from query.dispatch import query_file, _ALL_EXTS
+
+
+# ── Filesystem helpers ────────────────────────────────────────────────────────
+
+def expand_files(patterns, exts=None):
+    import glob as _glob
+    if exts is None:
+        exts = {".cs"}
+    files = []
+    seen  = set()
+    for pat in patterns:
+        pat = pat.replace("\\", "/")
+        if any(c in pat for c in ("*", "?")):
+            for f in sorted(_glob.glob(pat, recursive=True)):
+                f = f.replace("\\", "/")
+                ext = os.path.splitext(f)[1].lower()
+                if ext in exts and f not in seen:
+                    seen.add(f)
+                    files.append(f)
+        elif os.path.isdir(pat):
+            for root, _, fnames in os.walk(pat):
+                for fn in sorted(fnames):
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext in exts:
+                        fp = os.path.join(root, fn).replace("\\", "/")
+                        if fp not in seen:
+                            seen.add(fp)
+                            files.append(fp)
+        elif os.path.isfile(pat) and pat not in seen:
+            seen.add(pat)
+            files.append(pat)
+    return files
+
+
+def print_file_matches(matches, disp, show_path, count_only, context, mode, path):
+    """Print matches for one file to stdout. Returns match count."""
+    if not matches:
+        return 0
+    if count_only:
+        print(f"{len(matches):4d}  {disp}")
+        return len(matches)
+    lines = None
+    if context > 0 and mode != "declarations":
+        try:
+            with open(path, "rb") as _f:
+                lines = _f.read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            pass
+    for m in matches:
+        ln, text = m["line"], m["text"]
+        print(f"{disp}:{ln}: {text}" if show_path else f"{ln}: {text}")
+        if context > 0 and mode != "declarations" and lines is not None:
+            try:
+                row   = ln - 1
+                start = max(0, row - context)
+                end   = min(len(lines), row + context + 1)
+                for i, cl in enumerate(lines[start:end], start):
+                    if i == row:
+                        continue
+                    prefix = f"  {disp}:{i + 1}-" if show_path else f"  {i + 1}-"
+                    print(f"{prefix} {cl}")
+                print()
+            except (ValueError, IndexError):
+                pass
+    return len(matches)
 
 
 # ── Typesense file resolver ───────────────────────────────────────────────────
 
 def _ts_search(collection: str, params: dict) -> dict:
-    from query.config import HOST, PORT, API_KEY
+    from indexserver.config import HOST, PORT, API_KEY
     qs = urllib.parse.urlencode({k: str(v) for k, v in params.items()})
     url = f"http://{HOST}:{PORT}/collections/{collection}/documents/search?{qs}"
     req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": API_KEY})
@@ -65,7 +128,7 @@ def _ts_search(collection: str, params: dict) -> dict:
 def files_from_search(query, sub=None, ext="cs", limit=50,
                       collection=None, src_root=None, query_by=None):
     """Run a Typesense search and return the local file paths of matching documents."""
-    from query.config import COLLECTION, SRC_ROOT, to_native_path
+    from indexserver.config import COLLECTION, SRC_ROOT, to_native_path
     coll_name = collection or COLLECTION
     root = src_root or SRC_ROOT
     src_root_native = to_native_path(root)
@@ -107,72 +170,6 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
     print(f"[search] '{query}' → {found} index hits, {len(paths)} local files",
           file=sys.stderr)
     return paths
-
-
-# ── Glob expansion ────────────────────────────────────────────────────────────
-
-def expand_files(patterns, exts=None):
-    if exts is None:
-        exts = {".cs"}  # backward compat: default to C# only
-    files = []
-    seen  = set()
-    for pat in patterns:
-        pat = pat.replace("\\", "/")
-        if any(c in pat for c in ("*", "?")):
-            for f in sorted(_glob.glob(pat, recursive=True)):
-                f = f.replace("\\", "/")
-                ext = os.path.splitext(f)[1].lower()
-                if ext in exts and f not in seen:
-                    seen.add(f)
-                    files.append(f)
-        elif os.path.isdir(pat):
-            for root, _, fnames in os.walk(pat):
-                for fn in sorted(fnames):
-                    ext = os.path.splitext(fn)[1].lower()
-                    if ext in exts:
-                        fp = os.path.join(root, fn).replace("\\", "/")
-                        if fp not in seen:
-                            seen.add(fp)
-                            files.append(fp)
-        elif os.path.isfile(pat) and pat not in seen:
-            seen.add(pat)
-            files.append(pat)
-    return files
-
-
-# ── Display ───────────────────────────────────────────────────────────────────
-
-def _print_file_matches(matches, disp, show_path, count_only, context, mode, path):
-    """Print matches for one file to stdout. Returns match count."""
-    if not matches:
-        return 0
-    if count_only:
-        print(f"{len(matches):4d}  {disp}")
-        return len(matches)
-    lines = None
-    if context > 0 and mode != "declarations":
-        try:
-            with open(path, "rb") as _f:
-                lines = _f.read().decode("utf-8", errors="replace").splitlines()
-        except OSError:
-            pass
-    for m in matches:
-        ln, text = m["line"], m["text"]
-        print(f"{disp}:{ln}: {text}" if show_path else f"{ln}: {text}")
-        if context > 0 and mode != "declarations" and lines is not None:
-            try:
-                row   = ln - 1
-                start = max(0, row - context)
-                end   = min(len(lines), row + context + 1)
-                for i, cl in enumerate(lines[start:end], start):
-                    if i == row:
-                        continue
-                    prefix = f"  {disp}:{i + 1}-" if show_path else f"  {i + 1}-"
-                    print(f"{prefix} {cl}")
-                print()
-            except (ValueError, IndexError):
-                pass
-    return len(matches)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -273,26 +270,33 @@ def main():
     include_body = getattr(args, "include_body", False)
     context      = args.context
 
+    def _query(f):
+        ext = os.path.splitext(f)[1].lower()
+        try:
+            with open(f, "rb") as _fh:
+                src_bytes = _fh.read()
+        except OSError as e:
+            print(f"ERROR reading {f}: {e}", file=sys.stderr)
+            return []
+        return query_file(src_bytes, ext, mode, mode_arg,
+                          include_body=include_body,
+                          symbol_kind=symbol_kind,
+                          uses_kind=uses_kind)
+
     if args.json:
         all_results = []
         for f in files:
-            matches = process_any_file(f, mode, mode_arg,
-                                       include_body=include_body,
-                                       symbol_kind=symbol_kind,
-                                       uses_kind=uses_kind)
+            matches = _query(f)
             if matches:
                 all_results.append({"file": f, "matches": matches})
         print(_json.dumps({"results": all_results}))
     else:
         total = 0
         for f in files:
-            matches = process_any_file(f, mode, mode_arg,
-                                       include_body=include_body,
-                                       symbol_kind=symbol_kind,
-                                       uses_kind=uses_kind)
+            matches = _query(f)
             disp    = f.replace("\\", "/")
-            total  += _print_file_matches(matches, disp, show_path, args.count,
-                                          context, mode, f)
+            total  += print_file_matches(matches, disp, show_path, args.count,
+                                         context, mode, f)
         if args.count:
             print(f"\nTotal: {total}")
         elif len(files) > 1:

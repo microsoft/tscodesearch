@@ -25,7 +25,7 @@ from tests.fixtures import (
     MEMBER_ACCESS_INTERFACE_ONLY, MEMBER_ACCESS_VAR_INFERRED,
     USES_BLOBSTORE_NO_CAST,
 )
-from query.dispatch import q_accesses_on
+from ..cs import q_accesses_on
 
 
 # ══════════════════════════════════════════════════════════════════════════════

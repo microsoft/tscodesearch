@@ -30,7 +30,7 @@ from tests.fixtures import (
     CALLS_WIDGET_CTOR, DEFINES_WIDGET_CTOR,
 )
 from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
-from indexserver.indexer import extract_cs_metadata, run_index
+from indexserver.indexer import extract_metadata, run_index
 from query.cs import q_calls
 
 
@@ -39,46 +39,46 @@ from query.cs import q_calls
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestCallSitesField(unittest.TestCase):
-    """extract_cs_metadata correctly populates call_sites."""
+    """extract_metadata correctly populates call_sites."""
 
     def test_call_appears_in_call_sites(self):
-        meta = extract_cs_metadata(CALLS_FETCHWIDGET.encode())
+        meta = extract_metadata(CALLS_FETCHWIDGET.encode(), ".cs")
         assert "FetchWidget" in meta["call_sites"], \
             f"call_sites: {meta['call_sites']}"
 
     def test_definition_not_in_call_sites(self):
-        meta = extract_cs_metadata(DEFINES_FETCHWIDGET.encode())
+        meta = extract_metadata(DEFINES_FETCHWIDGET.encode(), ".cs")
         assert "FetchWidget" not in meta["call_sites"], \
             "Definition must not appear in call_sites"
 
     def test_definition_in_method_names(self):
-        meta = extract_cs_metadata(DEFINES_FETCHWIDGET.encode())
+        meta = extract_metadata(DEFINES_FETCHWIDGET.encode(), ".cs")
         assert "FetchWidget" in meta["method_names"]
 
     def test_definition_in_member_sigs(self):
-        meta = extract_cs_metadata(DEFINES_FETCHWIDGET.encode())
+        meta = extract_metadata(DEFINES_FETCHWIDGET.encode(), ".cs")
         assert any("FetchWidget" in s for s in meta["member_sigs"])
 
     def test_callers_file_not_in_member_sigs(self):
         """The caller does not define FetchWidget — must not be in member_sigs."""
-        meta = extract_cs_metadata(CALLS_FETCHWIDGET.encode())
+        meta = extract_metadata(CALLS_FETCHWIDGET.encode(), ".cs")
         assert not any("FetchWidget" in s for s in meta["member_sigs"]), \
             "FetchWidget must not appear in member_sigs of callers file"
 
     def test_duplicate_calls_deduped(self):
         """FetchWidget called twice — should appear once in call_sites."""
-        meta = extract_cs_metadata(CALLS_FETCHWIDGET.encode())
+        meta = extract_metadata(CALLS_FETCHWIDGET.encode(), ".cs")
         count = meta["call_sites"].count("FetchWidget")
         assert count == 1, f"Expected 1 occurrence in call_sites, got {count}"
 
     def test_constructor_call_in_call_sites(self):
         """new Widget(id) is an invocation — must be in call_sites."""
-        meta = extract_cs_metadata(CALLS_WIDGET_CTOR.encode())
+        meta = extract_metadata(CALLS_WIDGET_CTOR.encode(), ".cs")
         assert "Widget" in meta["call_sites"], \
             f"Constructor call not in call_sites: {meta['call_sites']}"
 
     def test_constructor_definition_not_in_call_sites(self):
-        meta = extract_cs_metadata(DEFINES_WIDGET_CTOR.encode())
+        meta = extract_metadata(DEFINES_WIDGET_CTOR.encode(), ".cs")
         assert "Widget" not in meta["call_sites"], \
             "Constructor definition must not be in call_sites"
 
@@ -89,7 +89,7 @@ namespace Synth {
     public class EmptyClass { }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "FetchWidget" not in meta["call_sites"]
 
 

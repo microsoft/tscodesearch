@@ -27,15 +27,15 @@ def accounts_bytes():
         return f.read()
 
 
-# ── extract_sql_metadata tests ────────────────────────────────────────────────
+# ── extract_metadata tests ────────────────────────────────────────────────
 
 class TestExtractSqlMetadata:
-    """Unit tests for the indexer's extract_sql_metadata()."""
+    """Unit tests for the indexer's extract_metadata()."""
 
     @pytest.fixture(autouse=True)
     def _load(self, catalog_bytes):
-        from indexserver.indexer import extract_sql_metadata
-        self.meta = extract_sql_metadata(catalog_bytes)
+        from indexserver.indexer import extract_metadata
+        self.meta = extract_metadata(catalog_bytes, ".sql")
 
     def test_tables_found(self):
         """CREATE TABLE names should appear in class_names."""
@@ -93,8 +93,8 @@ class TestExtractSqlMetadataAccounts:
 
     @pytest.fixture(autouse=True)
     def _load(self, accounts_bytes):
-        from indexserver.indexer import extract_sql_metadata
-        self.meta = extract_sql_metadata(accounts_bytes)
+        from indexserver.indexer import extract_metadata
+        self.meta = extract_metadata(accounts_bytes, ".sql")
 
     def test_tables_found(self):
         cn = self.meta["class_names"]

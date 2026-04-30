@@ -9,7 +9,7 @@ EXTENSIONS = frozenset({".py"})
 import sys
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, AttrInfo, ImportInfo
+from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, AttrInfo, ImportInfo, CallSiteInfo
 
 from .cs import _find_all, _text
 
@@ -304,18 +304,12 @@ def py_q_params(src, tree, lines, method_name):
 
 # ── Process function ──────────────────────────────────────────────────────────
 
-def process_py_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
-    """Parse a Python file and return list[{"line": N, "text": "..."}] for the given mode."""
-    try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return []
+def query_py_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False, **kwargs):
+    """Parse Python bytes and return list[{"line": N, "text": "..."}] for the given mode."""
     try:
         tree = _py_parser.parse(src_bytes)
     except Exception as e:
-        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+        print(f"ERROR parsing Python source: {e}", file=sys.stderr)
         return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
@@ -340,23 +334,21 @@ def process_py_file(path, mode, mode_arg, include_body=False, symbol_kind=None, 
     return _make_matches(fn() or [])
 
 
-def describe_py_file(path: str) -> FileDescription:
-    """Parse path once and return all structured Python data as a FileDescription."""
-    try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return FileDescription(path=path, language="py")
+
+
+def describe_py_file(src_bytes: bytes, ext: str = "") -> FileDescription:
+    """Return all structured Python data from src_bytes as a FileDescription."""
     try:
         tree = _py_parser.parse(src_bytes)
     except Exception as e:
-        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return FileDescription(path=path, language="py")
+        print(f"ERROR parsing Python source: {e}", file=sys.stderr)
+        return FileDescription(language="py")
+
     return FileDescription(
-        path=path, language="py",
+        language="py",
         classes=_py_q_classes_data(src_bytes, tree),
         methods=_py_q_methods_data(src_bytes, tree),
         imports=_py_q_imports_data(src_bytes, tree),
         attrs=_py_q_attrs_data(src_bytes, tree),
+        call_site_infos=[CallSiteInfo(name=n) for n in _py_q_all_call_sites_data(src_bytes, tree)],
     )

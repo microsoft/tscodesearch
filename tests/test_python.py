@@ -1,5 +1,5 @@
 """
-Tests for Python support: extract_py_metadata, process_py_file, and Typesense indexing.
+Tests for Python support: extract_metadata, process_py_file, and Typesense indexing.
 
 TestExtractPyMetadata and TestQueryPy require no server.
 TestPySemanticFields requires Typesense to be running.
@@ -23,17 +23,17 @@ from tests.helpers import (
     _assert_server_ok, _search, _delete_collection, _make_git_repo,
     _FOO_PY, _BAR_PY,
 )
-from indexserver.indexer import run_index, extract_py_metadata
-from query.py import process_py_file as _query_process_py_file
+from indexserver.indexer import run_index, extract_metadata
+from query.dispatch import query_file as _query_file
 
 
 # ── TestExtractPyMetadata ─────────────────────────────────────────────────────
 
 class TestExtractPyMetadata(unittest.TestCase):
-    """Unit tests for extract_py_metadata — no server needed."""
+    """Unit tests for extract_metadata — no server needed."""
 
     def _meta(self, src):
-        return extract_py_metadata(src.encode())
+        return extract_metadata(src.encode(), ".py")
 
     def test_class_names(self):
         meta = self._meta(_FOO_PY)
@@ -122,7 +122,9 @@ class TestQueryPy(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, path, mode, mode_arg=None):
-        matches = _query_process_py_file(path=path, mode=mode, mode_arg=mode_arg)
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
+        matches = _query_file(src_bytes, ".py", mode, mode_arg or "")
         path_norm = path.replace("\\", "/")
         root_norm = self.tmpdir.replace("\\", "/").rstrip("/")
         disp = (path_norm[len(root_norm) + 1:]
@@ -315,46 +317,46 @@ class TestQueryPy(unittest.TestCase):
         tmpdir_norm = self.tmpdir.replace("\\", "/")
         self.assertNotIn(tmpdir_norm, out)
 
-    # ── consistency: process_py_file ↔ extract_py_metadata ───────────────────
+    # ── consistency: process_py_file ↔ extract_metadata ───────────────────
 
     def test_class_names_consistent(self):
-        meta = extract_py_metadata(_FOO_PY.encode())
+        meta = extract_metadata(_FOO_PY.encode(), ".py")
         self.assertIn("Foo", meta["class_names"])
         n, out = self._run(self.foo_path, "classes")
         self.assertIn("Foo", out)
 
     def test_base_types_consistent(self):
-        meta = extract_py_metadata(_FOO_PY.encode())
+        meta = extract_metadata(_FOO_PY.encode(), ".py")
         self.assertIn("IFoo", meta["base_types"])
         n, out = self._run(self.foo_path, "implements", "IFoo")
         self.assertGreater(n, 0)
 
     def test_method_names_consistent(self):
-        meta = extract_py_metadata(_FOO_PY.encode())
+        meta = extract_metadata(_FOO_PY.encode(), ".py")
         self.assertIn("process", meta["method_names"])
         n, out = self._run(self.foo_path, "methods")
         self.assertIn("process", out)
 
     def test_call_sites_consistent(self):
-        meta = extract_py_metadata(_BAR_PY.encode())
+        meta = extract_metadata(_BAR_PY.encode(), ".py")
         self.assertIn("process", meta["call_sites"])
         n, out = self._run(self.bar_path, "calls", "process")
         self.assertGreater(n, 0)
 
     def test_decorators_consistent(self):
-        meta = extract_py_metadata(_FOO_PY.encode())
+        meta = extract_metadata(_FOO_PY.encode(), ".py")
         self.assertIn("dataclass", meta["attr_names"])
         n, out = self._run(self.foo_path, "decorators", "dataclass")
         self.assertGreater(n, 0)
 
     def test_imports_consistent(self):
-        meta = extract_py_metadata(_FOO_PY.encode())
+        meta = extract_metadata(_FOO_PY.encode(), ".py")
         self.assertIn("os", meta["usings"])
         n, out = self._run(self.foo_path, "imports")
         self.assertIn("os", out)
 
     def test_member_sigs_consistent(self):
-        meta = extract_py_metadata(_FOO_PY.encode())
+        meta = extract_metadata(_FOO_PY.encode(), ".py")
         sigs = meta["member_sigs"]
         self.assertTrue(any("process" in s for s in sigs), f"member_sigs: {sigs}")
         n, out = self._run(self.foo_path, "methods")

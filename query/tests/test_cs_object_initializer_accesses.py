@@ -24,16 +24,15 @@ Run (no Typesense needed):
     pytest tests/test_cs_object_initializer_accesses.py -v
 """
 from __future__ import annotations
+from .conftest import SAMPLE_ROOT1
 
 import os
 import unittest
 
 from tests.base import _parse
-from query.dispatch import q_accesses_on
+from ..cs import q_accesses_on
 
-_HERE   = os.path.dirname(os.path.abspath(__file__))
-_ROOT   = os.path.dirname(_HERE)
-_SAMPLE = os.path.join(_ROOT, "sample", "root1", "ObjectInitializer.cs")
+_SAMPLE = os.path.join(SAMPLE_ROOT1, "ObjectInitializer.cs")
 
 with open(_SAMPLE, encoding="utf-8") as _f:
     _SRC = _f.read()

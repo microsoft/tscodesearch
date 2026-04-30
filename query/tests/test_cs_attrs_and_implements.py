@@ -22,16 +22,15 @@ Run (no Typesense needed):
     pytest tests/test_cs_attrs_and_implements.py -v
 """
 from __future__ import annotations
+from .conftest import SAMPLE_ROOT1
 
 import os
 import unittest
 
 from tests.base import _parse
-from query.dispatch import q_attrs, q_implements, q_uses
+from ..cs import q_attrs, q_implements, q_uses
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-_PROC = os.path.join(_ROOT, "sample", "root1", "Processors.cs")
+_PROC = os.path.join(SAMPLE_ROOT1, "Processors.cs")
 
 with open(_PROC, encoding="utf-8") as _f:
     _SRC = _f.read()

@@ -17,7 +17,7 @@ EXTENSIONS = frozenset({".rs"})
 import sys
 import tree_sitter_rust as tsrust
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo
+from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo
 
 _RUST_LANG   = Language(tsrust.language())
 _rust_parser = Parser(_RUST_LANG)
@@ -349,18 +349,12 @@ def rust_q_params(src, tree, lines, func_name):
 
 # ── Process function ──────────────────────────────────────────────────────────
 
-def process_rust_file(path, mode, mode_arg, include_body=False, **kwargs):
-    """Parse a Rust file and return list[{"line": N, "text": "..."}] for the given mode."""
-    try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return []
+def query_rust_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False, **kwargs):
+    """Parse Rust bytes and return list[{"line": N, "text": "..."}] for the given mode."""
     try:
         tree = _rust_parser.parse(src_bytes)
     except Exception as e:
-        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+        print(f"ERROR parsing Rust source: {e}", file=sys.stderr)
         return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
@@ -383,21 +377,63 @@ def process_rust_file(path, mode, mode_arg, include_body=False, **kwargs):
     return _make_matches(fn() or [])
 
 
-def describe_rust_file(path: str) -> FileDescription:
-    """Parse path once and return all structured Rust data as a FileDescription."""
-    try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return FileDescription(path=path, language="rust")
+
+
+def describe_rust_file(src_bytes: bytes, ext: str = "") -> FileDescription:
+    """Return all structured Rust data from src_bytes as a FileDescription."""
     try:
         tree = _rust_parser.parse(src_bytes)
     except Exception as e:
-        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return FileDescription(path=path, language="rust")
+        print(f"ERROR parsing Rust source: {e}", file=sys.stderr)
+        return FileDescription(language="rust")
+
+    classes = _rust_q_classes_data(src_bytes, tree)
+    methods = _rust_q_methods_data(src_bytes, tree)
+
+    # Enrich ClassInfo objects with impl-trait bases (impl Trait for Type → Type.bases = [Trait])
+    type_to_traits: dict = {}
+    for node in _find_all(tree.root_node, lambda n: n.type == "impl_item"):
+        trait = _impl_trait_name(node, src_bytes)
+        typ   = _impl_type_name(node, src_bytes)
+        if trait and typ:
+            type_to_traits.setdefault(typ, []).append(trait)
+
+    known = {c.name for c in classes}
+    enriched = [ClassInfo(line=c.line, name=c.name, kind=c.kind, bases=type_to_traits.get(c.name, []))
+                for c in classes]
+    for typ, traits in type_to_traits.items():
+        if typ not in known:
+            enriched.append(ClassInfo(line=0, name=typ, kind="impl", bases=traits))
+
+    # call sites
+    call_sites_raw = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "call_expression"):
+        fn = node.child_by_field_name("function")
+        if fn:
+            if fn.type == "identifier":
+                call_sites_raw.append(_text(fn, src_bytes).strip())
+            elif fn.type == "field_expression":
+                f = fn.child_by_field_name("field")
+                if f:
+                    call_sites_raw.append(_text(f, src_bytes).strip())
+    for node in _find_all(tree.root_node, lambda n: n.type == "method_call_expression"):
+        nn = node.child_by_field_name("name")
+        if nn:
+            call_sites_raw.append(_text(nn, src_bytes).strip())
+
+    # use declarations → ImportInfo
+    imports_list = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "use_declaration"):
+        for id_node in _find_all(node, lambda n: n.type == "identifier"):
+            seg = _text(id_node, src_bytes).strip()
+            if seg and seg not in ("use", "self", "super", "crate"):
+                imports_list.append(ImportInfo(line=_line(node), text=seg, module=seg))
+            break
+
     return FileDescription(
-        path=path, language="rust",
-        classes=_rust_q_classes_data(src_bytes, tree),
-        methods=_rust_q_methods_data(src_bytes, tree),
+        language="rust",
+        classes=enriched,
+        methods=methods,
+        imports=imports_list,
+        call_site_infos=[CallSiteInfo(name=n) for n in call_sites_raw],
     )

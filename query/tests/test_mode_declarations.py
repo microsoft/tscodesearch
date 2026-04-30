@@ -21,7 +21,7 @@ import unittest
 
 from tests.base import _parse
 from tests.fixtures import FIND_TARGET
-from query.dispatch import q_declarations
+from ..cs import q_declarations
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -78,7 +78,7 @@ class TestQFind(unittest.TestCase):
 
     def test_include_body_flag(self):
         """include_body=True restores the full source span."""
-        from query.dispatch import q_declarations
+        from ..cs import q_declarations
         from tests.base import _parse
         r = q_declarations(*_parse(FIND_TARGET), name="TargetMethod", include_body=True)
         texts = [t for _, t in r]

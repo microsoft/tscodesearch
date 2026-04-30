@@ -21,7 +21,7 @@ from tests.base import _parse
 from tests.fixtures import (
     PARAM_TYPED_BLOBSTORE_MULTI, FIELD_ONLY_NO_PARAMS, PARAM_TYPED_WITH_MODIFIERS,
 )
-from indexserver.indexer import extract_cs_metadata
+from indexserver.indexer import extract_metadata
 from query.cs import q_uses
 
 
@@ -132,16 +132,16 @@ class TestParamTypeMetadataConsistency(unittest.TestCase):
 
     def test_param_type_in_member_sigs(self):
         """When a method has BlobStore param, member_sigs must contain BlobStore."""
-        meta = extract_cs_metadata(PARAM_TYPED_BLOBSTORE_MULTI.encode())
+        meta = extract_metadata(PARAM_TYPED_BLOBSTORE_MULTI.encode(), ".cs")
         assert any("BlobStore" in s for s in meta["member_sigs"]), \
             f"member_sigs: {meta['member_sigs']}"
 
     def test_param_type_in_type_refs(self):
-        meta = extract_cs_metadata(PARAM_TYPED_BLOBSTORE_MULTI.encode())
+        meta = extract_metadata(PARAM_TYPED_BLOBSTORE_MULTI.encode(), ".cs")
         assert "BlobStore" in meta["type_refs"]
 
     def test_field_only_file_no_blobstore_in_sigs(self):
-        meta = extract_cs_metadata(FIELD_ONLY_NO_PARAMS.encode())
+        meta = extract_metadata(FIELD_ONLY_NO_PARAMS.encode(), ".cs")
         # field type IS in type_refs, but NOT in member_sigs (no param)
         assert "BlobStore" in meta["type_refs"]
         assert not any("BlobStore" in s for s in meta["member_sigs"]), \
@@ -150,7 +150,7 @@ class TestParamTypeMetadataConsistency(unittest.TestCase):
     def test_field_only_consistency_with_q_param_type(self):
         """q_param_type returns empty for field-only file, but type_refs has BlobStore.
         This confirms the two modes are correctly distinct."""
-        meta = extract_cs_metadata(FIELD_ONLY_NO_PARAMS.encode())
+        meta = extract_metadata(FIELD_ONLY_NO_PARAMS.encode(), ".cs")
         r    = q_uses(*_parse(FIELD_ONLY_NO_PARAMS), "BlobStore", uses_kind="param")
         assert "BlobStore" in meta["type_refs"]  # uses mode would find this
         assert r == []                            # but param_type mode would not

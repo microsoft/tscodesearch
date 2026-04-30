@@ -1,4 +1,4 @@
 @echo off
-:: Windows launcher for the Node.js MCP server.
+:: Windows launcher for the Python MCP server.
 :: Registered with Claude Code via setup.cmd.
-node.exe "%~dp0mcp_server.js"
+"%~dp0.client-venv\Scripts\python.exe" "%~dp0mcp_server.py"

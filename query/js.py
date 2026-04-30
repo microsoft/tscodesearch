@@ -23,7 +23,7 @@ import sys
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo
+from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, AttrInfo, CallSiteInfo
 
 _JS_LANG  = Language(tsjs.language())
 _js_parser  = Parser(_JS_LANG)
@@ -377,23 +377,15 @@ def js_q_attrs(src, tree, lines, attr_name=None):
 
 # ── Process function ──────────────────────────────────────────────────────────
 
-def process_js_file(path, mode, mode_arg, include_body=False, **kwargs):
-    """Parse a JS/TS file and return list[{"line": N, "text": "..."}] for the given mode."""
-    import os as _os
-    ext = _os.path.splitext(path)[1].lower()
+def query_js_bytes(src_bytes: bytes, mode: str, mode_arg: str, ext: str = ".js",
+                   include_body=False, **kwargs):
+    """Parse JS/TS bytes and return list[{"line": N, "text": "..."}] for the given mode."""
     parser = _tsx_parser if ext in TSX_EXTENSIONS else (
         _ts_parser if ext in TS_EXTENSIONS else _js_parser)
-
-    try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return []
     try:
         tree = parser.parse(src_bytes)
     except Exception as e:
-        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+        print(f"ERROR parsing JS/TS source: {e}", file=sys.stderr)
         return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
@@ -417,26 +409,39 @@ def process_js_file(path, mode, mode_arg, include_body=False, **kwargs):
     return _make_matches(fn() or [])
 
 
-def describe_js_file(path: str) -> FileDescription:
-    """Parse path once and return all structured JS/TS data as a FileDescription."""
-    import os as _os
-    ext = _os.path.splitext(path)[1].lower()
+
+
+def describe_js_file(src_bytes: bytes, ext: str = ".js") -> FileDescription:
+    """Return all structured JS/TS data from src_bytes as a FileDescription."""
     parser = _tsx_parser if ext in TSX_EXTENSIONS else (
         _ts_parser if ext in TS_EXTENSIONS else _js_parser)
     try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return FileDescription(path=path, language="js")
-    try:
         tree = parser.parse(src_bytes)
     except Exception as e:
-        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return FileDescription(path=path, language="js")
+        print(f"ERROR parsing JS/TS source: {e}", file=sys.stderr)
+        return FileDescription(language="js")
+
+    # TS decorators → AttrInfo
+    attrs = []
+    if ext in TS_EXTENSIONS:
+        for node in _find_all(tree.root_node, lambda n: n.type == "decorator"):
+            for child in node.children:
+                if child.type in ("identifier", "member_expression", "call_expression"):
+                    if child.type == "call_expression":
+                        fn = child.child_by_field_name("function")
+                        if fn:
+                            name = _text(fn, src_bytes).strip()
+                            attrs.append(AttrInfo(line=_line(node), text=name, attr_name=name))
+                    else:
+                        name = _text(child, src_bytes).strip()
+                        attrs.append(AttrInfo(line=_line(node), text=name, attr_name=name))
+                    break
+
     return FileDescription(
-        path=path, language="js",
+        language="js",
         classes=_js_q_classes_data(src_bytes, tree),
         methods=_js_q_methods_data(src_bytes, tree),
         imports=_js_q_imports_data(src_bytes, tree),
+        attrs=attrs,
+        call_site_infos=[CallSiteInfo(name=n) for n in _js_q_all_call_sites_data(src_bytes, tree)],
     )

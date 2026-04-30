@@ -10,7 +10,7 @@ import re
 import sys
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, ImportInfo, AttrInfo
+from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, ImportInfo, AttrInfo, CallSiteInfo, CastInfo, LocalVarInfo, MemberAccessInfo
 
 _CS_LANG = Language(tscsharp.language())
 _cs_parser = Parser(_CS_LANG)
@@ -393,6 +393,22 @@ def _iter_with_members(tree, src):
                 yield wi, src_ident, prop
 
 
+# ── Indexer helpers ──────────────────────────────────────────────────────────
+
+def _expand_type_refs(text: str) -> list:
+    """Unqualify a type string and return it plus each individual type name it contains.
+
+    e.g. 'IList<IFoo>' → ['IList<IFoo>', 'IList', 'IFoo']
+    """
+    import re as _re
+    unqual = _unqualify_type(text)
+    names = [unqual]
+    for name in _re.findall(r'[A-Za-z_]\w*', unqual):
+        if name != unqual:
+            names.append(name)
+    return names
+
+
 # ── Data extraction functions ─────────────────────────────────────────────────
 
 def _q_namespace(src, tree) -> str:
@@ -566,6 +582,25 @@ def _q_all_call_sites_data(src, tree) -> list:
                 names.append(_text(fn_node, src).strip())
     names.extend(_collect_ctor_names(tree.root_node, src))
     return names
+
+
+def _q_all_call_site_infos(src, tree) -> list:
+    """Extract call sites as CallSiteInfo objects, capturing PascalCase receivers."""
+    result = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "invocation_expression"):
+        fn_node = node.child_by_field_name("function")
+        if fn_node:
+            if fn_node.type == "member_access_expression":
+                nn   = fn_node.child_by_field_name("name")
+                expr = fn_node.child_by_field_name("expression")
+                if nn:
+                    receiver = _text(expr, src).strip() if (expr and expr.type == "identifier") else ""
+                    result.append(CallSiteInfo(name=_text(nn, src).strip(), receiver=receiver))
+            elif fn_node.type == "identifier":
+                result.append(CallSiteInfo(name=_text(fn_node, src).strip()))
+    for name in _collect_ctor_names(tree.root_node, src):
+        result.append(CallSiteInfo(name=name))
+    return result
 
 
 def _q_all_cast_types_data(src, tree) -> list:
@@ -1203,19 +1238,14 @@ def q_all_refs(src, tree, lines, name):
 
 # ── Process function ──────────────────────────────────────────────────────────
 
-def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
-    """Parse a C# file and return list[{"line": N, "text": "..."}] for the given mode."""
-    try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return []
+def query_cs_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False,
+                   symbol_kind=None, uses_kind=None, **kwargs):
+    """Parse C# bytes and return list[{"line": N, "text": "..."}] for the given mode."""
     src_bytes = _strip_else_branches(src_bytes)
     try:
         tree = _cs_parser.parse(src_bytes)
     except Exception as e:
-        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+        print(f"ERROR parsing C# source: {e}", file=sys.stderr)
         return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
@@ -1244,25 +1274,25 @@ def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, 
     return _make_matches(fn() or [])
 
 
-def describe_cs_file(path: str) -> FileDescription:
-    """Parse path once and return all structured C# data as a FileDescription."""
-    try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return FileDescription(path=path, language="cs")
+def describe_cs_file(src_bytes: bytes, ext: str = "") -> FileDescription:
+    """Return all structured C# data from src_bytes as a FileDescription."""
     src_bytes = _strip_else_branches(src_bytes)
     try:
         tree = _cs_parser.parse(src_bytes)
     except Exception as e:
-        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return FileDescription(path=path, language="cs")
+        print(f"ERROR parsing C# source: {e}", file=sys.stderr)
+        return FileDescription(language="cs")
+
     return FileDescription(
-        path=path, language="cs",
+        language="cs",
         classes=_q_classes_data(src_bytes, tree),
         methods=_q_methods_data(src_bytes, tree),
         fields=_q_fields_data(src_bytes, tree),
         imports=_q_usings_data(src_bytes, tree),
         attrs=_q_attrs_data(src_bytes, tree),
+        namespace=_q_namespace(src_bytes, tree),
+        call_site_infos=_q_all_call_site_infos(src_bytes, tree),
+        cast_infos=[CastInfo(target_type=t) for t in _q_all_cast_types_data(src_bytes, tree)],
+        local_var_infos=[LocalVarInfo(var_type=t) for t in _q_all_local_types_data(src_bytes, tree)],
+        member_access_infos=[MemberAccessInfo(member=m) for m in _q_all_member_accesses_data(src_bytes, tree)],
     )

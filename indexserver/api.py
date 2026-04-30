@@ -306,15 +306,10 @@ def _get_query_module():
 def _run_query(mode: str, pattern: str, files: list, include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
     """Run a tree-sitter AST query against a list of absolute file paths.
 
-    Delegates to the process_*_file functions in query.dispatch, which
-    handle reading, preprocessing, parsing, and mode dispatch per language.
     Returns a list of {"file": path, "matches": [{"line": N, "text": "..."}]}
     where line is 1-indexed.  Only files with at least one match are included.
     """
     _q = _get_query_module()
-
-    # Extension → process_file function, built from each language module's EXTENSIONS set.
-    _EXT_PROCESS = _q._EXT_TO_PROCESSOR
 
     results = []
     for file_path in files:
@@ -330,11 +325,16 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
                 break
         native = to_native_path(resolved)
         ext = os.path.splitext(native)[1].lower()
-        process_fn = _EXT_PROCESS.get(ext, _q.process_cs_file)
-        matches = process_fn(native, mode, pattern,
-                             include_body=include_body,
-                             symbol_kind=symbol_kind,
-                             uses_kind=uses_kind)
+        try:
+            with open(native, "rb") as _f:
+                src_bytes = _f.read()
+        except OSError as e:
+            print(f"ERROR reading {native}: {e}", file=sys.stderr)
+            continue
+        matches = _q.query_file(src_bytes, ext, mode, pattern,
+                                include_body=include_body,
+                                symbol_kind=symbol_kind,
+                                uses_kind=uses_kind)
         if matches:
             results.append({"file": file_path, "matches": matches})
     return results

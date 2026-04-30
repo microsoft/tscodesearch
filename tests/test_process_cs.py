@@ -1,10 +1,10 @@
 """
-Tests for process_cs_file() — the C# structural query API (no server needed).
+Tests for the C# structural query API — query_file() / query_cs_bytes() (no server needed).
 
-Verifies each query mode and consistency between query.py and indexer.py.
+Verifies each query mode and consistency between query/ and indexer.py.
 
 Run (from WSL):
-    ~/.local/indexserver-venv/bin/pytest codesearch/tests/test_process_cs.py -v
+    ~/.local/indexserver-venv/bin/pytest tests/test_process_cs.py -v
 """
 
 import os
@@ -21,7 +21,7 @@ from tests.helpers import (
     _FOO_CS, _BAR_CS, _QUALIFIED_CS, _GENERIC_WRAPPER_CS, _BLOBSTORE_CS,
 )
 from indexserver.api import _run_query
-from indexserver.indexer import extract_cs_metadata
+from indexserver.indexer import extract_metadata
 import query.dispatch as _q
 
 
@@ -48,9 +48,10 @@ class TestQueryCs(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, path, mode, mode_arg=None, uses_kind=None):
-        matches = _q.process_cs_file(
-            path=path, mode=mode, mode_arg=mode_arg, uses_kind=uses_kind,
-        )
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
+        matches = _q.query_file(src_bytes, ".cs", mode, mode_arg or "",
+                                uses_kind=uses_kind)
         path_norm = path.replace("\\", "/")
         root_norm = self.tmpdir.replace("\\", "/").rstrip("/")
         disp = (path_norm[len(root_norm) + 1:]
@@ -162,13 +163,13 @@ class TestQueryCs(unittest.TestCase):
     # ── consistency: query.py ↔ indexer.py ───────────────────────────────────
 
     def test_class_names_consistent(self):
-        meta = extract_cs_metadata(_FOO_CS.encode())
+        meta = extract_metadata(_FOO_CS.encode(), ".cs")
         self.assertIn("Foo", meta["class_names"])
         n, out = self._run(self.foo_path, "classes")
         self.assertIn("Foo", out)
 
     def test_member_sigs_consistent(self):
-        meta = extract_cs_metadata(_FOO_CS.encode())
+        meta = extract_metadata(_FOO_CS.encode(), ".cs")
         sigs = meta["member_sigs"]
         self.assertTrue(any("Dispose" in s for s in sigs), f"member_sigs: {sigs}")
         n, out = self._run(self.foo_path, "methods")
@@ -176,31 +177,31 @@ class TestQueryCs(unittest.TestCase):
         self.assertIn("DoWork", out)
 
     def test_base_types_consistent(self):
-        meta = extract_cs_metadata(_FOO_CS.encode())
+        meta = extract_metadata(_FOO_CS.encode(), ".cs")
         self.assertIn("IDisposable", meta["base_types"])
         n, out = self._run(self.foo_path, "implements", "IDisposable")
         self.assertGreater(n, 0)
 
     def test_call_sites_consistent(self):
-        meta = extract_cs_metadata(_BAR_CS.encode())
+        meta = extract_metadata(_BAR_CS.encode(), ".cs")
         self.assertIn("DoWork", meta["call_sites"])
         n, out = self._run(self.bar_path, "calls", "DoWork")
         self.assertGreater(n, 0)
 
     def test_type_refs_consistent(self):
-        meta = extract_cs_metadata(_BAR_CS.encode())
+        meta = extract_metadata(_BAR_CS.encode(), ".cs")
         self.assertIn("Foo", meta["type_refs"])
         n, out = self._run(self.bar_path, "uses", "Foo", uses_kind="field")
         self.assertGreater(n, 0)
 
     def test_attr_names_consistent(self):
-        meta = extract_cs_metadata(_FOO_CS.encode())
+        meta = extract_metadata(_FOO_CS.encode(), ".cs")
         self.assertIn("Serializable", meta["attr_names"])
         n, out = self._run(self.foo_path, "attrs", "Serializable")
         self.assertGreater(n, 0)
 
     def test_usings_consistent(self):
-        meta = extract_cs_metadata(_FOO_CS.encode())
+        meta = extract_metadata(_FOO_CS.encode(), ".cs")
         self.assertIn("System", meta["usings"])
         n, out = self._run(self.foo_path, "usings")
         self.assertIn("System", out)
@@ -294,7 +295,7 @@ class TestQueryApi(unittest.TestCase):
         """Call a query function directly (as query_ast MCP tool does)."""
         with open(path, "rb") as _f:
             src = _f.read()
-        tree = _q._parser.parse(src)
+        tree = _q._cs_parser.parse(src)
         lines = src.decode("utf-8", errors="replace").splitlines()
         return fn(src, tree, lines)
 

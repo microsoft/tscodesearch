@@ -5,6 +5,7 @@ config.container.json
 
 # ignore claude local settings
 **/settings.local.json
+.claude/
 
 # Python
 __pycache__/
@@ -19,12 +20,13 @@ build/
 
 # Virtual environments
 .venv/
+.client-venv/
 venv/
 env/
 
 # Node (vscode-codesearch)
-mcp_server.js
 node_modules/
+vscode-codesearch/vscode-codesearch/
 *.vsix
 vscode-codesearch/out/
 vscode-codesearch/setup-out.txt
@@ -36,6 +38,9 @@ typesensedata/
 # C# build artifacts
 bin/
 obj/
+
+# CodeQL analysis output
+codeql-results/
 
 # Test artifacts
 .pytest_cache/

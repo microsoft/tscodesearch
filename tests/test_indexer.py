@@ -24,7 +24,7 @@ from tests.helpers import (
     _FOO_CS, _BAR_CS, _BLOBSTORE_CS, _QUALIFIED_CS, _GENERIC_WRAPPER_CS,
 )
 from indexserver.indexer import (
-    run_index, index_file_list, extract_cs_metadata,
+    run_index, index_file_list, extract_metadata,
 )
 from indexserver.index_queue import IndexQueue, MTIME_DELETE
 
@@ -260,17 +260,17 @@ class TestExtractCsMetadata(unittest.TestCase):
 
     def test_class_names(self):
         src = b"namespace N { public class MyClass { } }"
-        meta = extract_cs_metadata(src)
+        meta = extract_metadata(src, ".cs")
         self.assertIn("MyClass", meta["class_names"])
 
     def test_interface_in_base_types(self):
         src = b"public class Impl : IService { }"
-        meta = extract_cs_metadata(src)
+        meta = extract_metadata(src, ".cs")
         self.assertIn("IService", meta["base_types"])
 
     def test_call_sites(self):
         src = b"class C { void M() { Foo.Bar(); Baz(); } }"
-        meta = extract_cs_metadata(src)
+        meta = extract_metadata(src, ".cs")
         self.assertTrue(
             "Bar" in meta["call_sites"] or "Baz" in meta["call_sites"],
             f"call_sites: {meta['call_sites']}"
@@ -278,34 +278,34 @@ class TestExtractCsMetadata(unittest.TestCase):
 
     def test_usings(self):
         src = b"using System; using System.Collections.Generic;"
-        meta = extract_cs_metadata(src)
+        meta = extract_metadata(src, ".cs")
         self.assertIn("System", meta["usings"])
 
     def test_malformed_source_no_crash(self):
         src = b"{{ totally invalid C# !! @@@"
-        meta = extract_cs_metadata(src)
+        meta = extract_metadata(src, ".cs")
         self.assertIsInstance(meta, dict)
 
     def test_qualified_base_type_stripped(self):
-        meta = extract_cs_metadata(_QUALIFIED_CS.encode())
+        meta = extract_metadata(_QUALIFIED_CS.encode(), ".cs")
         self.assertIn("IBlobStore", meta["base_types"],
                       f"base_types: {meta['base_types']}")
         self.assertNotIn("Acme.IBlobStore", meta["base_types"])
 
     def test_qualified_type_ref_field_stripped(self):
-        meta = extract_cs_metadata(_QUALIFIED_CS.encode())
+        meta = extract_metadata(_QUALIFIED_CS.encode(), ".cs")
         self.assertIn("IBlobStore", meta["type_refs"],
                       f"type_refs: {meta['type_refs']}")
         self.assertNotIn("Acme.IBlobStore", meta["type_refs"])
 
     def test_qualified_attribute_stripped(self):
-        meta = extract_cs_metadata(_QUALIFIED_CS.encode())
+        meta = extract_metadata(_QUALIFIED_CS.encode(), ".cs")
         self.assertIn("Authorize", meta["attr_names"],
                       f"attr_names: {meta['attr_names']}")
         self.assertNotIn("My.Auth.Authorize", meta["attr_names"])
 
     def test_type_ref_generic_stores_full_and_arg(self):
-        meta = extract_cs_metadata(_GENERIC_WRAPPER_CS.encode())
+        meta = extract_metadata(_GENERIC_WRAPPER_CS.encode(), ".cs")
         refs = meta["type_refs"]
         self.assertIn("IBlobStore", refs,
                       f"IBlobStore (type arg) should appear in type_refs: {refs}")
@@ -313,7 +313,7 @@ class TestExtractCsMetadata(unittest.TestCase):
                         f"IList should appear in type_refs: {refs}")
 
     def test_type_ref_task_generic_stores_arg(self):
-        meta = extract_cs_metadata(_GENERIC_WRAPPER_CS.encode())
+        meta = extract_metadata(_GENERIC_WRAPPER_CS.encode(), ".cs")
         self.assertIn("IBlobStore", meta["type_refs"],
                       f"IBlobStore (Task<IBlobStore> return type arg) should be in type_refs: {meta['type_refs']}")
 

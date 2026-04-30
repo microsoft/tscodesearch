@@ -25,7 +25,7 @@ from tests.fixtures import (
     LOCAL_VAR_IDATASTORE, STATIC_RECEIVER_IDATASTORE,
 )
 from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
-from indexserver.indexer import extract_cs_metadata, run_index
+from indexserver.indexer import extract_metadata, run_index
 from query.cs import q_uses
 
 
@@ -36,15 +36,15 @@ from query.cs import q_uses
 class TestTypeRefsField(unittest.TestCase):
 
     def test_field_type_in_type_refs(self):
-        meta = extract_cs_metadata(DECLARES_FIELD_IDATASTORE.encode())
+        meta = extract_metadata(DECLARES_FIELD_IDATASTORE.encode(), ".cs")
         assert "IDataStore" in meta["type_refs"]
 
     def test_property_type_in_type_refs(self):
-        meta = extract_cs_metadata(DECLARES_FIELD_IDATASTORE.encode())
+        meta = extract_metadata(DECLARES_FIELD_IDATASTORE.encode(), ".cs")
         assert "IDataStore" in meta["type_refs"]
 
     def test_param_type_in_type_refs(self):
-        meta = extract_cs_metadata(USES_IDATASTORE_PARAM.encode())
+        meta = extract_metadata(USES_IDATASTORE_PARAM.encode(), ".cs")
         assert "IDataStore" in meta["type_refs"]
 
     def test_return_type_in_type_refs(self):
@@ -56,16 +56,16 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "IDataStore" in meta["type_refs"], \
             f"Return type must be in type_refs: {meta['type_refs']}"
 
     def test_comment_not_in_type_refs(self):
-        meta = extract_cs_metadata(COMMENT_ONLY_IDATASTORE.encode())
+        meta = extract_metadata(COMMENT_ONLY_IDATASTORE.encode(), ".cs")
         assert "IDataStore" not in meta["type_refs"]
 
     def test_call_target_not_in_type_refs(self):
-        meta = extract_cs_metadata(CALLS_FETCHWIDGET.encode())
+        meta = extract_metadata(CALLS_FETCHWIDGET.encode(), ".cs")
         assert "FetchWidget" not in meta["type_refs"]
 
     def test_generic_type_expanded(self):
@@ -77,7 +77,7 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "IDataStore" in meta["type_refs"]
         assert "IList"      in meta["type_refs"]
 
@@ -89,32 +89,32 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert any("IDataStore" in t for t in meta["type_refs"]), \
             f"Qualified type must be stored unqualified: {meta['type_refs']}"
 
     def test_base_class_also_in_type_refs(self):
         """base_types are also added to type_refs for uses mode to find implementors."""
-        meta = extract_cs_metadata(IMPLEMENTS_IDATASTORE.encode())
+        meta = extract_metadata(IMPLEMENTS_IDATASTORE.encode(), ".cs")
         # base_types ends up in type_refs via _expand_type_refs
         assert "IDataStore" in meta["type_refs"] or \
                "IDataStore" in meta["base_types"]
 
     def test_local_var_type_in_type_refs(self):
         """Local variable declaration type must appear in type_refs."""
-        meta = extract_cs_metadata(LOCAL_VAR_IDATASTORE.encode())
+        meta = extract_metadata(LOCAL_VAR_IDATASTORE.encode(), ".cs")
         assert "IDataStore" in meta["type_refs"], \
             f"Local var type must be in type_refs: {meta['type_refs']}"
 
     def test_static_receiver_in_type_refs(self):
         """PascalCase static call receiver (IDataStore.Flush()) must appear in type_refs."""
-        meta = extract_cs_metadata(STATIC_RECEIVER_IDATASTORE.encode())
+        meta = extract_metadata(STATIC_RECEIVER_IDATASTORE.encode(), ".cs")
         assert "IDataStore" in meta["type_refs"], \
             f"Static receiver must be in type_refs: {meta['type_refs']}"
 
     def test_lowercase_receiver_not_in_type_refs(self):
         """Instance call receiver (_svc.Method()) must NOT be added as a type ref."""
-        meta = extract_cs_metadata(USES_IDATASTORE_PARAM.encode())
+        meta = extract_metadata(USES_IDATASTORE_PARAM.encode(), ".cs")
         # '_src' is lowercase — must not be added as a type_ref
         assert "_src" not in meta["type_refs"]
 

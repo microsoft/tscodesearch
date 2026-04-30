@@ -27,25 +27,24 @@ Run (no Typesense needed):
     pytest tests/test_cs_accesses_of_initializers.py -v
 """
 from __future__ import annotations
+from .conftest import SAMPLE_ROOT1
 
 import os
 import unittest
 
 from tests.base import _parse
-from query.dispatch import q_accesses_of
+from ..cs import q_accesses_of
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
 
 # Reuse ObjectInitializer.cs for initializer tests
-_OBJ_SAMPLE = os.path.join(_ROOT, "sample", "root1", "ObjectInitializer.cs")
+_OBJ_SAMPLE = os.path.join(SAMPLE_ROOT1, "ObjectInitializer.cs")
 with open(_OBJ_SAMPLE, encoding="utf-8") as _f:
     _OBJ_SRC = _f.read()
 _OBJ_PARSED = _parse(_OBJ_SRC)
 _OBJ_LINES  = _OBJ_SRC.splitlines()
 
 # Reuse WithExpression.cs for with-expression tests
-_WITH_SAMPLE = os.path.join(_ROOT, "sample", "root1", "WithExpression.cs")
+_WITH_SAMPLE = os.path.join(SAMPLE_ROOT1, "WithExpression.cs")
 with open(_WITH_SAMPLE, encoding="utf-8") as _f:
     _WITH_SRC = _f.read()
 _WITH_PARSED = _parse(_WITH_SRC)

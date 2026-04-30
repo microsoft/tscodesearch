@@ -19,16 +19,15 @@ Run (no Typesense needed):
     pytest tests/test_cs_cast_as_expression.py -v
 """
 from __future__ import annotations
+from .conftest import SAMPLE_ROOT1
 
 import os
 import unittest
 
 from tests.base import _parse
-from query.dispatch import q_uses
+from ..cs import q_uses
 
-_HERE   = os.path.dirname(os.path.abspath(__file__))
-_ROOT   = os.path.dirname(_HERE)
-_SAMPLE = os.path.join(_ROOT, "sample", "root1", "CastExpressions.cs")
+_SAMPLE = os.path.join(SAMPLE_ROOT1, "CastExpressions.cs")
 
 with open(_SAMPLE, encoding="utf-8") as _f:
     _SRC = _f.read()

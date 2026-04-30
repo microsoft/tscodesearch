@@ -1,16 +1,60 @@
 from dataclasses import dataclass, field as dc_field
 
 
+def _dedupe(seq) -> list:
+    """Return seq with duplicates removed, preserving order, dropping falsy values."""
+    seen = set()
+    out = []
+    for x in seq:
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+@dataclass
+class CallSiteInfo:
+    """A function or method call site."""
+    name: str
+    receiver: str = ""  # receiver identifier when it looks like a type (e.g. "Repo" in Repo.Save())
+
+
+@dataclass
+class CastInfo:
+    """An explicit type cast."""
+    target_type: str
+
+
+@dataclass
+class LocalVarInfo:
+    """A local variable declaration."""
+    var_type: str
+
+
+@dataclass
+class MemberAccessInfo:
+    """A non-call member access (property or field read)."""
+    member: str
+
+
 @dataclass
 class FileDescription:
-    """All structured data extracted from a source file in a single parse."""
-    path: str
+    """All structured data extracted from source bytes in a single parse."""
     language: str
-    classes: list = dc_field(default_factory=list)
-    methods: list = dc_field(default_factory=list)
-    fields: list  = dc_field(default_factory=list)
-    imports: list = dc_field(default_factory=list)
-    attrs: list   = dc_field(default_factory=list)
+
+    # ── Declarations (query layer) ────────────────────────────────────────────
+    classes:             list = dc_field(default_factory=list)  # list[ClassInfo]
+    methods:             list = dc_field(default_factory=list)  # list[MethodInfo]
+    fields:              list = dc_field(default_factory=list)  # list[FieldInfo]
+    imports:             list = dc_field(default_factory=list)  # list[ImportInfo]
+    attrs:               list = dc_field(default_factory=list)  # list[AttrInfo]
+
+    # ── Code elements (indexer derives flat fields via flat_from_fd) ──────────
+    namespace:           str  = ""
+    call_site_infos:     list = dc_field(default_factory=list)  # list[CallSiteInfo]
+    cast_infos:          list = dc_field(default_factory=list)  # list[CastInfo]
+    local_var_infos:     list = dc_field(default_factory=list)  # list[LocalVarInfo]
+    member_access_infos: list = dc_field(default_factory=list)  # list[MemberAccessInfo]
 
 
 @dataclass
@@ -51,6 +95,7 @@ class FieldInfo:
     name: str
     kind: str
     field_type: str = ""
+    sig: str = ""
 
     @property
     def text(self) -> str:

@@ -63,13 +63,13 @@ def has(results, sub):
 
 @unittest.skipIf(_SKIP_JS, _SKIP_MSG_JS)
 class TestExtractJsMetadata(unittest.TestCase):
-    """Unit tests for extract_js_metadata — no server needed."""
+    """Unit tests for extract_metadata — no server needed."""
 
     @classmethod
     def setUpClass(cls):
-        from indexserver.indexer import extract_js_metadata
+        from indexserver.indexer import extract_metadata
         with open(JS_FIXTURE, "rb") as _f:
-            cls._meta = extract_js_metadata(_f.read())
+            cls._meta = extract_metadata(_f.read(), ".js")
 
     def test_class_names_indexed(self):
         self.assertIn("TextProcessor", self._meta["class_names"])
@@ -181,13 +181,13 @@ class TestQueryJs(unittest.TestCase):
 
 @unittest.skipIf(_SKIP_TS, _SKIP_MSG_TS)
 class TestExtractTsMetadata(unittest.TestCase):
-    """Unit tests for extract_ts_metadata — no server needed."""
+    """Unit tests for extract_metadata — no server needed."""
 
     @classmethod
     def setUpClass(cls):
-        from indexserver.indexer import extract_ts_metadata
+        from indexserver.indexer import extract_metadata
         with open(TS_FIXTURE, "rb") as _f:
-            cls._meta = extract_ts_metadata(_f.read())
+            cls._meta = extract_metadata(_f.read(), ".ts")
 
     def test_class_names_indexed(self):
         self.assertIn("TextProcessor", self._meta["class_names"])
@@ -288,8 +288,12 @@ class TestProcessJsFile(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, path, mode, mode_arg=None):
-        from query.js import process_js_file
-        matches = process_js_file(path=path, mode=mode, mode_arg=mode_arg)
+        import os as _os
+        from query.dispatch import query_file
+        ext = _os.path.splitext(path)[1].lower()
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
+        matches = query_file(src_bytes, ext, mode, mode_arg or "")
         path_norm = path.replace("\\", "/")
         root_norm = self.tmpdir.replace("\\", "/").rstrip("/")
         disp = (path_norm[len(root_norm) + 1:]
@@ -329,20 +333,20 @@ class TestProcessJsFile(unittest.TestCase):
         tmpdir_norm = self.tmpdir.replace("\\", "/")
         self.assertNotIn(tmpdir_norm, out)
 
-    # ── consistency: process_js_file ↔ extract_js_metadata ───────────────────
+    # ── consistency: process_js_file ↔ extract_metadata ───────────────────
 
     def test_class_names_consistent(self):
-        from indexserver.indexer import extract_js_metadata
+        from indexserver.indexer import extract_metadata
         with open(JS_FIXTURE, "rb") as _f:
-            meta = extract_js_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".js")
         self.assertIn("TextProcessor", meta["class_names"])
         n, out = self._run(self.js_path, "classes")
         self.assertIn("TextProcessor", out)
 
     def test_call_sites_consistent(self):
-        from indexserver.indexer import extract_js_metadata
+        from indexserver.indexer import extract_metadata
         with open(JS_FIXTURE, "rb") as _f:
-            meta = extract_js_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".js")
         self.assertIn("process", meta["call_sites"])
         n, out = self._run(self.js_path, "calls", "process")
         self.assertGreater(n, 0)

@@ -11,7 +11,17 @@ used by the indexer for semantic field population.
 
 import re
 import sys
-from ._util import _make_matches, FileDescription
+from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, CallSiteInfo
+
+try:
+    import tree_sitter_sql as tssql
+    from tree_sitter import Language, Parser as _Parser
+    _SQL_LANG   = Language(tssql.language())
+    _sql_parser = _Parser(_SQL_LANG)
+    _SQL_AVAILABLE = True
+except Exception:
+    _sql_parser    = None
+    _SQL_AVAILABLE = False
 
 
 
@@ -443,15 +453,8 @@ def extract_invocations(root, src: bytes) -> list:
 
 # ── Process function ──────────────────────────────────────────────────────────
 
-def process_sql_file(path, mode, mode_arg, include_body=False, **kwargs):
-    """Parse a SQL file and return list[{"line": N, "text": "..."}] for the given mode."""
-    try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return []
-
+def query_sql_bytes(src_bytes: bytes, mode: str, mode_arg: str, **kwargs):
+    """Parse SQL bytes and return list[{"line": N, "text": "..."}] for the given mode."""
     text = src_bytes.decode("utf-8", errors="replace")
     lines = text.splitlines()
 
@@ -468,6 +471,47 @@ def process_sql_file(path, mode, mode_arg, include_body=False, **kwargs):
     return _make_matches(fn() or [])
 
 
-def describe_sql_file(path: str) -> FileDescription:
-    """Return a FileDescription for a SQL file (no structured extraction)."""
-    return FileDescription(path=path, language="sql")
+def describe_sql_file(src_bytes: bytes, ext: str = "") -> FileDescription:
+    """Return all structured SQL data from src_bytes as a FileDescription."""
+    classes: list = []   # tables / views → ClassInfo
+    methods: list = []   # procs / functions → MethodInfo
+    fields:  list = []   # columns → FieldInfo
+    calls:   list = []   # referenced tables + invocations → CallSiteInfo
+
+    if _SQL_AVAILABLE and _sql_parser is not None:
+        try:
+            tree = _sql_parser.parse(src_bytes)
+            root = tree.root_node
+            for name in extract_table_names(root, src_bytes):
+                classes.append(ClassInfo(line=0, name=name, kind="table"))
+            for name in extract_function_names(root, src_bytes):
+                methods.append(MethodInfo(line=0, name=name, kind="function"))
+            for name in extract_proc_names_ast(root, src_bytes):
+                methods.append(MethodInfo(line=0, name=name, kind="procedure"))
+            for sig in extract_proc_sigs(root, src_bytes):
+                methods.append(MethodInfo(line=0, name="", kind="procedure", sig=sig))
+            for _proc, table in extract_proc_body_refs(root, src_bytes):
+                calls.append(CallSiteInfo(name=table))
+            for col_sig in extract_column_sigs(root, src_bytes):
+                parts = col_sig.split(" ", 1)
+                col_type = parts[1] if len(parts) > 1 else ""
+                col_name = parts[0].split(".")[-1]
+                fields.append(FieldInfo(line=0, name=col_name, kind="column",
+                                        field_type=col_type, sig=col_sig))
+            for ref in extract_referenced_tables(root, src_bytes):
+                calls.append(CallSiteInfo(name=ref))
+            for inv in extract_invocations(root, src_bytes):
+                calls.append(CallSiteInfo(name=inv))
+        except Exception:
+            pass
+
+    for name in extract_proc_names_regex(src_bytes):
+        methods.append(MethodInfo(line=0, name=name, kind="procedure"))
+
+    return FileDescription(
+        language="sql",
+        classes=classes,
+        methods=methods,
+        fields=fields,
+        call_site_infos=calls,
+    )

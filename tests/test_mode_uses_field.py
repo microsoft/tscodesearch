@@ -20,7 +20,7 @@ from tests.fixtures import (
     FIELD_TYPED_BLOBSTORE, PARAM_ONLY_BLOBSTORE, FIELD_TYPED_ILOGGER,
     FIELD_TYPED_GENERIC_BLOBSTORE, LISTING_TARGET,
 )
-from indexserver.indexer import extract_cs_metadata
+from indexserver.indexer import extract_metadata
 from query.cs import q_uses
 
 
@@ -109,14 +109,14 @@ class TestFieldTypeMetadataConsistency(unittest.TestCase):
     """field_type results must be consistent with the type_refs Typesense field."""
 
     def test_field_type_in_type_refs(self):
-        meta = extract_cs_metadata(FIELD_TYPED_BLOBSTORE.encode())
+        meta = extract_metadata(FIELD_TYPED_BLOBSTORE.encode(), ".cs")
         assert "BlobStore" in meta["type_refs"], \
             f"type_refs: {meta['type_refs']}"
 
     def test_param_only_not_via_field_in_type_refs(self):
         """PARAM_ONLY_BLOBSTORE has BlobStore in type_refs (from param), but NOT as a
         field — q_field_type correctly returns empty for it."""
-        meta = extract_cs_metadata(PARAM_ONLY_BLOBSTORE.encode())
+        meta = extract_metadata(PARAM_ONLY_BLOBSTORE.encode(), ".cs")
         # BlobStore IS in type_refs (from param) — that's correct for uses mode
         assert "BlobStore" in meta["type_refs"]
         # But q_field_type must still return empty (it checks field/prop node types)
@@ -124,7 +124,7 @@ class TestFieldTypeMetadataConsistency(unittest.TestCase):
         assert r == [], "Param type must not appear in field results"
 
     def test_generic_type_expanded_in_type_refs(self):
-        meta = extract_cs_metadata(FIELD_TYPED_GENERIC_BLOBSTORE.encode())
+        meta = extract_metadata(FIELD_TYPED_GENERIC_BLOBSTORE.encode(), ".cs")
         assert "BlobStore" in meta["type_refs"]
         assert "IList"     in meta["type_refs"]
 

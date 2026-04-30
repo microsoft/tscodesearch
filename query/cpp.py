@@ -17,7 +17,7 @@ EXTENSIONS = frozenset({".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"})
 import sys
 import tree_sitter_cpp as tscpp
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo
+from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo
 
 _CPP_LANG   = Language(tscpp.language())
 _cpp_parser = Parser(_CPP_LANG)
@@ -494,18 +494,12 @@ def cpp_q_params(src, tree, lines, func_name):
 
 # ── Process function ──────────────────────────────────────────────────────────
 
-def process_cpp_file(path, mode, mode_arg, include_body=False, **kwargs):
-    """Parse a C/C++ file and return list[{"line": N, "text": "..."}] for the given mode."""
-    try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return []
+def query_cpp_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False, **kwargs):
+    """Parse C/C++ bytes and return list[{"line": N, "text": "..."}] for the given mode."""
     try:
         tree = _cpp_parser.parse(src_bytes)
     except Exception as e:
-        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+        print(f"ERROR parsing C/C++ source: {e}", file=sys.stderr)
         return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
@@ -528,21 +522,46 @@ def process_cpp_file(path, mode, mode_arg, include_body=False, **kwargs):
     return _make_matches(fn() or [])
 
 
-def describe_cpp_file(path: str) -> FileDescription:
-    """Parse path once and return all structured C/C++ data as a FileDescription."""
-    try:
-        with open(path, "rb") as _f:
-            src_bytes = _f.read()
-    except OSError as e:
-        print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return FileDescription(path=path, language="cpp")
+
+
+def describe_cpp_file(src_bytes: bytes, ext: str = "") -> FileDescription:
+    """Return all structured C/C++ data from src_bytes as a FileDescription."""
     try:
         tree = _cpp_parser.parse(src_bytes)
     except Exception as e:
-        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return FileDescription(path=path, language="cpp")
+        print(f"ERROR parsing C/C++ source: {e}", file=sys.stderr)
+        return FileDescription(language="cpp")
+
+    # call sites
+    call_sites_raw = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "call_expression"):
+        fn = node.child_by_field_name("function")
+        if fn:
+            if fn.type == "identifier":
+                call_sites_raw.append(_text(fn, src_bytes).strip())
+            elif fn.type == "field_expression":
+                f = fn.child_by_field_name("field")
+                if f:
+                    call_sites_raw.append(_text(f, src_bytes).strip())
+            elif fn.type == "qualified_identifier":
+                nn = fn.child_by_field_name("name")
+                if nn:
+                    call_sites_raw.append(_text(nn, src_bytes).strip())
+
+    # #include → ImportInfo (header name without path/extension as module)
+    imports_list = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "preproc_include"):
+        path_node = node.child_by_field_name("path")
+        if path_node:
+            raw = _text(path_node, src_bytes).strip().strip("<>\"")
+            seg = raw.split("/")[-1].split(".")[0]
+            if seg:
+                imports_list.append(ImportInfo(line=_line(node), text=raw, module=seg))
+
     return FileDescription(
-        path=path, language="cpp",
+        language="cpp",
         classes=_cpp_q_classes_data(src_bytes, tree),
         methods=_cpp_q_methods_data(src_bytes, tree),
+        imports=imports_list,
+        call_site_infos=[CallSiteInfo(name=n) for n in call_sites_raw],
     )

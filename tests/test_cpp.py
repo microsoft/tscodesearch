@@ -1,5 +1,5 @@
 """
-Tests for C/C++ support: extract_cpp_metadata and query_cpp functions.
+Tests for C/C++ support: extract_metadata and query_cpp functions.
 
 No server needed — all tests run against sample/root1/query_fixture.cpp.
 
@@ -48,13 +48,13 @@ def has(results, sub):
 
 @unittest.skipIf(_SKIP, _SKIP_MSG)
 class TestExtractCppMetadata(unittest.TestCase):
-    """Unit tests for extract_cpp_metadata — no server needed."""
+    """Unit tests for extract_metadata — no server needed."""
 
     @classmethod
     def setUpClass(cls):
-        from indexserver.indexer import extract_cpp_metadata
+        from indexserver.indexer import extract_metadata
         with open(FIXTURE_PATH, "rb") as _f:
-            cls._meta = extract_cpp_metadata(_f.read())
+            cls._meta = extract_metadata(_f.read(), ".cpp")
 
     def test_class_names_indexed(self):
         self.assertIn("TextProcessor", self._meta["class_names"])
@@ -231,8 +231,10 @@ class TestProcessCppFile(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, mode, mode_arg=None):
-        from query.cpp import process_cpp_file
-        matches = process_cpp_file(path=self.path, mode=mode, mode_arg=mode_arg)
+        from query.dispatch import query_file
+        with open(self.path, "rb") as _f:
+            src_bytes = _f.read()
+        matches = query_file(src_bytes, ".cpp", mode, mode_arg or "")
         path_norm = self.path.replace("\\", "/")
         root_norm = self.tmpdir.replace("\\", "/").rstrip("/")
         disp = (path_norm[len(root_norm) + 1:]
@@ -272,20 +274,20 @@ class TestProcessCppFile(unittest.TestCase):
         tmpdir_norm = self.tmpdir.replace("\\", "/")
         self.assertNotIn(tmpdir_norm, out)
 
-    # ── consistency: process_cpp_file ↔ extract_cpp_metadata ─────────────────
+    # ── consistency: process_cpp_file ↔ extract_metadata ─────────────────
 
     def test_class_names_consistent(self):
-        from indexserver.indexer import extract_cpp_metadata
+        from indexserver.indexer import extract_metadata
         with open(FIXTURE_PATH, "rb") as _f:
-            meta = extract_cpp_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".cpp")
         self.assertIn("TextProcessor", meta["class_names"])
         n, out = self._run("classes")
         self.assertIn("TextProcessor", out)
 
     def test_call_sites_consistent(self):
-        from indexserver.indexer import extract_cpp_metadata
+        from indexserver.indexer import extract_metadata
         with open(FIXTURE_PATH, "rb") as _f:
-            meta = extract_cpp_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".cpp")
         self.assertIn("process", meta["call_sites"])
         n, out = self._run("calls", "process")
         self.assertGreater(n, 0)
@@ -332,13 +334,13 @@ class TestHALFixture(unittest.TestCase):
         self.assertTrue(has(r_ain,  "FullHALImpl"), f"AnalogIn results={r_ain}")
         self.assertTrue(has(r_asrc, "FullHALImpl"), f"AnalogSource results={r_asrc}")
 
-    # ── Bug 1 (metadata): extract_cpp_metadata base_types ─────────────────────
+    # ── Bug 1 (metadata): extract_metadata base_types ─────────────────────
 
     def test_metadata_qualified_base_types(self):
-        """extract_cpp_metadata must list 'AnalogIn', not 'HAL', as base type."""
-        from indexserver.indexer import extract_cpp_metadata
+        """extract_metadata must list 'AnalogIn', not 'HAL', as base type."""
+        from indexserver.indexer import extract_metadata
         with open(HAL_FIXTURE_PATH, "rb") as _f:
-            meta = extract_cpp_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".cpp")
         self.assertIn("AnalogIn",   meta["base_types"])
         self.assertNotIn("HAL",     meta["base_types"])
         self.assertIn("Scheduler",  meta["base_types"])
@@ -373,10 +375,10 @@ class TestHALFixture(unittest.TestCase):
         self.assertGreaterEqual(len(r), 2)
 
     def test_metadata_qualified_call_sites(self):
-        """extract_cpp_metadata includes 'panic' from AP::panic() call sites."""
-        from indexserver.indexer import extract_cpp_metadata
+        """extract_metadata includes 'panic' from AP::panic() call sites."""
+        from indexserver.indexer import extract_metadata
         with open(HAL_FIXTURE_PATH, "rb") as _f:
-            meta = extract_cpp_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".cpp")
         self.assertIn("panic", meta["call_sites"])
         self.assertIn("hal_channel", meta["call_sites"])
 
@@ -407,19 +409,19 @@ class TestHALFixture(unittest.TestCase):
         self.assertGreater(len(r), 0)
 
     def test_metadata_member_sigs_pure_virtual(self):
-        """extract_cpp_metadata indexes signatures of pure-virtual methods."""
-        from indexserver.indexer import extract_cpp_metadata
+        """extract_metadata indexes signatures of pure-virtual methods."""
+        from indexserver.indexer import extract_metadata
         with open(HAL_FIXTURE_PATH, "rb") as _f:
-            meta = extract_cpp_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".cpp")
         self.assertTrue(any("read" in s for s in meta["member_sigs"]),
                         f"member_sigs={meta['member_sigs']}")
         self.assertTrue(any("init" in s for s in meta["member_sigs"]))
 
     def test_metadata_method_names_pure_virtual(self):
-        """extract_cpp_metadata indexes names of pure-virtual member functions."""
-        from indexserver.indexer import extract_cpp_metadata
+        """extract_metadata indexes names of pure-virtual member functions."""
+        from indexserver.indexer import extract_metadata
         with open(HAL_FIXTURE_PATH, "rb") as _f:
-            meta = extract_cpp_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".cpp")
         self.assertIn("init",     meta["method_names"])
         self.assertIn("read",     meta["method_names"])
         self.assertIn("set_pin",  meta["method_names"])
