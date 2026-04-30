@@ -339,7 +339,17 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
 
     results = []
     for file_path in files:
-        native = os.path.realpath(to_native_path(file_path.replace("\\", "/")))
+        # Map Windows host path to native local path using HOST_ROOTS → ROOTS.
+        # Node.js passes Windows-style paths (e.g. C:/myproject/src/Foo.cs);
+        # the server resolves them to the local filesystem path using config.
+        resolved = file_path.replace("\\", "/")
+        for name, host_root in HOST_ROOTS.items():
+            hr = host_root.replace("\\", "/").rstrip("/")
+            if resolved.lower().startswith(hr.lower() + "/") or resolved.lower() == hr.lower():
+                rel = resolved[len(hr):]  # includes leading /
+                resolved = ROOTS[name].rstrip("/") + rel
+                break
+        native = os.path.realpath(to_native_path(resolved))
         ext = os.path.splitext(native)[1].lower()
         try:
             with open(native, "rb") as _f:
