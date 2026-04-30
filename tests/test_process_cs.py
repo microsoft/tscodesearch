@@ -20,7 +20,7 @@ if _root not in sys.path:
 from tests.helpers import (
     _FOO_CS, _BAR_CS, _QUALIFIED_CS, _GENERIC_WRAPPER_CS, _BLOBSTORE_CS,
 )
-from indexserver.api import _run_query, HOST_ROOTS
+from indexserver.api import _run_query, HOST_ROOTS, ROOTS
 from indexserver.indexer import extract_metadata
 import query.dispatch as _q
 from query.cs import (
@@ -289,16 +289,19 @@ class TestQueryApi(unittest.TestCase):
         ]:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(src)
-        # _run_query skips paths that don't match a configured root when HOST_ROOTS
-        # is non-empty. Temp paths used here aren't in production config, so clear
-        # HOST_ROOTS for the duration of these tests.
+        # _run_query skips paths outside configured roots when ROOTS/HOST_ROOTS are
+        # non-empty. Temp paths used here aren't in production config, so clear both
+        # for the duration of these tests.
         cls._orig_host_roots = HOST_ROOTS.copy()
+        cls._orig_roots = ROOTS.copy()
         HOST_ROOTS.clear()
+        ROOTS.clear()
 
     @classmethod
     def tearDownClass(cls):
         import shutil
         HOST_ROOTS.update(cls._orig_host_roots)
+        ROOTS.update(cls._orig_roots)
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _direct(self, path, fn):

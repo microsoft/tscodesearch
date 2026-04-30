@@ -303,32 +303,6 @@ def _get_query_module():
     return _query_module
 
 
-def _resolve_and_validate_paths(files: list) -> list[str]:
-    """Translate user-supplied file paths to native absolute paths, rejecting any
-    that fall outside the configured roots (prevents path-traversal attacks).
-
-    Windows host paths are translated via HOST_ROOTS → ROOTS. Native paths that
-    are already under a ROOTS entry pass through unchanged. Paths that resolve
-    outside every configured root are dropped with a warning.
-    """
-    allowed_roots = [os.path.realpath(to_native_path(r)).rstrip("/\\") for r in ROOTS.values() if r]
-    native_paths: list[str] = []
-    for file_path in files:
-        resolved = file_path.replace("\\", "/")
-        for name, host_root in HOST_ROOTS.items():
-            hr = host_root.replace("\\", "/").rstrip("/")
-            if resolved.lower().startswith(hr.lower() + "/") or resolved.lower() == hr.lower():
-                rel = resolved[len(hr):]  # includes leading /
-                resolved = ROOTS[name].rstrip("/") + rel
-                break
-        native = os.path.realpath(to_native_path(resolved))
-        if allowed_roots and not any(os.path.commonpath([root, native]) == root for root in allowed_roots):
-            print(f"WARN: {file_path!r} resolved outside configured roots, skipping", file=sys.stderr)
-            continue
-        native_paths.append(native)
-    return native_paths
-
-
 def _run_query(mode: str, pattern: str, files: list, include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
     """Run a tree-sitter AST query against a list of absolute file paths.
 
@@ -336,6 +310,11 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
     where line is 1-indexed.  Only files with at least one match are included.
     """
     _q = _get_query_module()
+
+    # Build the set of allowed roots once. Paths that resolve outside every
+    # configured root are rejected (prevents path-traversal when called from
+    # the HTTP handler). Empty when no roots are configured (test mode).
+    allowed_roots = [os.path.realpath(to_native_path(r)).rstrip("/\\") for r in ROOTS.values() if r]
 
     results = []
     for file_path in files:
@@ -350,6 +329,10 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
                 resolved = ROOTS[name].rstrip("/") + rel
                 break
         native = os.path.realpath(to_native_path(resolved))
+        # Reject paths that fall outside every configured root.
+        if allowed_roots and not any(native.startswith(r + os.sep) or native == r for r in allowed_roots):
+            print(f"WARN: {file_path!r} resolved outside configured roots, skipping", file=sys.stderr)
+            continue
         ext = os.path.splitext(native)[1].lower()
         try:
             with open(native, "rb") as _f:
@@ -751,8 +734,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "files must be a non-empty list"})
                 return
             try:
-                safe_files = _resolve_and_validate_paths(files)
-                results = _run_query(mode, pattern, safe_files,
+                results = _run_query(mode, pattern, files,
                                      include_body=include_body,
                                      symbol_kind=symbol_kind,
                                      uses_kind=uses_kind_q)
