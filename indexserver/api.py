@@ -342,7 +342,7 @@ def _resolve_query_paths(raw_files: list) -> list[str]:
     Returns the list of safe, normalized absolute paths.
     Raises ValueError if any path falls outside every configured root.
     """
-    allowed_roots = [os.path.realpath(to_native_path(r)).rstrip("/\\") for r in ROOTS.values() if r]
+    allowed_roots = [os.path.realpath(to_native_path(r)) for r in ROOTS.values() if r]
     safe: list[str] = []
     for file_path in raw_files:
         # Translate Windows host path (e.g. C:/myproject/src/Foo.cs) to the
@@ -354,13 +354,11 @@ def _resolve_query_paths(raw_files: list) -> list[str]:
                 rel = resolved[len(hr):]  # includes leading /
                 resolved = ROOTS[name].rstrip("/") + rel
                 break
-        native = os.path.realpath(to_native_path(resolved))
-        # Guard: normalized path must start with a known configured root.
-        # Use an explicit loop so the startswith is a direct conditional that
-        # static analysis tools can recognize as a path-containment barrier.
+        native = Path(os.path.realpath(to_native_path(resolved)))
+        # Guard: normalized path must be relative to a known configured root.
         for r in allowed_roots:
-            if native.startswith(r + os.sep) or native == r:
-                safe.append(native)
+            if native.is_relative_to(r):
+                safe.append(str(native))
                 break
         else:
             raise ValueError(f"path not under a configured root: {file_path!r}")
@@ -685,7 +683,7 @@ class _Handler(BaseHTTPRequestHandler):
                     src_root.rstrip("/\\") + "/" + rel
                 ))
                 # Ensure the resolved path is actually under src_root (prevents traversal).
-                if not (abs_path.startswith(native_src_root + os.sep) or abs_path == native_src_root):
+                if not Path(abs_path).is_relative_to(native_src_root):
                     continue
                 if os.path.isfile(abs_path):
                     file_list.append(abs_path)
