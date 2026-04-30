@@ -356,10 +356,14 @@ def _resolve_query_paths(raw_files: list) -> list[str]:
                 break
         native = os.path.realpath(to_native_path(resolved))
         # Guard: normalized path must start with a known configured root.
-        # any([]) is False, so an empty allowed_roots rejects everything.
-        if not any(native.startswith(r + os.sep) or native == r for r in allowed_roots):
+        # Use an explicit loop so the startswith is a direct conditional that
+        # static analysis tools can recognize as a path-containment barrier.
+        for r in allowed_roots:
+            if native.startswith(r + os.sep) or native == r:
+                safe.append(native)
+                break
+        else:
             raise ValueError(f"path not under a configured root: {file_path!r}")
-        safe.append(native)
     return safe
 
 
