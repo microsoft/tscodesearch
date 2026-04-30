@@ -15,10 +15,9 @@ Modes:
 EXTENSIONS = frozenset({".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"})
 
 import sys
-from dataclasses import dataclass
 import tree_sitter_cpp as tscpp
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription
+from ._util import _make_matches, FileDescription, CppClassInfo, CppMethodInfo
 
 _CPP_LANG   = Language(tscpp.language())
 _cpp_parser = Parser(_CPP_LANG)
@@ -221,35 +220,6 @@ def _fn_sig(node, src: bytes) -> str:
                 break
     params_txt = _text(params_node, src).strip() if params_node else "()"
     return f"{ret_txt} {name}{params_txt}".strip()
-
-
-# ── Dataclasses ───────────────────────────────────────────────────────────────
-
-@dataclass
-class CppClassInfo:
-    line: int
-    name: str
-    kind: str
-    bases: list
-
-    @property
-    def text(self) -> str:
-        suffix = f" : {', '.join(self.bases)}" if self.bases else ""
-        return f"[{self.kind}] {self.name}{suffix}"
-
-
-@dataclass
-class CppMethodInfo:
-    line: int
-    name: str
-    kind: str          # "function" | "method"
-    sig: str
-    cls_name: str = ""
-
-    @property
-    def text(self) -> str:
-        prefix = f"[in {self.cls_name}] " if self.cls_name else ""
-        return f"[{self.kind}] {prefix}{self.sig}"
 
 
 # ── Data extraction functions ──────────────────────────────────────────────────

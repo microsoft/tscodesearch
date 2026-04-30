@@ -7,64 +7,15 @@ All public functions are re-exported from query.py for backward compatibility.
 EXTENSIONS = frozenset({".py"})
 
 import sys
-from dataclasses import dataclass, field as dc_field
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription
+from ._util import (_make_matches, FileDescription,
+                    PyClassInfo, PyMethodInfo, PyAttrInfo, PyImportInfo)
 
 from .cs import _find_all, _text
 
 _PY_LANG = Language(tspython.language())
 _py_parser = Parser(_PY_LANG)
-
-# ── Dataclasses ───────────────────────────────────────────────────────────────
-
-@dataclass
-class PyClassInfo:
-    line: int
-    name: str
-    bases: list
-
-    @property
-    def text(self) -> str:
-        suffix = f"({', '.join(self.bases)})" if self.bases else ""
-        return f"[class] {self.name}{suffix}"
-
-
-@dataclass
-class PyMethodInfo:
-    line: int
-    name: str
-    kind: str          # "def" | "method"
-    params_str: str
-    cls_name: str = ""
-    return_type: str | None = None
-    param_types: list = dc_field(default_factory=list)
-
-    @property
-    def sig(self) -> str:
-        ret = f" -> {self.return_type}" if self.return_type else ""
-        return f"def {self.name}{self.params_str}{ret}"
-
-    @property
-    def text(self) -> str:
-        prefix = f"[in {self.cls_name}] " if self.cls_name else ""
-        ret = f" -> {self.return_type}" if self.return_type else ""
-        return f"[{self.kind}] {prefix}{self.name}{self.params_str}{ret}"
-
-
-@dataclass
-class PyAttrInfo:
-    line: int
-    text: str
-    attr_name: str
-
-
-@dataclass
-class PyImportInfo:
-    line: int
-    text: str
-    module: str
 
 # ── Inlined from src/ast/py.py ──────────────────────────────────────────────
 

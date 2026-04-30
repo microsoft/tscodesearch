@@ -15,10 +15,9 @@ Modes:
 EXTENSIONS = frozenset({".rs"})
 
 import sys
-from dataclasses import dataclass
 import tree_sitter_rust as tsrust
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription
+from ._util import _make_matches, FileDescription, RustClassInfo, RustMethodInfo
 
 _RUST_LANG   = Language(tsrust.language())
 _rust_parser = Parser(_RUST_LANG)
@@ -133,33 +132,6 @@ def _fn_sig(node, src: bytes) -> str:
         params_txt = ""
 
     return f"fn {name}({params_txt}){ret}"
-
-
-# ── Dataclasses ───────────────────────────────────────────────────────────────
-
-@dataclass
-class RustClassInfo:
-    line: int
-    name: str
-    kind: str
-
-    @property
-    def text(self) -> str:
-        return f"[{self.kind}] {self.name}"
-
-
-@dataclass
-class RustMethodInfo:
-    line: int
-    name: str
-    kind: str
-    sig: str
-    impl_type: str = ""
-
-    @property
-    def text(self) -> str:
-        prefix = f"[in {self.impl_type}] " if self.impl_type else ""
-        return f"[{self.kind}] {prefix}{self.sig}"
 
 
 # ── Data extraction functions ──────────────────────────────────────────────────

@@ -8,10 +8,10 @@ EXTENSIONS = frozenset({".cs"})
 
 import re
 import sys
-from dataclasses import dataclass, field as dc_field
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription
+from ._util import (_make_matches, FileDescription,
+               CsClassInfo, CsMemberInfo, CsFieldInfo, CsUsingInfo, CsAttrInfo)
 
 _CS_LANG = Language(tscsharp.language())
 _cs_parser = Parser(_CS_LANG)
@@ -49,65 +49,6 @@ def _strip_else_branches(src_bytes: bytes) -> bytes:
         else:
             result.append(b"\n" if _skipping() else line)
     return b"".join(result)
-
-# ── Dataclasses ───────────────────────────────────────────────────────────────
-
-@dataclass
-class ClassInfo:
-    line: int
-    name: str
-    kind: str
-    bases: list
-
-    @property
-    def text(self) -> str:
-        suffix = f" : {', '.join(self.bases)}" if self.bases else ""
-        return f"[{self.kind}] {self.name}{suffix}"
-
-
-@dataclass
-class MemberInfo:
-    line: int
-    name: str
-    kind: str          # "method" | "ctor" | "field" | "prop" | "event"
-    sig: str | None = None
-    return_type: str | None = None
-    param_types: list = dc_field(default_factory=list)
-    field_type: str | None = None
-
-    @property
-    def text(self) -> str:
-        label = f"[{self.kind}]".ljust(9)
-        if self.kind in ("method", "ctor"):
-            return f"{label}{self.sig}"
-        return f"{label}{self.field_type} {self.name}".rstrip()
-
-
-@dataclass
-class FieldInfo:
-    line: int
-    name: str
-    kind: str          # "field" | "prop"
-    field_type: str
-
-    @property
-    def text(self) -> str:
-        label = f"[{self.kind}]".ljust(8)
-        return f"{label}{self.field_type} {self.name}".rstrip()
-
-
-@dataclass
-class UsingInfo:
-    line: int
-    text: str
-    namespace: str
-
-
-@dataclass
-class AttrInfo:
-    line: int
-    text: str
-    attr_name: str
 
 # ── Inlined from src/ast/cs.py ──────────────────────────────────────────────
 
@@ -468,7 +409,7 @@ def _q_namespace(src, tree) -> str:
 
 
 def _q_classes_data(src, tree) -> list:
-    """Return list[ClassInfo] for all type declarations."""
+    """Return list[CsClassInfo] for all type declarations."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
         name_node = node.child_by_field_name("name")
@@ -477,12 +418,12 @@ def _q_classes_data(src, tree) -> list:
         kind  = _node_kind(node)
         name  = _text(name_node, src).strip()
         bases = _base_type_names(node, src)
-        results.append(ClassInfo(line=_line(node), name=name, kind=kind, bases=bases))
+        results.append(CsClassInfo(line=_line(node), name=name, kind=kind, bases=bases))
     return results
 
 
 def _q_methods_data(src, tree) -> list:
-    """Return list[MemberInfo] for all member declarations."""
+    """Return list[CsMemberInfo] for all member declarations."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in _MEMBER_DECL_NODES):
         ln = _line(node)
@@ -492,7 +433,7 @@ def _q_methods_data(src, tree) -> list:
                 vn = var.child_by_field_name("name")
                 if vn:
                     name = _text(vn, src).strip()
-                    results.append(MemberInfo(line=ln, name=name, kind="field",
+                    results.append(CsMemberInfo(line=ln, name=name, kind="field",
                                               field_type=type_txt))
         elif node.type == "property_declaration":
             type_node = node.child_by_field_name("type")
@@ -500,7 +441,7 @@ def _q_methods_data(src, tree) -> list:
             if name_node:
                 type_txt = _text(type_node, src).strip() if type_node else ""
                 name = _text(name_node, src).strip()
-                results.append(MemberInfo(line=ln, name=name, kind="prop",
+                results.append(CsMemberInfo(line=ln, name=name, kind="prop",
                                           field_type=type_txt))
         elif node.type == "event_declaration":
             type_node = node.child_by_field_name("type")
@@ -508,7 +449,7 @@ def _q_methods_data(src, tree) -> list:
             if name_node:
                 type_txt = _text(type_node, src).strip() if type_node else ""
                 name = _text(name_node, src).strip()
-                results.append(MemberInfo(line=ln, name=name, kind="event",
+                results.append(CsMemberInfo(line=ln, name=name, kind="event",
                                           field_type=type_txt))
         elif node.type == "event_field_declaration":
             type_txt = _field_type(node, src)
@@ -516,7 +457,7 @@ def _q_methods_data(src, tree) -> list:
                 vn = var.child_by_field_name("name")
                 if vn:
                     name = _text(vn, src).strip()
-                    results.append(MemberInfo(line=ln, name=name, kind="event",
+                    results.append(CsMemberInfo(line=ln, name=name, kind="event",
                                               field_type=type_txt))
         elif node.type in ("method_declaration", "local_function_statement"):
             sig = _build_sig(node, src)
@@ -532,7 +473,7 @@ def _q_methods_data(src, tree) -> list:
                         pt = p.child_by_field_name("type")
                         if pt:
                             param_types.append(_text(pt, src).strip())
-                results.append(MemberInfo(line=ln, name=name, kind="method",
+                results.append(CsMemberInfo(line=ln, name=name, kind="method",
                                           sig=sig, return_type=ret_txt,
                                           param_types=param_types))
         elif node.type == "constructor_declaration":
@@ -547,13 +488,13 @@ def _q_methods_data(src, tree) -> list:
                         pt = p.child_by_field_name("type")
                         if pt:
                             param_types.append(_text(pt, src).strip())
-                results.append(MemberInfo(line=ln, name=name, kind="ctor",
+                results.append(CsMemberInfo(line=ln, name=name, kind="ctor",
                                           sig=sig, param_types=param_types))
     return results
 
 
 def _q_fields_data(src, tree) -> list:
-    """Return list[FieldInfo] for all field and property declarations."""
+    """Return list[CsFieldInfo] for all field and property declarations."""
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("field_declaration", "property_declaration")):
@@ -564,7 +505,7 @@ def _q_fields_data(src, tree) -> list:
                 vn = var.child_by_field_name("name")
                 if vn:
                     name = _text(vn, src).strip()
-                    results.append(FieldInfo(line=ln, name=name, kind="field",
+                    results.append(CsFieldInfo(line=ln, name=name, kind="field",
                                              field_type=type_txt))
         else:
             type_node = node.child_by_field_name("type")
@@ -572,13 +513,13 @@ def _q_fields_data(src, tree) -> list:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _text(name_node, src).strip()
-                results.append(FieldInfo(line=ln, name=name, kind="prop",
+                results.append(CsFieldInfo(line=ln, name=name, kind="prop",
                                          field_type=type_txt))
     return results
 
 
 def _q_usings_data(src, tree) -> list:
-    """Return list[UsingInfo] for all using directives."""
+    """Return list[CsUsingInfo] for all using directives."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "using_directive"):
         full = _text(node, src).strip().rstrip(";")
@@ -587,12 +528,12 @@ def _q_usings_data(src, tree) -> list:
             if child.type in ("identifier", "qualified_name"):
                 namespace = _text(child, src).split(".")[0]
                 break
-        results.append(UsingInfo(line=_line(node), text=full, namespace=namespace))
+        results.append(CsUsingInfo(line=_line(node), text=full, namespace=namespace))
     return results
 
 
 def _q_attrs_data(src, tree, attr_name=None) -> list:
-    """Return list[AttrInfo] for all attribute decorators."""
+    """Return list[CsAttrInfo] for all attribute decorators."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "attribute"):
         name_node = node.child_by_field_name("name")
@@ -607,7 +548,7 @@ def _q_attrs_data(src, tree, attr_name=None) -> list:
         args_node = next((c for c in node.named_children
                           if c.type == "attribute_argument_list"), None)
         args_txt = _text(args_node, src).strip() if args_node else ""
-        results.append(AttrInfo(line=_line(node), text=f"[{aname}]{args_txt}",
+        results.append(CsAttrInfo(line=_line(node), text=f"[{aname}]{args_txt}",
                                 attr_name=aname_unqual))
     return results
 

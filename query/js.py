@@ -20,11 +20,11 @@ TS_EXTENSIONS = frozenset({".ts", ".tsx"})
 TSX_EXTENSIONS = frozenset({".tsx"})
 
 import sys
-from dataclasses import dataclass
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription
+from ._util import (_make_matches, FileDescription,
+                    JsClassInfo, JsMethodInfo, JsImportInfo)
 
 _JS_LANG  = Language(tsjs.language())
 _js_parser  = Parser(_JS_LANG)
@@ -32,41 +32,6 @@ _TS_LANG  = Language(tsts.language_typescript())
 _ts_parser  = Parser(_TS_LANG)
 _TSX_LANG = Language(tsts.language_tsx())
 _tsx_parser = Parser(_TSX_LANG)
-
-# ── Dataclasses ───────────────────────────────────────────────────────────────
-
-@dataclass
-class JsClassInfo:
-    line: int
-    name: str
-    kind: str
-    bases: list
-
-    @property
-    def text(self) -> str:
-        suffix = f" : {', '.join(self.bases)}" if self.bases else ""
-        return f"[{self.kind}] {self.name}{suffix}"
-
-
-@dataclass
-class JsMethodInfo:
-    line: int
-    name: str
-    kind: str          # "function" | "method"
-    sig: str
-    cls_name: str = ""
-
-    @property
-    def text(self) -> str:
-        prefix = f"[in {self.cls_name}] " if self.cls_name else ""
-        return f"[{self.kind}] {prefix}{self.sig}"
-
-
-@dataclass
-class JsImportInfo:
-    line: int
-    text: str
-    module: str
 
 # ── Inlined from src/ast/js.py ───────────────────────────────────────────────
 
