@@ -670,7 +670,7 @@ class _Handler(BaseHTTPRequestHandler):
             # Resolve absolute paths for AST-eligible files
             file_list: list[Path] = []
             hit_by_path: dict[str, dict] = {}
-            native_src_root = Path(os.path.realpath(to_native_path(src_root)))
+            native_src_root = Path(to_native_path(src_root)).resolve()
             for hit in ast_hits:
                 rel = hit["document"].get("relative_path", "").replace("\\", "/")
                 # Strip the Windows host_root prefix (e.g. "C:/repos/src/Foo.cs" →
@@ -678,11 +678,15 @@ class _Handler(BaseHTTPRequestHandler):
                 # Without this, Docker produces "/source/default/C:/repos/src/Foo.cs".
                 if host_root_prefix and rel.lower().startswith(host_root_prefix.lower() + "/"):
                     rel = rel[len(host_root_prefix) + 1:]
-                abs_path = Path(os.path.realpath(to_native_path(
-                    src_root.rstrip("/\\") + "/" + rel
-                )))
+                rel_path = Path(rel)
+                # Reject absolute / drive-qualified paths from indexed metadata.
+                if rel_path.is_absolute() or rel_path.drive:
+                    continue
+                abs_path = (native_src_root / rel_path).resolve()
                 # Ensure the resolved path is actually under src_root (prevents traversal).
-                if not abs_path.is_relative_to(native_src_root):
+                try:
+                    abs_path.relative_to(native_src_root)
+                except ValueError:
                     continue
                 if abs_path.is_file():
                     file_list.append(abs_path)
