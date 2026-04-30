@@ -312,8 +312,8 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
     _q = _get_query_module()
 
     # Build the set of allowed roots once. Paths that resolve outside every
-    # configured root are rejected (prevents path-traversal when called from
-    # the HTTP handler). Empty when no roots are configured (test mode).
+    # Paths that don't fall under a configured root are rejected (path-traversal guard).
+    # When ROOTS is empty any() returns False, so all paths are rejected — safe default.
     allowed_roots = [os.path.realpath(to_native_path(r)).rstrip("/\\") for r in ROOTS.values() if r]
 
     results = []
@@ -329,8 +329,9 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
                 resolved = ROOTS[name].rstrip("/") + rel
                 break
         native = os.path.realpath(to_native_path(resolved))
-        # Reject paths that fall outside every configured root.
-        if allowed_roots and not any(native.startswith(r + os.sep) or native == r for r in allowed_roots):
+        # Reject paths that don't start with a known root (also rejects everything
+        # when allowed_roots is empty, since any([]) is False).
+        if not any(native.startswith(r + os.sep) or native == r for r in allowed_roots):
             print(f"WARN: {file_path!r} resolved outside configured roots, skipping", file=sys.stderr)
             continue
         ext = os.path.splitext(native)[1].lower()
