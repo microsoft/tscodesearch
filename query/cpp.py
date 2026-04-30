@@ -17,7 +17,7 @@ EXTENSIONS = frozenset({".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"})
 import sys
 import tree_sitter_cpp as tscpp
 from tree_sitter import Language, Parser
-from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo
 
 _CPP_LANG   = Language(tscpp.language())
 _cpp_parser = Parser(_CPP_LANG)

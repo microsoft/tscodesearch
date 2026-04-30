@@ -4,47 +4,31 @@ AST query dispatch — routes query_file and describe_file to the right language
 Each language module owns its parser, preprocessing, and query_*_bytes / describe_*_file.
 """
 
-import sys
-
 from ._util import FileDescription  # noqa: F401  (re-exported for callers)
 
 from .cs import (
     EXTENSIONS as CS_EXTENSIONS,
-    _cs_parser, _strip_else_branches,
     query_cs_bytes, describe_cs_file,
-    _q_classes_data, _q_methods_data, _q_fields_data, _q_usings_data, _q_attrs_data,
-    q_methods, q_fields, q_classes, q_calls, q_implements, q_uses, q_casts,
-    q_all_refs, q_accesses_on, q_accesses_of, q_attrs, q_usings, q_declarations, q_params,
 )
 
 from .py import (
     EXTENSIONS as PY_EXTENSIONS,
-    _py_parser,
     query_py_bytes, describe_py_file,
-    _py_q_classes_data, _py_q_methods_data, _py_q_attrs_data, _py_q_imports_data,
 )
 
 from .rust import (
     EXTENSIONS as RUST_EXTENSIONS,
-    _rust_parser,
     query_rust_bytes, describe_rust_file,
-    _rust_q_classes_data, _rust_q_methods_data,
 )
 
 from .js import (
     EXTENSIONS as JS_EXTENSIONS,
-    TS_EXTENSIONS as JS_TS_EXTENSIONS,
-    TSX_EXTENSIONS as JS_TSX_EXTENSIONS,
-    _js_parser, _ts_parser, _tsx_parser,
     query_js_bytes, describe_js_file,
-    _js_q_classes_data, _js_q_methods_data, _js_q_imports_data,
 )
 
 from .cpp import (
     EXTENSIONS as CPP_EXTENSIONS,
-    _cpp_parser,
     query_cpp_bytes, describe_cpp_file,
-    _cpp_q_classes_data, _cpp_q_methods_data,
 )
 
 from .sql import query_sql_bytes, describe_sql_file

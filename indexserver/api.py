@@ -323,6 +323,9 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
                 rel = resolved[len(hr):]  # includes leading /
                 resolved = ROOTS[name].rstrip("/") + rel
                 break
+        else:
+            print(f"WARN: {file_path!r} doesn't match any configured root, skipping", file=sys.stderr)
+            continue
         native = to_native_path(resolved)
         ext = os.path.splitext(native)[1].lower()
         try:

@@ -23,7 +23,7 @@ import sys
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Parser
-from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, AttrInfo, CallSiteInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, AttrInfo, CallSiteInfo
 
 _JS_LANG  = Language(tsjs.language())
 _js_parser  = Parser(_JS_LANG)
@@ -33,21 +33,6 @@ _TSX_LANG = Language(tsts.language_tsx())
 _tsx_parser = Parser(_TSX_LANG)
 
 # ── Inlined from src/ast/js.py ───────────────────────────────────────────────
-
-_TYPE_DECL_NODES = {
-    "class_declaration",
-    "interface_declaration",
-    "type_alias_declaration",
-    "enum_declaration",
-    "abstract_class_declaration",
-}
-
-_FUNCTION_NODES = {
-    "function_declaration",
-    "method_definition",
-    "arrow_function",
-    "generator_function_declaration",
-}
 
 _LITERAL_NODES = {
     "comment",

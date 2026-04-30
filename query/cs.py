@@ -10,7 +10,7 @@ import re
 import sys
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
-from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, ImportInfo, AttrInfo, CallSiteInfo, CastInfo, LocalVarInfo, MemberAccessInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, ImportInfo, AttrInfo, CallSiteInfo, CastInfo, LocalVarInfo, MemberAccessInfo
 
 _CS_LANG = Language(tscsharp.language())
 _cs_parser = Parser(_CS_LANG)
