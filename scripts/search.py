@@ -38,8 +38,8 @@ import urllib.parse
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _root)
 
-from src.query.config import HOST, PORT, API_KEY
-from src.query.cs import symbol_kind_query_by
+from query.config import HOST, PORT, API_KEY
+from query.cs import symbol_kind_query_by
 
 
 def _ts_search(collection: str, params: dict) -> dict:
@@ -66,7 +66,7 @@ def search(query, ext=None, sub=None, limit=10,
            symbols_only=False, implements=False, calls=False,
            uses=False, attrs=False, casts=False, accesses_of=False, collection=None,
            symbol_kind=None, uses_kind=""):
-    from src.query.config import COLLECTION as _DEFAULT_COLLECTION
+    from query.config import COLLECTION as _DEFAULT_COLLECTION
     coll_name = collection or _DEFAULT_COLLECTION
 
     # Determine query_by based on mode

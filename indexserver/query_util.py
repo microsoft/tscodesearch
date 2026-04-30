@@ -43,18 +43,18 @@ import json as _json
 import urllib.request
 import urllib.parse
 
-# Add the tscodesearch root to sys.path so src.query is importable.
+# Add the tscodesearch root to sys.path so query is importable.
 _ts_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ts_root not in sys.path:
     sys.path.insert(0, _ts_root)
 
-from src.query.dispatch import process_any_file, _ALL_EXTS
+from query.dispatch import process_any_file, _ALL_EXTS
 
 
 # ── Typesense file resolver ───────────────────────────────────────────────────
 
 def _ts_search(collection: str, params: dict) -> dict:
-    from src.query.config import HOST, PORT, API_KEY
+    from query.config import HOST, PORT, API_KEY
     qs = urllib.parse.urlencode({k: str(v) for k, v in params.items()})
     url = f"http://{HOST}:{PORT}/collections/{collection}/documents/search?{qs}"
     req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": API_KEY})
@@ -65,7 +65,7 @@ def _ts_search(collection: str, params: dict) -> dict:
 def files_from_search(query, sub=None, ext="cs", limit=50,
                       collection=None, src_root=None, query_by=None):
     """Run a Typesense search and return the local file paths of matching documents."""
-    from src.query.config import COLLECTION, SRC_ROOT, to_native_path
+    from query.config import COLLECTION, SRC_ROOT, to_native_path
     coll_name = collection or COLLECTION
     root = src_root or SRC_ROOT
     src_root_native = to_native_path(root)

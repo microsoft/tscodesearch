@@ -20,7 +20,7 @@ import unittest
 
 from tests.base import _parse
 from tests.fixtures import PARAMS_TARGET
-from src.query.dispatch import q_params
+from query.dispatch import q_params
 
 
 # ══════════════════════════════════════════════════════════════════════════════

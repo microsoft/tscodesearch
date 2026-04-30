@@ -19,7 +19,7 @@ if _root not in sys.path:
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
 
-from src.query.dispatch import (
+from query.dispatch import (
     q_classes, q_methods, q_fields, q_calls, q_implements, q_attrs, q_usings, q_declarations, q_params, q_uses,
     q_casts, q_all_refs, q_accesses_on,
 )

@@ -29,7 +29,7 @@ import os
 import unittest
 
 from tests.base import _parse
-from src.query.dispatch import q_accesses_on
+from query.dispatch import q_accesses_on
 
 _HERE   = os.path.dirname(os.path.abspath(__file__))
 _ROOT   = os.path.dirname(_HERE)

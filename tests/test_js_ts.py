@@ -103,76 +103,76 @@ class TestQueryJs(unittest.TestCase):
         return self.src, self.tree, self.lines
 
     def test_classes_finds_class(self):
-        from src.query.js import js_q_classes
+        from query.js import js_q_classes
         r = js_q_classes(*self._fx())
         self.assertTrue(has(r, "TextProcessor"))
 
     def test_classes_shows_extends(self):
-        from src.query.js import js_q_classes
+        from query.js import js_q_classes
         r = js_q_classes(*self._fx())
         match = next((t for _, t in r if "TextProcessor" in t), None)
         self.assertIsNotNone(match)
         self.assertIn("Processor", match)
 
     def test_methods_finds_function(self):
-        from src.query.js import js_q_methods
+        from query.js import js_q_methods
         r = js_q_methods(*self._fx())
         self.assertTrue(has(r, "createProcessor"))
 
     def test_methods_finds_method(self):
-        from src.query.js import js_q_methods
+        from query.js import js_q_methods
         r = js_q_methods(*self._fx())
         self.assertTrue(has(r, "process"))
 
     def test_calls_finds_function_call(self):
-        from src.query.js import js_q_calls
+        from query.js import js_q_calls
         r = js_q_calls(*self._fx(), "createProcessor")
         self.assertGreater(len(r), 0)
 
     def test_calls_finds_method_call(self):
-        from src.query.js import js_q_calls
+        from query.js import js_q_calls
         r = js_q_calls(*self._fx(), "process")
         self.assertGreater(len(r), 0)
 
     def test_calls_absent_no_match(self):
-        from src.query.js import js_q_calls
+        from query.js import js_q_calls
         r = js_q_calls(*self._fx(), "nonexistentXYZ")
         self.assertEqual(len(r), 0)
 
     def test_implements_finds_extending_class(self):
-        from src.query.js import js_q_implements
+        from query.js import js_q_implements
         r = js_q_implements(*self._fx(), "Processor")
         self.assertGreater(len(r), 0)
         self.assertTrue(has(r, "TextProcessor"))
 
     def test_implements_nonexistent_no_match(self):
-        from src.query.js import js_q_implements
+        from query.js import js_q_implements
         r = js_q_implements(*self._fx(), "INonExistent999")
         self.assertEqual(len(r), 0)
 
     def test_declarations_finds_class(self):
-        from src.query.js import js_q_declarations
+        from query.js import js_q_declarations
         r = js_q_declarations(*self._fx(), "TextProcessor")
         self.assertGreater(len(r), 0)
 
     def test_declarations_finds_function(self):
-        from src.query.js import js_q_declarations
+        from query.js import js_q_declarations
         r = js_q_declarations(*self._fx(), "createProcessor")
         self.assertGreater(len(r), 0)
 
     def test_all_refs_finds_identifier(self):
-        from src.query.js import js_q_all_refs
+        from query.js import js_q_all_refs
         r = js_q_all_refs(*self._fx(), "TextProcessor")
         self.assertGreater(len(r), 0)
 
     def test_imports_found(self):
-        from src.query.js import js_q_imports
+        from query.js import js_q_imports
         r = js_q_imports(*self._fx())
         self.assertGreater(len(r), 0)
         self.assertTrue(any("import" in t for _, t in r))
 
     def test_params_found(self):
-        from src.query.js import js_q_params
+        from query.js import js_q_params
         r = js_q_params(*self._fx(), "createProcessor")
         self.assertGreater(len(r), 0)
 
@@ -226,49 +226,49 @@ class TestQueryTs(unittest.TestCase):
         return self.src, self.tree, self.lines
 
     def test_classes_finds_class(self):
-        from src.query.js import js_q_classes
+        from query.js import js_q_classes
         r = js_q_classes(*self._fx())
         self.assertTrue(has(r, "TextProcessor"))
 
     def test_classes_finds_interface(self):
-        from src.query.js import js_q_classes
+        from query.js import js_q_classes
         r = js_q_classes(*self._fx())
         self.assertTrue(has(r, "IProcessor"))
 
     def test_classes_finds_enum(self):
-        from src.query.js import js_q_classes
+        from query.js import js_q_classes
         r = js_q_classes(*self._fx())
         self.assertTrue(has(r, "ProcessingMode"))
 
     def test_methods_finds_typed_method(self):
-        from src.query.js import js_q_methods
+        from query.js import js_q_methods
         r = js_q_methods(*self._fx())
         self.assertTrue(has(r, "process"))
 
     def test_calls_found(self):
-        from src.query.js import js_q_calls
+        from query.js import js_q_calls
         r = js_q_calls(*self._fx(), "process")
         self.assertGreater(len(r), 0)
 
     def test_implements_finds_extending_class(self):
-        from src.query.js import js_q_implements
+        from query.js import js_q_implements
         r = js_q_implements(*self._fx(), "BaseProcessor")
         self.assertGreater(len(r), 0)
         self.assertTrue(has(r, "TextProcessor"))
 
     def test_attrs_finds_decorator(self):
-        from src.query.js import js_q_attrs
+        from query.js import js_q_attrs
         r = js_q_attrs(*self._fx())
         self.assertGreater(len(r), 0)
         self.assertTrue(any("serializable" in t for _, t in r))
 
     def test_attrs_filtered_by_name(self):
-        from src.query.js import js_q_attrs
+        from query.js import js_q_attrs
         r = js_q_attrs(*self._fx(), "serializable")
         self.assertGreater(len(r), 0)
 
     def test_attrs_filter_no_match(self):
-        from src.query.js import js_q_attrs
+        from query.js import js_q_attrs
         r = js_q_attrs(*self._fx(), "nonexistent_decorator_xyz")
         self.assertEqual(len(r), 0)
 
@@ -288,7 +288,7 @@ class TestProcessJsFile(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, path, mode, mode_arg=None):
-        from src.query.dispatch import process_js_file
+        from query.dispatch import process_js_file
         matches = process_js_file(path=path, mode=mode, mode_arg=mode_arg)
         path_norm = path.replace("\\", "/")
         root_norm = self.tmpdir.replace("\\", "/").rstrip("/")

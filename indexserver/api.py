@@ -298,7 +298,7 @@ _query_module = None
 def _get_query_module():
     global _query_module
     if _query_module is None:
-        import src.query.dispatch as _q  # src/query/dispatch.py — on sys.path via _base above
+        import query.dispatch as _q  # src/query/dispatch.py — on sys.path via _base above
         _query_module = _q
     return _query_module
 
@@ -306,7 +306,7 @@ def _get_query_module():
 def _run_query(mode: str, pattern: str, files: list, include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
     """Run a tree-sitter AST query against a list of absolute file paths.
 
-    Delegates to the process_*_file functions in src.query.dispatch, which
+    Delegates to the process_*_file functions in query.dispatch, which
     handle reading, preprocessing, parsing, and mode dispatch per language.
     Returns a list of {"file": path, "matches": [{"line": N, "text": "..."}]}
     where line is 1-indexed.  Only files with at least one match are included.

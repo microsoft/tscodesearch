@@ -21,7 +21,7 @@ from tests.fixtures import (
     IDENT_BLOBSTORE_MANY_CONTEXTS, IDENT_COMMENT_ONLY, IDENT_STRING_ONLY,
     CALLS_FETCHWIDGET, IMPLEMENTS_IDATASTORE,
 )
-from src.query.dispatch import q_all_refs, q_uses
+from query.dispatch import q_all_refs, q_uses
 
 
 # ══════════════════════════════════════════════════════════════════════════════

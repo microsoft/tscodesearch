@@ -126,40 +126,40 @@ class TestSqlAstHelpers:
         self.src = catalog_bytes
 
     def test_extract_table_names(self):
-        from src.query.sql import extract_table_names
+        from query.sql import extract_table_names
         names = extract_table_names(self.root, self.src)
         assert any("Products" in n for n in names)
         assert any("Orders" in n for n in names)
 
     def test_extract_function_names(self):
-        from src.query.sql import extract_function_names
+        from query.sql import extract_function_names
         names = extract_function_names(self.root, self.src)
         assert any("fn_GetProductCount" in n for n in names)
 
     def test_extract_proc_names_regex(self):
-        from src.query.sql import extract_proc_names_regex
+        from query.sql import extract_proc_names_regex
         names = extract_proc_names_regex(self.src)
         assert any("proc_GetProductById" in n for n in names)
 
     def test_extract_column_info(self):
-        from src.query.sql import extract_column_info
+        from query.sql import extract_column_info
         col_names, col_types = extract_column_info(self.root, self.src)
         assert "ProductId" in col_names
         assert "ProductName" in col_names
 
     def test_extract_column_sigs(self):
-        from src.query.sql import extract_column_sigs
+        from query.sql import extract_column_sigs
         sigs = extract_column_sigs(self.root, self.src)
         assert any("ProductId" in s for s in sigs), f"ProductId not in sigs: {sigs}"
         assert any("UNIQUEIDENTIFIER" in s.upper() for s in sigs), f"Type missing: {sigs}"
 
     def test_object_name_helper(self):
-        from src.query.sql import _object_name, _find_all
+        from query.sql import _object_name, _find_all
         refs = _find_all(self.root, lambda n: n.type == "object_reference")
         refs_found = [r for r in refs if _object_name(r, self.src) == "Products"]
         assert len(refs_found) > 0
 
     def test_extract_referenced_tables(self):
-        from src.query.sql import extract_referenced_tables
+        from query.sql import extract_referenced_tables
         names = extract_referenced_tables(self.root, self.src)
         assert any("Products" in n for n in names)

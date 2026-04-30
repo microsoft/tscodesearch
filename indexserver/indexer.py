@@ -64,7 +64,7 @@ from indexserver.config import (
     INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES,
     collection_for_root,
 )
-from src.query.cs import (
+from query.cs import (
     _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _find_all, _text, _unqualify, _unqualify_type,
     _base_type_names, _collect_ctor_names,
 )
@@ -555,7 +555,7 @@ def extract_rust_metadata(src_bytes: bytes) -> dict:
     except Exception:
         return _empty
 
-    from src.query.rust import (
+    from query.rust import (
         _find_all as _rfa, _text as _rt,
         _TYPE_DECL_NODES as _RUST_TYPE_NODES,
         _fn_name as _rfn_name, _type_name as _rtype_name,
@@ -648,7 +648,7 @@ def extract_js_metadata(src_bytes: bytes, parser=None) -> dict:
     except Exception:
         return _empty
 
-    from src.query.js import (
+    from query.js import (
         _find_all as _jfa, _text as _jt,
         _class_bases, _fn_name_from_node, _fn_sig as _jfn_sig,
     )
@@ -733,7 +733,7 @@ def extract_ts_metadata(src_bytes: bytes, parser=None) -> dict:
     meta = extract_js_metadata(src_bytes, parser=_parser)
 
     # Extra: decorators → attr_names
-    from src.query.js import _find_all as _jfa, _text as _jt
+    from query.js import _find_all as _jfa, _text as _jt
     try:
         tree = _parser.parse(src_bytes)
     except Exception:
@@ -772,7 +772,7 @@ def extract_cpp_metadata(src_bytes: bytes) -> dict:
     except Exception:
         return _empty
 
-    from src.query.cpp import (
+    from query.cpp import (
         _find_all as _cfa, _text as _ct,
         _TYPE_DECL_NODES as _CPP_TYPE_NODES,
         _class_name as _cclass_name, _base_class_names,
@@ -798,7 +798,7 @@ def extract_cpp_metadata(src_bytes: bytes) -> dict:
             member_sigs.append(_cfn_sig(node, src_bytes))
 
     # Member function declarations in class bodies (pure virtual, prototypes)
-    from src.query.cpp import _member_fn_name as _cmfn_name, _member_fn_sig as _cmfn_sig
+    from query.cpp import _member_fn_name as _cmfn_name, _member_fn_sig as _cmfn_sig
     for node in _cfa(root, lambda n: n.type == "field_declaration"):
         name = _cmfn_name(node, src_bytes)
         if name:
@@ -864,7 +864,7 @@ def extract_sql_metadata(src_bytes: bytes) -> dict:
         "local_types": [], "member_accesses": [],
     }
 
-    from src.query.sql import (
+    from query.sql import (
         extract_table_names, extract_function_names,
         extract_proc_names_ast, extract_proc_sigs, extract_proc_body_refs,
         extract_proc_names_regex, extract_column_info,

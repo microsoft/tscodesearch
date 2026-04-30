@@ -22,7 +22,7 @@ from tests.helpers import (
 )
 from indexserver.api import _run_query
 from indexserver.indexer import extract_cs_metadata
-import src.query.dispatch as _q
+import query.dispatch as _q
 
 
 class TestQueryCs(unittest.TestCase):

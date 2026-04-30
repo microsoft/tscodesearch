@@ -21,7 +21,7 @@ import os
 import unittest
 
 from tests.base import _parse
-from src.query.dispatch import q_uses
+from query.dispatch import q_uses
 
 _HERE   = os.path.dirname(os.path.abspath(__file__))
 _ROOT   = os.path.dirname(_HERE)

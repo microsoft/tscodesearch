@@ -26,7 +26,7 @@ import os
 import unittest
 
 from tests.base import _parse
-from src.query.dispatch import (
+from query.dispatch import (
     q_declarations,
     q_implements,
     q_calls,
