@@ -366,6 +366,8 @@ def _resolve_query_paths(raw_files: list) -> list[Path]:
 
 # ── Mode mapping: extension mode key → (Typesense mode flag, AST mode) ─────────
 
+_QUERY_CODEBASE_MAX_LIMIT = 250
+
 _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
     # Primary modes
     "text":            ("text",       "all_refs"),
@@ -594,7 +596,14 @@ class _Handler(BaseHTTPRequestHandler):
             sub          = body.get("sub", "") or None
             ext          = body.get("ext", "") or None
             root         = body.get("root", "")
-            limit        = int(body.get("limit", 50))
+            try:
+                limit = int(body.get("limit", 50))
+            except (TypeError, ValueError):
+                self._send_json(400, {"error": "limit must be an integer"})
+                return
+            if not (1 <= limit <= _QUERY_CODEBASE_MAX_LIMIT):
+                self._send_json(400, {"error": f"limit must be between 1 and {_QUERY_CODEBASE_MAX_LIMIT}"})
+                return
             include_body = bool(body.get("include_body", False))
             symbol_kind  = str(body.get("symbol_kind", "") or "")
             uses_kind    = str(body.get("uses_kind", "") or "")
