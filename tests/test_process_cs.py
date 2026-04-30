@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
@@ -276,19 +277,19 @@ class TestQueryApi(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmpdir = tempfile.mkdtemp(prefix="ts_qapi_test_")
-        cls.foo_path = os.path.join(cls.tmpdir, "Foo.cs")
-        cls.bar_path = os.path.join(cls.tmpdir, "Bar.cs")
-        cls.blob_path = os.path.join(cls.tmpdir, "BlobStore.cs")
-        cls.generic_path = os.path.join(cls.tmpdir, "GenericWrapper.cs")
+        tmpdir = Path(tempfile.mkdtemp(prefix="ts_qapi_test_"))
+        cls.tmpdir = tmpdir
+        cls.foo_path = tmpdir / "Foo.cs"
+        cls.bar_path = tmpdir / "Bar.cs"
+        cls.blob_path = tmpdir / "BlobStore.cs"
+        cls.generic_path = tmpdir / "GenericWrapper.cs"
         for path, src in [
             (cls.foo_path, _FOO_CS),
             (cls.bar_path, _BAR_CS),
             (cls.blob_path, _BLOBSTORE_CS),
             (cls.generic_path, _GENERIC_WRAPPER_CS),
         ]:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(src)
+            path.write_text(src, encoding="utf-8")
     @classmethod
     def tearDownClass(cls):
         import shutil
@@ -326,9 +327,9 @@ class TestQueryApi(unittest.TestCase):
             self.assertGreaterEqual(m["line"], 1)
 
     def test_original_path_preserved(self):
-        """File path in result must match exactly what was passed in."""
+        """File path in result is the resolved string form of the input Path."""
         result = _run_query("all_refs", "IBlobStore", [self.generic_path])
-        self.assertEqual(result[0]["file"], self.generic_path)
+        self.assertEqual(result[0]["file"], str(self.generic_path.resolve()))
 
     # ── ident mode vs direct call ──────────────────────────────────────────────
 
@@ -419,15 +420,15 @@ class TestQueryApi(unittest.TestCase):
         result = _run_query("all_refs", "IBlobStore",
                             [self.generic_path, self.blob_path])
         paths = [r["file"] for r in result]
-        self.assertIn(self.generic_path, paths)
-        self.assertIn(self.blob_path, paths)
+        self.assertIn(str(self.generic_path.resolve()), paths)
+        self.assertIn(str(self.blob_path.resolve()), paths)
 
     def test_multiple_files_only_matching_files_in_result(self):
         result = _run_query("all_refs", "IBlobStore",
                             [self.foo_path, self.generic_path])
         paths = [r["file"] for r in result]
-        self.assertNotIn(self.foo_path, paths)  # Foo.cs has no IBlobStore
-        self.assertIn(self.generic_path, paths)
+        self.assertNotIn(str(self.foo_path.resolve()), paths)  # Foo.cs has no IBlobStore
+        self.assertIn(str(self.generic_path.resolve()), paths)
 
     # ── error handling ────────────────────────────────────────────────────────
 
@@ -438,14 +439,14 @@ class TestQueryApi(unittest.TestCase):
 
     def test_missing_file_is_silently_skipped(self):
         result = _run_query("all_refs", "IBlobStore",
-                            ["/tmp/does_not_exist_999.cs"])
+                            [Path("/tmp/does_not_exist_999.cs")])
         self.assertEqual(result, [])
 
     def test_missing_file_does_not_prevent_other_results(self):
         result = _run_query("all_refs", "IBlobStore",
-                            ["/tmp/does_not_exist_999.cs", self.generic_path])
+                            [Path("/tmp/does_not_exist_999.cs"), self.generic_path])
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["file"], self.generic_path)
+        self.assertEqual(result[0]["file"], str(self.generic_path.resolve()))
 
 
 if __name__ == "__main__":

@@ -303,23 +303,22 @@ def _get_query_module():
     return _query_module
 
 
-def _run_query(mode: str, pattern: str, files: list, include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
-    """Run a tree-sitter AST query against a list of normalized absolute file paths.
+def _run_query(mode: str, pattern: str, files: list[Path], include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
+    """Run a tree-sitter AST query against a list of normalized absolute Path objects.
 
-    Callers are responsible for normalizing paths with os.path.realpath and
-    verifying they fall under a configured root before passing them here.
+    Callers are responsible for resolving paths and verifying they fall under a
+    configured root before passing them here.
 
-    Returns a list of {"file": path, "matches": [{"line": N, "text": "..."}]}
+    Returns a list of {"file": str, "matches": [{"line": N, "text": "..."}]}
     where line is 1-indexed.  Only files with at least one match are included.
     """
     _q = _get_query_module()
     results = []
     for path in files:
-        native = os.path.realpath(path)
-        ext = os.path.splitext(native)[1].lower()
+        native = path.resolve()
+        ext = native.suffix.lower()
         try:
-            with open(native, "rb") as _f:
-                src_bytes = _f.read()
+            src_bytes = native.read_bytes()
         except OSError as e:
             print(f"ERROR reading {native}: {e}", file=sys.stderr)
             continue
@@ -328,22 +327,22 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
                                 symbol_kind=symbol_kind,
                                 uses_kind=uses_kind)
         if matches:
-            results.append({"file": native, "matches": matches})
+            results.append({"file": str(native), "matches": matches})
     return results
 
 
-def _resolve_query_paths(raw_files: list) -> list[str]:
+def _resolve_query_paths(raw_files: list) -> list[Path]:
     """Translate and validate a list of raw file paths from a client request.
 
     1. Translates Windows host paths to native paths via HOST_ROOTS → ROOTS.
-    2. Normalizes each path with os.path.realpath.
-    3. Rejects any path that doesn't start with a configured root.
+    2. Normalizes each path with Path.resolve().
+    3. Rejects any path that isn't relative to a configured root.
 
-    Returns the list of safe, normalized absolute paths.
+    Returns the list of safe, resolved Path objects.
     Raises ValueError if any path falls outside every configured root.
     """
-    allowed_roots = [os.path.realpath(to_native_path(r)) for r in ROOTS.values() if r]
-    safe: list[str] = []
+    allowed_roots = [Path(os.path.realpath(to_native_path(r))) for r in ROOTS.values() if r]
+    safe: list[Path] = []
     for file_path in raw_files:
         # Translate Windows host path (e.g. C:/myproject/src/Foo.cs) to the
         # server-local path (/mnt/c/myproject/src/Foo.cs) using HOST_ROOTS → ROOTS.
@@ -355,10 +354,10 @@ def _resolve_query_paths(raw_files: list) -> list[str]:
                 resolved = ROOTS[name].rstrip("/") + rel
                 break
         native = Path(os.path.realpath(to_native_path(resolved)))
-        # Guard: normalized path must be relative to a known configured root.
+        # Guard: resolved path must be relative to a known configured root.
         for r in allowed_roots:
             if native.is_relative_to(r):
-                safe.append(str(native))
+                safe.append(native)
                 break
         else:
             raise ValueError(f"path not under a configured root: {file_path!r}")
@@ -669,9 +668,9 @@ class _Handler(BaseHTTPRequestHandler):
             pending_hits  = hits[limit:]
 
             # Resolve absolute paths for AST-eligible files
-            file_list: list[str] = []
+            file_list: list[Path] = []
             hit_by_path: dict[str, dict] = {}
-            native_src_root = os.path.realpath(to_native_path(src_root))
+            native_src_root = Path(os.path.realpath(to_native_path(src_root)))
             for hit in ast_hits:
                 rel = hit["document"].get("relative_path", "").replace("\\", "/")
                 # Strip the Windows host_root prefix (e.g. "C:/repos/src/Foo.cs" →
@@ -679,15 +678,15 @@ class _Handler(BaseHTTPRequestHandler):
                 # Without this, Docker produces "/source/default/C:/repos/src/Foo.cs".
                 if host_root_prefix and rel.lower().startswith(host_root_prefix.lower() + "/"):
                     rel = rel[len(host_root_prefix) + 1:]
-                abs_path = os.path.realpath(to_native_path(
+                abs_path = Path(os.path.realpath(to_native_path(
                     src_root.rstrip("/\\") + "/" + rel
-                ))
+                )))
                 # Ensure the resolved path is actually under src_root (prevents traversal).
-                if not Path(abs_path).is_relative_to(native_src_root):
+                if not abs_path.is_relative_to(native_src_root):
                     continue
-                if os.path.isfile(abs_path):
+                if abs_path.is_file():
                     file_list.append(abs_path)
-                    hit_by_path[abs_path] = hit
+                    hit_by_path[str(abs_path)] = hit
 
             # Run AST query on eligible files
             ast_results = _run_query(ast_mode, pattern, file_list, include_body=include_body, symbol_kind=symbol_kind, uses_kind=uses_kind)

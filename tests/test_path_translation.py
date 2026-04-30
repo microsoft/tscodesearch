@@ -33,6 +33,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -196,7 +197,7 @@ class TestParseRoots(unittest.TestCase):
 class TestRunQueryPathResolution(unittest.TestCase):
     """_resolve_query_paths() translates and validates paths from client requests."""
 
-    def _resolve(self, file_path: str, host_roots: dict, roots: dict) -> list[str]:
+    def _resolve(self, file_path: str, host_roots: dict, roots: dict) -> list[Path]:
         """Call _resolve_query_paths with patched HOST_ROOTS/ROOTS."""
         import indexserver.api as _api
         with patch.dict("indexserver.api.HOST_ROOTS", host_roots, clear=True), \
@@ -210,7 +211,7 @@ class TestRunQueryPathResolution(unittest.TestCase):
             host_roots={"default": "C:/repos/src"},
             roots={"default": "/source/default"},
         )
-        self.assertEqual(result, ["/source/default/Widget.cs"])
+        self.assertEqual(result, [Path("/source/default/Widget.cs")])
 
     def test_docker_subdir_path(self):
         result = self._resolve(
@@ -218,7 +219,7 @@ class TestRunQueryPathResolution(unittest.TestCase):
             host_roots={"default": "C:/repos/src"},
             roots={"default": "/source/default"},
         )
-        self.assertEqual(result, ["/source/default/services/Widget.cs"])
+        self.assertEqual(result, [Path("/source/default/services/Widget.cs")])
 
     def test_wsl_windows_to_mnt_path(self):
         """C:/repos/src/Widget.cs → /mnt/c/repos/src/Widget.cs in WSL."""
@@ -227,7 +228,7 @@ class TestRunQueryPathResolution(unittest.TestCase):
             host_roots={"default": "C:/repos/src"},
             roots={"default": "/mnt/c/repos/src"},
         )
-        self.assertEqual(result, ["/mnt/c/repos/src/Widget.cs"])
+        self.assertEqual(result, [Path("/mnt/c/repos/src/Widget.cs")])
 
     def test_case_insensitive_host_root_matching(self):
         """HOST_ROOT matching is case-insensitive (Windows FS)."""
@@ -237,7 +238,7 @@ class TestRunQueryPathResolution(unittest.TestCase):
             roots={"default": "/source/default"},
         )
         self.assertEqual(len(result), 1)
-        self.assertIn("Widget.cs", result[0])
+        self.assertIn("Widget.cs", result[0].name)
 
     def test_path_outside_root_raises(self):
         """A path not under any configured root raises ValueError."""
@@ -258,10 +259,10 @@ class TestRunQueryPathResolution(unittest.TestCase):
             tmp_path = f.name
 
         try:
-            native_path = tmp_path.replace("\\", "/")
+            native_path = Path(tmp_path)
             results = _api._run_query("classes", "", [native_path])
             for r in results:
-                self.assertEqual(r["file"], native_path)
+                self.assertEqual(r["file"], str(native_path.resolve()))
         finally:
             os.unlink(tmp_path)
 
