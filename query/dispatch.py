@@ -8,6 +8,7 @@ For the CLI entry point see indexserver/query_util.py.
 import os
 import re
 import sys
+from dataclasses import dataclass, field as dc_field
 
 # ── C# preprocessor normaliser ────────────────────────────────────────────────
 
@@ -74,6 +75,7 @@ from .cs import (
     q_classes, q_methods, q_fields, q_calls, q_accesses_of, q_implements,
     q_uses, q_attrs, q_usings, q_declarations, q_params, q_casts,
     q_accesses_on, q_all_refs,
+    _q_classes_data, _q_methods_data, _q_fields_data, _q_usings_data, _q_attrs_data,
 )
 
 import tree_sitter_python as tspython
@@ -84,6 +86,7 @@ from .py import (
     EXTENSIONS as PY_EXTENSIONS,
     py_q_classes, py_q_methods, py_q_calls, py_q_implements, py_q_ident,
     py_q_declarations, py_q_decorators, py_q_imports, py_q_params,
+    _py_q_classes_data, _py_q_methods_data, _py_q_attrs_data, _py_q_imports_data,
 )
 
 import tree_sitter_rust as tsrust
@@ -94,6 +97,7 @@ from .rust import (
     EXTENSIONS as RUST_EXTENSIONS,
     rust_q_classes, rust_q_methods, rust_q_calls, rust_q_implements,
     rust_q_declarations, rust_q_all_refs, rust_q_imports, rust_q_params,
+    _rust_q_classes_data, _rust_q_methods_data,
 )
 
 import tree_sitter_javascript as tsjs
@@ -112,6 +116,7 @@ from .js import (
     TSX_EXTENSIONS as JS_TSX_EXTENSIONS,
     js_q_classes, js_q_methods, js_q_calls, js_q_implements,
     js_q_declarations, js_q_all_refs, js_q_imports, js_q_params, js_q_attrs,
+    _js_q_classes_data, _js_q_methods_data, _js_q_imports_data,
 )
 
 import tree_sitter_cpp as tscpp
@@ -122,6 +127,7 @@ from .cpp import (
     EXTENSIONS as CPP_EXTENSIONS,
     cpp_q_classes, cpp_q_methods, cpp_q_calls, cpp_q_implements,
     cpp_q_declarations, cpp_q_all_refs, cpp_q_includes, cpp_q_params,
+    _cpp_q_classes_data, _cpp_q_methods_data,
 )
 
 from .sql import (
@@ -392,3 +398,100 @@ def process_any_file(path, mode, mode_arg, include_body=False, symbol_kind=None,
 
 
 _ALL_EXTS = set(_EXT_TO_PROCESSOR.keys())
+
+
+# ── FileDescription ───────────────────────────────────────────────────────────
+
+@dataclass
+class FileDescription:
+    """All structured data extracted from a source file in a single parse."""
+    path: str
+    language: str
+    classes: list = dc_field(default_factory=list)
+    methods: list = dc_field(default_factory=list)
+    fields: list  = dc_field(default_factory=list)
+    imports: list = dc_field(default_factory=list)
+    attrs: list   = dc_field(default_factory=list)
+
+
+def describe_file(path: str) -> FileDescription:
+    """Parse path once and return all structured data as a FileDescription."""
+    ext = os.path.splitext(path)[1].lower()
+
+    try:
+        with open(path, "rb") as f:
+            src_bytes = f.read()
+    except OSError as e:
+        print(f"ERROR reading {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="unknown")
+
+    if ext in CS_EXTENSIONS:
+        src_bytes = _strip_else_branches(src_bytes)
+        try:
+            tree = _parser.parse(src_bytes)
+        except Exception as e:
+            print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+            return FileDescription(path=path, language="cs")
+        return FileDescription(
+            path=path, language="cs",
+            classes=_q_classes_data(src_bytes, tree),
+            methods=_q_methods_data(src_bytes, tree),
+            fields=_q_fields_data(src_bytes, tree),
+            imports=_q_usings_data(src_bytes, tree),
+            attrs=_q_attrs_data(src_bytes, tree),
+        )
+
+    if ext in PY_EXTENSIONS:
+        try:
+            tree = _py_parser.parse(src_bytes)
+        except Exception as e:
+            print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+            return FileDescription(path=path, language="py")
+        return FileDescription(
+            path=path, language="py",
+            classes=_py_q_classes_data(src_bytes, tree),
+            methods=_py_q_methods_data(src_bytes, tree),
+            imports=_py_q_imports_data(src_bytes, tree),
+            attrs=_py_q_attrs_data(src_bytes, tree),
+        )
+
+    if ext in JS_EXTENSIONS:
+        parser = _tsx_parser if ext in JS_TSX_EXTENSIONS else (
+            _ts_parser if ext in JS_TS_EXTENSIONS else _js_parser)
+        try:
+            tree = parser.parse(src_bytes)
+        except Exception as e:
+            print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+            return FileDescription(path=path, language="js")
+        return FileDescription(
+            path=path, language="js",
+            classes=_js_q_classes_data(src_bytes, tree),
+            methods=_js_q_methods_data(src_bytes, tree),
+            imports=_js_q_imports_data(src_bytes, tree),
+        )
+
+    if ext in RUST_EXTENSIONS:
+        try:
+            tree = _rust_parser.parse(src_bytes)
+        except Exception as e:
+            print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+            return FileDescription(path=path, language="rust")
+        return FileDescription(
+            path=path, language="rust",
+            classes=_rust_q_classes_data(src_bytes, tree),
+            methods=_rust_q_methods_data(src_bytes, tree),
+        )
+
+    if ext in CPP_EXTENSIONS:
+        try:
+            tree = _cpp_parser.parse(src_bytes)
+        except Exception as e:
+            print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+            return FileDescription(path=path, language="cpp")
+        return FileDescription(
+            path=path, language="cpp",
+            classes=_cpp_q_classes_data(src_bytes, tree),
+            methods=_cpp_q_methods_data(src_bytes, tree),
+        )
+
+    return FileDescription(path=path, language="unknown")
