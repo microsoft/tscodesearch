@@ -46,7 +46,7 @@ _ts_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ts_root not in sys.path:
     sys.path.insert(0, _ts_root)
 
-from query.dispatch import query_file, _ALL_EXTS
+from query.dispatch import query_file, ALL_EXTS
 
 
 # ── Filesystem helpers ────────────────────────────────────────────────────────
@@ -258,7 +258,7 @@ def main():
             print("No matching files found in index.", file=sys.stderr)
             sys.exit(1)
     else:
-        files = expand_files(args.files, exts=_ALL_EXTS)
+        files = expand_files(args.files, exts=ALL_EXTS)
         if not files:
             print(f"No supported files found: {' '.join(args.files)}", file=sys.stderr)
             sys.exit(1)
