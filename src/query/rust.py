@@ -15,6 +15,7 @@ Modes:
 EXTENSIONS = frozenset({".rs"})
 
 import sys
+from dataclasses import dataclass
 import tree_sitter_rust as tsrust
 
 
@@ -129,35 +130,58 @@ def _fn_sig(node, src: bytes) -> str:
     return f"fn {name}({params_txt}){ret}"
 
 
-# ── Query functions ───────────────────────────────────────────────────────────
+# ── Dataclasses ───────────────────────────────────────────────────────────────
 
-def rust_q_classes(src, tree, lines):
-    """List struct/enum/trait/type declarations."""
+@dataclass
+class RustClassInfo:
+    line: int
+    name: str
+    kind: str
+
+    @property
+    def text(self) -> str:
+        return f"[{self.kind}] {self.name}"
+
+
+@dataclass
+class RustMethodInfo:
+    line: int
+    name: str
+    kind: str
+    sig: str
+    impl_type: str = ""
+
+    @property
+    def text(self) -> str:
+        prefix = f"[in {self.impl_type}] " if self.impl_type else ""
+        return f"[{self.kind}] {prefix}{self.sig}"
+
+
+# ── Data extraction functions ──────────────────────────────────────────────────
+
+def _rust_q_classes_data(src, tree) -> list:
+    """Return list[RustClassInfo] for all struct/enum/trait/type declarations."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
         name = _type_name(node, src)
         if not name:
             continue
         kind = node.type.replace("_item", "")
-        results.append((_line(node), f"[{kind}] {name}"))
-
-    # Also list traits as "base types" of impl blocks
+        results.append(RustClassInfo(line=_line(node), name=name, kind=kind))
     return results
 
 
-def rust_q_methods(src, tree, lines):
-    """List function items and methods inside impl blocks."""
+def _rust_q_methods_data(src, tree) -> list:
+    """Return list[RustMethodInfo] for all function items and impl methods."""
     results = []
     seen = set()
 
-    # Top-level functions
     for node in _find_all(tree.root_node, lambda n: n.type == "function_item"):
         sig = _fn_sig(node, src)
         ln = _line(node)
         key = (ln, sig)
         if key not in seen:
             seen.add(key)
-            # Check if inside impl
             p = node.parent
             in_impl = False
             impl_type = ""
@@ -167,10 +191,23 @@ def rust_q_methods(src, tree, lines):
                     impl_type = _impl_type_name(p, src)
                     break
                 p = p.parent
-            prefix = f"[in {impl_type}] " if impl_type else ""
             kind = "method" if in_impl else "fn"
-            results.append((ln, f"[{kind}] {prefix}{sig}"))
+            name = _fn_name(node, src) or ""
+            results.append(RustMethodInfo(line=ln, name=name, kind=kind,
+                                           sig=sig, impl_type=impl_type))
     return results
+
+
+# ── Query functions ───────────────────────────────────────────────────────────
+
+def rust_q_classes(src, tree, lines):
+    """List struct/enum/trait/type declarations."""
+    return [(_r.line, _r.text) for _r in _rust_q_classes_data(src, tree)]
+
+
+def rust_q_methods(src, tree, lines):
+    """List function items and methods inside impl blocks."""
+    return [(_r.line, _r.text) for _r in _rust_q_methods_data(src, tree)]
 
 
 def rust_q_calls(src, tree, lines, func_name):

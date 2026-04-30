@@ -15,6 +15,7 @@ Modes:
 EXTENSIONS = frozenset({".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"})
 
 import sys
+from dataclasses import dataclass
 import tree_sitter_cpp as tscpp
 
 
@@ -217,10 +218,39 @@ def _fn_sig(node, src: bytes) -> str:
     return f"{ret_txt} {name}{params_txt}".strip()
 
 
-# ── Query functions ───────────────────────────────────────────────────────────
+# ── Dataclasses ───────────────────────────────────────────────────────────────
 
-def cpp_q_classes(src, tree, lines):
-    """List class/struct/union/enum declarations."""
+@dataclass
+class CppClassInfo:
+    line: int
+    name: str
+    kind: str
+    bases: list
+
+    @property
+    def text(self) -> str:
+        suffix = f" : {', '.join(self.bases)}" if self.bases else ""
+        return f"[{self.kind}] {self.name}{suffix}"
+
+
+@dataclass
+class CppMethodInfo:
+    line: int
+    name: str
+    kind: str          # "function" | "method"
+    sig: str
+    cls_name: str = ""
+
+    @property
+    def text(self) -> str:
+        prefix = f"[in {self.cls_name}] " if self.cls_name else ""
+        return f"[{self.kind}] {prefix}{self.sig}"
+
+
+# ── Data extraction functions ──────────────────────────────────────────────────
+
+def _cpp_q_classes_data(src, tree) -> list:
+    """Return list[CppClassInfo] for all class/struct/union/enum declarations."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
         name = _class_name(node, src)
@@ -228,13 +258,12 @@ def cpp_q_classes(src, tree, lines):
             continue
         kind = node.type.replace("_specifier", "").replace("_", " ")
         bases = _base_class_names(node, src)
-        suffix = f" : {', '.join(bases)}" if bases else ""
-        results.append((_line(node), f"[{kind}] {name}{suffix}"))
+        results.append(CppClassInfo(line=_line(node), name=name, kind=kind, bases=bases))
     return results
 
 
-def cpp_q_methods(src, tree, lines):
-    """List function definitions and member function declarations."""
+def _cpp_q_methods_data(src, tree) -> list:
+    """Return list[CppMethodInfo] for all function definitions and member declarations."""
     results = []
 
     def _enclosing_class(node):
@@ -250,17 +279,14 @@ def cpp_q_methods(src, tree, lines):
         if not name:
             continue
         sig = _fn_sig(node, src)
-        cls_name = _enclosing_class(node)
-        prefix = f"[in {cls_name}] " if cls_name else ""
-        kind = "method" if cls_name else "function"
-        results.append((_line(node), f"[{kind}] {prefix}{sig}"))
+        cls = _enclosing_class(node)
+        kind = "method" if cls else "function"
+        results.append(CppMethodInfo(line=_line(node), name=name, kind=kind,
+                                     sig=sig, cls_name=cls))
 
-    # Trailing-return-type free-function prototypes: `auto foo() -> T;`
-    # These are `declaration` nodes (not `function_declaration`) because tree-sitter
-    # treats `auto` as the placeholder type.
     for node in _find_all(tree.root_node, lambda n: n.type == "declaration"):
         if _enclosing_class(node):
-            continue  # member declarations handled via field_declaration below
+            continue
         fn_decl = next(
             (c for c in node.children if c.type == "function_declarator"), None
         )
@@ -271,20 +297,32 @@ def cpp_q_methods(src, tree, lines):
         if not name:
             continue
         sig = _text(node, src).rstrip(";").strip()
-        results.append((_line(node), f"[function] {sig}"))
+        results.append(CppMethodInfo(line=_line(node), name=name, kind="function",
+                                     sig=sig, cls_name=""))
 
-    # Also include member function declarations (pure virtual, prototypes)
     for node in _find_all(tree.root_node, lambda n: n.type == "field_declaration"):
         name = _member_fn_name(node, src)
         if not name:
             continue
         sig = _member_fn_sig(node, src)
-        cls_name = _enclosing_class(node)
-        prefix = f"[in {cls_name}] " if cls_name else ""
-        results.append((_line(node), f"[method] {prefix}{sig}"))
+        cls = _enclosing_class(node)
+        results.append(CppMethodInfo(line=_line(node), name=name, kind="method",
+                                     sig=sig, cls_name=cls))
 
-    results.sort(key=lambda r: r[0])
+    results.sort(key=lambda r: r.line)
     return results
+
+
+# ── Query functions ───────────────────────────────────────────────────────────
+
+def cpp_q_classes(src, tree, lines):
+    """List class/struct/union/enum declarations."""
+    return [(_r.line, _r.text) for _r in _cpp_q_classes_data(src, tree)]
+
+
+def cpp_q_methods(src, tree, lines):
+    """List function definitions and member function declarations."""
+    return [(_r.line, _r.text) for _r in _cpp_q_methods_data(src, tree)]
 
 
 def cpp_q_calls(src, tree, lines, func_name):

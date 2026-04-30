@@ -20,8 +20,44 @@ TS_EXTENSIONS = frozenset({".ts", ".tsx"})
 TSX_EXTENSIONS = frozenset({".tsx"})
 
 import sys
+from dataclasses import dataclass
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
+
+# ── Dataclasses ───────────────────────────────────────────────────────────────
+
+@dataclass
+class JsClassInfo:
+    line: int
+    name: str
+    kind: str
+    bases: list
+
+    @property
+    def text(self) -> str:
+        suffix = f" : {', '.join(self.bases)}" if self.bases else ""
+        return f"[{self.kind}] {self.name}{suffix}"
+
+
+@dataclass
+class JsMethodInfo:
+    line: int
+    name: str
+    kind: str          # "function" | "method"
+    sig: str
+    cls_name: str = ""
+
+    @property
+    def text(self) -> str:
+        prefix = f"[in {self.cls_name}] " if self.cls_name else ""
+        return f"[{self.kind}] {prefix}{self.sig}"
+
+
+@dataclass
+class JsImportInfo:
+    line: int
+    text: str
+    module: str
 
 # ── Inlined from src/ast/js.py ───────────────────────────────────────────────
 
@@ -117,7 +153,7 @@ def _fn_sig(node, src: bytes) -> str:
 # ── Data extraction functions ─────────────────────────────────────────────────
 
 def _js_q_classes_data(src, tree) -> list:
-    """Return list of dicts: {line, text, name, bases}."""
+    """Return list[JsClassInfo] for all class/interface/enum declarations."""
     results = []
     type_nodes = {
         "class_declaration", "abstract_class_declaration",
@@ -133,18 +169,12 @@ def _js_q_classes_data(src, tree) -> list:
                  .replace("_alias", " alias")
                  .replace("abstract_", "abstract "))
         bases = _class_bases(node, src)
-        suffix = f" : {', '.join(bases)}" if bases else ""
-        results.append({
-            "line":  _line(node),
-            "text":  f"[{kind}] {name}{suffix}",
-            "name":  name,
-            "bases": bases,
-        })
+        results.append(JsClassInfo(line=_line(node), name=name, kind=kind, bases=bases))
     return results
 
 
 def _js_q_methods_data(src, tree) -> list:
-    """Return list of dicts: {line, text, kind, name, sig}."""
+    """Return list[JsMethodInfo] for all function/method definitions."""
     results = []
     fn_types = {
         "function_declaration", "generator_function_declaration",
@@ -155,7 +185,7 @@ def _js_q_methods_data(src, tree) -> list:
         if not sig:
             continue
         kind = "method" if node.type == "method_definition" else "function"
-        name = _fn_name_from_node(node, src)
+        name = _fn_name_from_node(node, src) or ""
         p    = node.parent
         cls_name = ""
         while p:
@@ -165,14 +195,8 @@ def _js_q_methods_data(src, tree) -> list:
                     cls_name = _text(nn, src).strip()
                 break
             p = p.parent
-        prefix = f"[in {cls_name}] " if cls_name else ""
-        results.append({
-            "line": _line(node),
-            "text": f"[{kind}] {prefix}{sig}",
-            "kind": kind,
-            "name": name,
-            "sig":  sig,
-        })
+        results.append(JsMethodInfo(line=_line(node), name=name, kind=kind,
+                                    sig=sig, cls_name=cls_name))
     return results
 
 
@@ -192,7 +216,7 @@ def _js_q_all_call_sites_data(src, tree) -> list:
 
 
 def _js_q_imports_data(src, tree) -> list:
-    """Return list of dicts: {line, text, module}."""
+    """Return list[JsImportInfo] for all import statements."""
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("import_statement", "import_declaration")):
@@ -202,7 +226,7 @@ def _js_q_imports_data(src, tree) -> list:
         if src_node:
             raw = _text(src_node, src).strip().strip("'\"")
             module = raw.lstrip("./").split("/")[0]
-        results.append({"line": _line(node), "text": full, "module": module})
+        results.append(JsImportInfo(line=_line(node), text=full, module=module))
     return results
 
 
@@ -210,12 +234,12 @@ def _js_q_imports_data(src, tree) -> list:
 
 def js_q_classes(src, tree, lines):
     """List class / interface / enum declarations."""
-    return [(_r["line"], _r["text"]) for _r in _js_q_classes_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _js_q_classes_data(src, tree)]
 
 
 def js_q_methods(src, tree, lines):
     """List function declarations and class method definitions."""
-    return [(_r["line"], _r["text"]) for _r in _js_q_methods_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _js_q_methods_data(src, tree)]
 
 
 def js_q_calls(src, tree, lines, func_name):
@@ -344,7 +368,7 @@ def js_q_all_refs(src, tree, lines, name):
 
 def js_q_imports(src, tree, lines):
     """List import statements."""
-    return [(_r["line"], _r["text"]) for _r in _js_q_imports_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _js_q_imports_data(src, tree)]
 
 
 def js_q_params(src, tree, lines, func_name):

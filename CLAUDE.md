@@ -1,5 +1,11 @@
 # codesearch — developer notes for Claude
 
+## CRITICAL: no worktrees, no subagents — work serially
+
+**Never use git worktrees or spawn subagents** when working in this repository.
+Make all edits directly in the main working directory (`C:\repos\tscodesearch`).
+Work step by step so the user can see what is happening at each stage.
+
 ## Running tests
 
 WSL tests are **non-destructive** — they start an isolated Typesense on port 18108

@@ -7,9 +7,59 @@ All public functions are re-exported from query.py for backward compatibility.
 EXTENSIONS = frozenset({".py"})
 
 import sys
+from dataclasses import dataclass, field as dc_field
 import tree_sitter_python as tspython
 
 from .cs import _find_all, _text
+
+# ── Dataclasses ───────────────────────────────────────────────────────────────
+
+@dataclass
+class PyClassInfo:
+    line: int
+    name: str
+    bases: list
+
+    @property
+    def text(self) -> str:
+        suffix = f"({', '.join(self.bases)})" if self.bases else ""
+        return f"[class] {self.name}{suffix}"
+
+
+@dataclass
+class PyMethodInfo:
+    line: int
+    name: str
+    kind: str          # "def" | "method"
+    params_str: str
+    cls_name: str = ""
+    return_type: str | None = None
+    param_types: list = dc_field(default_factory=list)
+
+    @property
+    def sig(self) -> str:
+        ret = f" -> {self.return_type}" if self.return_type else ""
+        return f"def {self.name}{self.params_str}{ret}"
+
+    @property
+    def text(self) -> str:
+        prefix = f"[in {self.cls_name}] " if self.cls_name else ""
+        ret = f" -> {self.return_type}" if self.return_type else ""
+        return f"[{self.kind}] {prefix}{self.name}{self.params_str}{ret}"
+
+
+@dataclass
+class PyAttrInfo:
+    line: int
+    text: str
+    attr_name: str
+
+
+@dataclass
+class PyImportInfo:
+    line: int
+    text: str
+    module: str
 
 # ── Inlined from src/ast/py.py ──────────────────────────────────────────────
 
@@ -62,7 +112,7 @@ def _py_base_names(node, src) -> list:
 # ── Data extraction functions ─────────────────────────────────────────────────
 
 def _py_q_classes_data(src, tree) -> list:
-    """Return list of dicts: {line, text, name, bases}."""
+    """Return list[PyClassInfo] for all class definitions."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "class_definition"):
         name_node = node.child_by_field_name("name")
@@ -70,18 +120,12 @@ def _py_q_classes_data(src, tree) -> list:
             continue
         name  = _text(name_node, src).strip()
         bases = _py_base_names(node, src)
-        suffix = f"({', '.join(bases)})" if bases else ""
-        results.append({
-            "line":  _line(node),
-            "text":  f"[class] {name}{suffix}",
-            "name":  name,
-            "bases": bases,
-        })
+        results.append(PyClassInfo(line=_line(node), name=name, bases=bases))
     return results
 
 
 def _py_q_methods_data(src, tree) -> list:
-    """Return list of dicts: {line, text, kind, name, sig, return_type, param_types}."""
+    """Return list[PyMethodInfo] for all function definitions."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "function_definition"):
         name_node   = node.child_by_field_name("name")
@@ -92,10 +136,8 @@ def _py_q_methods_data(src, tree) -> list:
         return_node = node.child_by_field_name("return_type")
         params_str  = _text(params_node, src).strip() if params_node else "()"
         ret_str     = _text(return_node, src).strip() if return_node else None
-        ret_display = f" -> {ret_str}" if ret_str else ""
         cls         = _py_enclosing_class(node, src)
         kind        = "method" if cls else "def"
-        cls_prefix  = f"[in {cls}] " if cls else ""
         param_types = []
         if params_node:
             for p in params_node.named_children:
@@ -103,32 +145,26 @@ def _py_q_methods_data(src, tree) -> list:
                     pt = p.child_by_field_name("type")
                     if pt:
                         param_types.append(_text(pt, src).strip())
-        results.append({
-            "line":        _line(node),
-            "text":        f"[{kind}] {cls_prefix}{name}{params_str}{ret_display}",
-            "kind":        kind,
-            "name":        name,
-            "sig":         f"def {name}{params_str}" + (f" -> {ret_str}" if ret_str else ""),
-            "return_type": ret_str,
-            "param_types": param_types,
-        })
+        results.append(PyMethodInfo(line=_line(node), name=name, kind=kind,
+                                    params_str=params_str, cls_name=cls or "",
+                                    return_type=ret_str, param_types=param_types))
     return results
 
 
 def _py_q_attrs_data(src, tree, name=None) -> list:
-    """Return list of dicts: {line, text, attr_name}."""
+    """Return list[PyAttrInfo] for all decorators."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "decorator"):
         full  = _text(node, src).strip()
         dname = full.lstrip("@").split("(")[0].split(".")[-1].strip()
         if name and dname != name:
             continue
-        results.append({"line": _line(node), "text": full, "attr_name": dname})
+        results.append(PyAttrInfo(line=_line(node), text=full, attr_name=dname))
     return results
 
 
 def _py_q_imports_data(src, tree) -> list:
-    """Return list of dicts: {line, text, module}."""
+    """Return list[PyImportInfo] for all import statements."""
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("import_statement", "import_from_statement",
@@ -147,7 +183,7 @@ def _py_q_imports_data(src, tree) -> list:
             m = node.child_by_field_name("module_name")
             if m:
                 module = _text(m, src).lstrip(".").split(".")[0]
-        results.append({"line": _line(node), "text": full, "module": module})
+        results.append(PyImportInfo(line=_line(node), text=full, module=module))
     return results
 
 
@@ -167,11 +203,11 @@ def _py_q_all_call_sites_data(src, tree) -> list:
 
 
 def py_q_classes(src, tree, lines):
-    return [(_r["line"], _r["text"]) for _r in _py_q_classes_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _py_q_classes_data(src, tree)]
 
 
 def py_q_methods(src, tree, lines):
-    return [(_r["line"], _r["text"]) for _r in _py_q_methods_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _py_q_methods_data(src, tree)]
 
 
 def py_q_calls(src, tree, lines, method_name):
@@ -251,11 +287,11 @@ def py_q_declarations(src, tree, lines, name, include_body=False, symbol_kind=No
 
 
 def py_q_decorators(src, tree, lines, name=None):
-    return [(_r["line"], _r["text"]) for _r in _py_q_attrs_data(src, tree, name)]
+    return [(_r.line, _r.text) for _r in _py_q_attrs_data(src, tree, name)]
 
 
 def py_q_imports(src, tree, lines):
-    return [(_r["line"], _r["text"]) for _r in _py_q_imports_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _py_q_imports_data(src, tree)]
 
 
 def py_q_params(src, tree, lines, method_name):
