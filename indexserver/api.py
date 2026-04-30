@@ -353,7 +353,7 @@ def _resolve_query_paths(raw_files: list) -> list[Path]:
                 rel = resolved[len(hr):]  # includes leading /
                 resolved = ROOTS[name].rstrip("/") + rel
                 break
-        native = Path(os.path.realpath(to_native_path(resolved)))
+        native = Path(os.path.realpath(to_native_path(resolved))).resolve()
         # Guard: resolved path must be relative to a known configured root.
         for r in allowed_roots:
             if native.is_relative_to(r):
