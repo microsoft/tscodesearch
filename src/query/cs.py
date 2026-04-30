@@ -9,10 +9,117 @@ EXTENSIONS = frozenset({".cs"})
 import re
 import sys
 
-from ..ast.cs import (
-    _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _find_all, _text, _unqualify, _unqualify_type,
-    _base_type_names, SYMBOL_KIND_TO_NODES,
-)
+# ── Inlined from src/ast/cs.py ──────────────────────────────────────────────
+
+_TYPE_DECL_NODES = {
+    "class_declaration", "interface_declaration", "struct_declaration",
+    "enum_declaration", "record_declaration", "delegate_declaration",
+}
+
+_MEMBER_DECL_NODES = {
+    "method_declaration", "constructor_declaration", "property_declaration",
+    "field_declaration", "event_declaration", "event_field_declaration",
+    "local_function_statement",
+}
+
+SYMBOL_KIND_TO_NODES: dict[str, frozenset] = {
+    "method":      frozenset({"method_declaration", "local_function_statement"}),
+    "constructor": frozenset({"constructor_declaration"}),
+    "property":    frozenset({"property_declaration"}),
+    "field":       frozenset({"field_declaration"}),
+    "event":       frozenset({"event_declaration", "event_field_declaration"}),
+    "class":       frozenset({"class_declaration"}),
+    "interface":   frozenset({"interface_declaration"}),
+    "struct":      frozenset({"struct_declaration"}),
+    "enum":        frozenset({"enum_declaration"}),
+    "record":      frozenset({"record_declaration"}),
+    "delegate":    frozenset({"delegate_declaration"}),
+    "type":        frozenset(_TYPE_DECL_NODES),
+    "member":      frozenset(_MEMBER_DECL_NODES),
+}
+
+_TYPE_KINDS   = frozenset({"class", "interface", "struct", "enum", "record", "delegate", "type"})
+_MEMBER_KINDS = frozenset({"method", "constructor", "property", "field", "event", "member"})
+
+
+def symbol_kind_query_by(kind: str) -> str:
+    """Return the Typesense query_by string for a given symbol_kind.
+
+    Returns empty string when kind is unknown (caller should fall back to default).
+    """
+    k = kind.lower().strip() if kind else ""
+    if k in _TYPE_KINDS:
+        return "class_names,filename"
+    if k in _MEMBER_KINDS:
+        return "method_names,filename"
+    return ""
+
+
+def _find_all(node, predicate, results=None):
+    if results is None:
+        results = []
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if predicate(n):
+            results.append(n)
+        # Reverse so leftmost children are processed first
+        stack.extend(reversed(n.children))
+    return results
+
+
+def _text(node, src: bytes) -> str:
+    return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
+_QUALIFIED_RE = re.compile(r'(?:[A-Za-z_]\w*\.)+([A-Za-z_]\w*)')
+
+
+def _unqualify(name: str) -> str:
+    """Strip namespace prefix: 'A.B.IFoo' → 'IFoo'."""
+    return name.rsplit(".", 1)[-1]
+
+
+def _unqualify_type(text: str) -> str:
+    """Strip namespace prefixes from all qualified names in a type string."""
+    return _QUALIFIED_RE.sub(r'\1', text)
+
+
+def _base_type_names(node, src: bytes) -> list:
+    """Extract all type names from the base_list of a type declaration."""
+    names = []
+    base_list = next((c for c in node.children if c.type == "base_list"), None)
+    if not base_list:
+        return names
+    for child in base_list.children:
+        if not child.is_named:
+            continue
+        if child.type == "identifier":
+            names.append(_text(child, src).strip())
+        elif child.type == "generic_name":
+            if child.named_children:
+                names.append(_text(child.named_children[0], src).strip())
+        elif child.type == "qualified_name":
+            names.append(_text(child, src).strip())
+        elif child.type in ("simple_base_type", "primary_constructor_base_type"):
+            t = child.child_by_field_name("type") or child.child_by_field_name("name")
+            if t:
+                names.append(_text(t, src).strip())
+            elif child.named_children:
+                names.append(_text(child.named_children[0], src).strip())
+    return names
+
+
+def _collect_ctor_names(root, src: bytes) -> list:
+    """Return the type name from every 'new Foo(...)' expression in the AST."""
+    names = []
+    for node in _find_all(root, lambda n: n.type == "object_creation_expression"):
+        type_node = node.child_by_field_name("type")
+        if type_node:
+            idents = _find_all(type_node, lambda n: n.type == "identifier")
+            if idents:
+                names.append(_text(idents[-1], src))
+    return names
 
 # ── AST helpers ───────────────────────────────────────────────────────────────
 
@@ -246,23 +353,42 @@ def _iter_with_members(tree, src):
                 yield wi, src_ident, prop
 
 
-# ── Query functions ────────────────────────────────────────────────────────────
+# ── Data extraction functions ─────────────────────────────────────────────────
 
-def q_classes(src, tree, lines):
+def _q_namespace(src, tree) -> str:
+    """Extract the primary namespace name."""
+    ns_nodes = _find_all(tree.root_node, lambda n: n.type in (
+        "namespace_declaration", "file_scoped_namespace_declaration"
+    ))
+    if ns_nodes:
+        name_node = ns_nodes[0].child_by_field_name("name")
+        if name_node:
+            return _text(name_node, src)
+    return ""
+
+
+def _q_classes_data(src, tree) -> list:
+    """Return list of dicts: {line, text, name, bases}."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
         name_node = node.child_by_field_name("name")
         if not name_node:
             continue
         kind  = _node_kind(node)
-        name  = _text(name_node, src)
+        name  = _text(name_node, src).strip()
         bases = _base_type_names(node, src)
         suffix = f" : {', '.join(bases)}" if bases else ""
-        results.append((_line(node), f"[{kind}] {name}{suffix}"))
+        results.append({
+            "line":  _line(node),
+            "text":  f"[{kind}] {name}{suffix}",
+            "name":  name,
+            "bases": bases,
+        })
     return results
 
 
-def q_methods(src, tree, lines):
+def _q_methods_data(src, tree) -> list:
+    """Return list of dicts: {line, text, kind, name, sig, return_type, param_types, field_type}."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in _MEMBER_DECL_NODES):
         ln = _line(node)
@@ -271,37 +397,86 @@ def q_methods(src, tree, lines):
             for var in _find_all(node, lambda n: n.type == "variable_declarator"):
                 vn = var.child_by_field_name("name")
                 if vn:
-                    results.append((ln, f"[field]  {type_txt} {_text(vn, src)}"))
+                    name = _text(vn, src).strip()
+                    results.append({
+                        "line": ln, "text": f"[field]  {type_txt} {name}",
+                        "kind": "field", "name": name, "sig": None,
+                        "return_type": None, "param_types": [], "field_type": type_txt,
+                    })
         elif node.type == "property_declaration":
             type_node = node.child_by_field_name("type")
             name_node = node.child_by_field_name("name")
             if name_node:
                 type_txt = _text(type_node, src).strip() if type_node else ""
-                results.append((ln, f"[prop]   {type_txt} {_text(name_node, src)}"))
+                name = _text(name_node, src).strip()
+                results.append({
+                    "line": ln, "text": f"[prop]   {type_txt} {name}",
+                    "kind": "prop", "name": name, "sig": None,
+                    "return_type": None, "param_types": [], "field_type": type_txt,
+                })
         elif node.type == "event_declaration":
             type_node = node.child_by_field_name("type")
             name_node = node.child_by_field_name("name")
             if name_node:
                 type_txt = _text(type_node, src).strip() if type_node else ""
-                results.append((ln, f"[event]  {type_txt} {_text(name_node, src)}"))
+                name = _text(name_node, src).strip()
+                results.append({
+                    "line": ln, "text": f"[event]  {type_txt} {name}",
+                    "kind": "event", "name": name, "sig": None,
+                    "return_type": None, "param_types": [], "field_type": type_txt,
+                })
         elif node.type == "event_field_declaration":
             type_txt = _field_type(node, src)
             for var in _find_all(node, lambda n: n.type == "variable_declarator"):
                 vn = var.child_by_field_name("name")
                 if vn:
-                    results.append((ln, f"[event]  {type_txt} {_text(vn, src)}"))
+                    name = _text(vn, src).strip()
+                    results.append({
+                        "line": ln, "text": f"[event]  {type_txt} {name}",
+                        "kind": "event", "name": name, "sig": None,
+                        "return_type": None, "param_types": [], "field_type": type_txt,
+                    })
         elif node.type in ("method_declaration", "local_function_statement"):
             sig = _build_sig(node, src)
             if sig:
-                results.append((ln, f"[method] {sig}"))
+                ret_node = node.child_by_field_name("returns") or node.child_by_field_name("type")
+                ret_txt = _text(ret_node, src).strip() if ret_node else None
+                name_node = node.child_by_field_name("name")
+                name = _text(name_node, src).strip() if name_node else ""
+                params_node = node.child_by_field_name("parameters")
+                param_types = []
+                if params_node:
+                    for p in _find_all(params_node, lambda n: n.type == "parameter"):
+                        pt = p.child_by_field_name("type")
+                        if pt:
+                            param_types.append(_text(pt, src).strip())
+                results.append({
+                    "line": ln, "text": f"[method] {sig}",
+                    "kind": "method", "name": name, "sig": sig,
+                    "return_type": ret_txt, "param_types": param_types, "field_type": None,
+                })
         elif node.type == "constructor_declaration":
             sig = _build_sig(node, src)
             if sig:
-                results.append((ln, f"[ctor]   {sig}"))
+                name_node = node.child_by_field_name("name")
+                name = _text(name_node, src).strip() if name_node else ""
+                params_node = node.child_by_field_name("parameters")
+                param_types = []
+                if params_node:
+                    for p in _find_all(params_node, lambda n: n.type == "parameter"):
+                        pt = p.child_by_field_name("type")
+                        if pt:
+                            param_types.append(_text(pt, src).strip())
+                results.append({
+                    "line": ln, "text": f"[ctor]   {sig}",
+                    "kind": "ctor", "name": name, "sig": sig,
+                    "return_type": None, "param_types": param_types, "field_type": None,
+                })
     return results
 
 
-def q_fields(src, tree, lines):
+def _q_fields_data(src, tree) -> list:
+    """Return list of dicts: {line, text, kind, name, field_type}."""
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("field_declaration", "property_declaration")):
@@ -311,14 +486,129 @@ def q_fields(src, tree, lines):
             for var in _find_all(node, lambda n: n.type == "variable_declarator"):
                 vn = var.child_by_field_name("name")
                 if vn:
-                    results.append((ln, f"[field] {type_txt} {_text(vn, src)}"))
+                    name = _text(vn, src).strip()
+                    results.append({
+                        "line": ln, "text": f"[field] {type_txt} {name}",
+                        "kind": "field", "name": name, "field_type": type_txt,
+                    })
         else:
             type_node = node.child_by_field_name("type")
             type_txt  = _text(type_node, src).strip() if type_node else ""
             name_node = node.child_by_field_name("name")
             if name_node:
-                results.append((ln, f"[prop]  {type_txt} {_text(name_node, src)}"))
+                name = _text(name_node, src).strip()
+                results.append({
+                    "line": ln, "text": f"[prop]  {type_txt} {name}",
+                    "kind": "prop", "name": name, "field_type": type_txt,
+                })
     return results
+
+
+def _q_usings_data(src, tree) -> list:
+    """Return list of dicts: {line, text, namespace}."""
+    results = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "using_directive"):
+        full = _text(node, src).strip().rstrip(";")
+        namespace = ""
+        for child in node.named_children:
+            if child.type in ("identifier", "qualified_name"):
+                namespace = _text(child, src).split(".")[0]
+                break
+        results.append({"line": _line(node), "text": full, "namespace": namespace})
+    return results
+
+
+def _q_attrs_data(src, tree, attr_name=None) -> list:
+    """Return list of dicts: {line, text, attr_name}."""
+    results = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "attribute"):
+        name_node = node.child_by_field_name("name")
+        if not name_node:
+            continue
+        aname        = _text(name_node, src).strip()
+        aname_short  = aname[:-len("Attribute")] if aname.endswith("Attribute") else aname
+        aname_unqual = _unqualify(aname_short)
+        if attr_name:
+            if aname_unqual != attr_name and aname_short != attr_name and aname != attr_name:
+                continue
+        args_node = next((c for c in node.named_children
+                          if c.type == "attribute_argument_list"), None)
+        args_txt = _text(args_node, src).strip() if args_node else ""
+        results.append({
+            "line":      _line(node),
+            "text":      f"[{aname}]{args_txt}",
+            "attr_name": aname_unqual,
+        })
+    return results
+
+
+def _q_all_call_sites_data(src, tree) -> list:
+    """Extract all call site method/function names for indexing."""
+    names = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "invocation_expression"):
+        fn_node = node.child_by_field_name("function")
+        if fn_node:
+            if fn_node.type == "member_access_expression":
+                nn = fn_node.child_by_field_name("name")
+                if nn:
+                    names.append(_text(nn, src).strip())
+            elif fn_node.type == "identifier":
+                names.append(_text(fn_node, src).strip())
+    names.extend(_collect_ctor_names(tree.root_node, src))
+    return names
+
+
+def _q_all_cast_types_data(src, tree) -> list:
+    """Extract all cast target type strings for indexing."""
+    types = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "cast_expression"):
+        type_node = node.child_by_field_name("type")
+        if type_node:
+            types.append(_text(type_node, src).strip())
+    return types
+
+
+def _q_all_member_accesses_data(src, tree) -> list:
+    """Extract non-invocation member access names for indexing."""
+    _invocation_fn_ids = {
+        id(node.child_by_field_name("function"))
+        for node in _find_all(tree.root_node, lambda n: n.type == "invocation_expression")
+        if node.child_by_field_name("function") is not None
+        and node.child_by_field_name("function").type == "member_access_expression"
+    }
+    names = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "member_access_expression"):
+        if id(node) not in _invocation_fn_ids:
+            nn = node.child_by_field_name("name")
+            if nn:
+                names.append(_text(nn, src).strip())
+    return names
+
+
+def _q_all_local_types_data(src, tree) -> list:
+    """Extract all local variable type strings for indexing."""
+    types = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "local_declaration_statement"):
+        var_decl = next((c for c in node.children if c.type == "variable_declaration"), None)
+        if var_decl:
+            type_node = var_decl.child_by_field_name("type")
+            if type_node:
+                types.append(_text(type_node, src).strip())
+    return types
+
+
+# ── Query functions ────────────────────────────────────────────────────────────
+
+def q_classes(src, tree, lines):
+    return [(_r["line"], _r["text"]) for _r in _q_classes_data(src, tree)]
+
+
+def q_methods(src, tree, lines):
+    return [(_r["line"], _r["text"]) for _r in _q_methods_data(src, tree)]
+
+
+def q_fields(src, tree, lines):
+    return [(_r["line"], _r["text"]) for _r in _q_fields_data(src, tree)]
 
 
 def q_calls(src, tree, lines, method_name):
@@ -505,30 +795,11 @@ def _q_uses_all(src, tree, lines, type_name):
 
 
 def q_attrs(src, tree, lines, attr_name=None):
-    results = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "attribute"):
-        name_node = node.child_by_field_name("name")
-        if not name_node:
-            continue
-        aname       = _text(name_node, src).strip()
-        aname_short = aname[:-len("Attribute")] if aname.endswith("Attribute") else aname
-        aname_unqual = _unqualify(aname_short)
-        if attr_name:
-            if aname_unqual != attr_name and aname_short != attr_name and aname != attr_name:
-                continue
-        args_node = next((c for c in node.named_children
-                          if c.type == "attribute_argument_list"), None)
-        args_txt  = _text(args_node, src).strip() if args_node else ""
-        results.append((_line(node), f"[{aname}]{args_txt}"))
-    return results
+    return [(_r["line"], _r["text"]) for _r in _q_attrs_data(src, tree, attr_name)]
 
 
 def q_usings(src, tree, lines):
-    results = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "using_directive"):
-        full = _text(node, src).strip().rstrip(";")
-        results.append((_line(node), full))
-    return results
+    return [(_r["line"], _r["text"]) for _r in _q_usings_data(src, tree)]
 
 
 def q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None):

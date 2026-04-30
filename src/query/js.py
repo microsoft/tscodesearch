@@ -23,16 +23,101 @@ import sys
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 
-from ..ast.js import (
-    _find_all, _text, _in_literal, _line,
-    _class_bases, _fn_name_from_node, _fn_sig,
-)
+# ── Inlined from src/ast/js.py ───────────────────────────────────────────────
+
+_TYPE_DECL_NODES = {
+    "class_declaration",
+    "interface_declaration",
+    "type_alias_declaration",
+    "enum_declaration",
+    "abstract_class_declaration",
+}
+
+_FUNCTION_NODES = {
+    "function_declaration",
+    "method_definition",
+    "arrow_function",
+    "generator_function_declaration",
+}
+
+_LITERAL_NODES = {
+    "comment",
+    "string",
+    "template_string",
+    "regex",
+}
 
 
-# ── Query functions ───────────────────────────────────────────────────────────
+def _find_all(node, predicate, results=None):
+    if results is None:
+        results = []
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if predicate(n):
+            results.append(n)
+        stack.extend(reversed(n.children))
+    return results
 
-def js_q_classes(src, tree, lines):
-    """List class / interface / enum declarations."""
+
+def _text(node, src: bytes) -> str:
+    return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
+def _in_literal(node) -> bool:
+    p = node.parent
+    while p:
+        if p.type in _LITERAL_NODES:
+            return True
+        p = p.parent
+    return False
+
+
+def _line(node) -> int:
+    return node.start_point[0] + 1
+
+
+def _class_bases(node, src: bytes) -> list:
+    """Get base/implemented type names from a class declaration."""
+    names = []
+    for child in node.children:
+        if child.type in ("class_heritage", "extends_clause", "implements_clause"):
+            for c in _find_all(child, lambda n: n.type in ("identifier", "type_identifier")):
+                t = _text(c, src).strip()
+                if t not in ("extends", "implements") and t:
+                    names.append(t)
+        elif child.type == "extends_clause":
+            for c in child.named_children:
+                if c.type in ("identifier", "type_identifier"):
+                    names.append(_text(c, src).strip())
+    return names
+
+
+def _fn_name_from_node(node, src: bytes) -> str:
+    """Get function name from function_declaration or method_definition."""
+    n = node.child_by_field_name("name")
+    if n:
+        return _text(n, src).strip()
+    for c in node.children:
+        if c.type in ("identifier", "property_identifier", "string"):
+            return _text(c, src).strip()
+    return ""
+
+
+def _fn_sig(node, src: bytes) -> str:
+    """Build a readable signature for a function/method node."""
+    name = _fn_name_from_node(node, src)
+    params_node = node.child_by_field_name("parameters")
+    ret_node = node.child_by_field_name("return_type")
+    params_txt = _text(params_node, src).strip() if params_node else "()"
+    ret_txt = f": {_text(ret_node, src).strip()}" if ret_node else ""
+    return f"{name}{params_txt}{ret_txt}"
+
+
+# ── Data extraction functions ─────────────────────────────────────────────────
+
+def _js_q_classes_data(src, tree) -> list:
+    """Return list of dicts: {line, text, name, bases}."""
     results = []
     type_nodes = {
         "class_declaration", "abstract_class_declaration",
@@ -42,31 +127,36 @@ def js_q_classes(src, tree, lines):
         name_node = node.child_by_field_name("name")
         if not name_node:
             continue
-        name = _text(name_node, src).strip()
-        kind = (node.type
-                .replace("_declaration", "")
-                .replace("_alias", " alias")
-                .replace("abstract_", "abstract "))
+        name  = _text(name_node, src).strip()
+        kind  = (node.type
+                 .replace("_declaration", "")
+                 .replace("_alias", " alias")
+                 .replace("abstract_", "abstract "))
         bases = _class_bases(node, src)
         suffix = f" : {', '.join(bases)}" if bases else ""
-        results.append((_line(node), f"[{kind}] {name}{suffix}"))
+        results.append({
+            "line":  _line(node),
+            "text":  f"[{kind}] {name}{suffix}",
+            "name":  name,
+            "bases": bases,
+        })
     return results
 
 
-def js_q_methods(src, tree, lines):
-    """List function declarations and class method definitions."""
+def _js_q_methods_data(src, tree) -> list:
+    """Return list of dicts: {line, text, kind, name, sig}."""
     results = []
     fn_types = {
         "function_declaration", "generator_function_declaration",
         "method_definition",
     }
     for node in _find_all(tree.root_node, lambda n: n.type in fn_types):
-        sig = _fn_sig(node, src)
+        sig  = _fn_sig(node, src)
         if not sig:
             continue
         kind = "method" if node.type == "method_definition" else "function"
-        # enclosing class
-        p = node.parent
+        name = _fn_name_from_node(node, src)
+        p    = node.parent
         cls_name = ""
         while p:
             if p.type in ("class_declaration", "abstract_class_declaration"):
@@ -76,8 +166,56 @@ def js_q_methods(src, tree, lines):
                 break
             p = p.parent
         prefix = f"[in {cls_name}] " if cls_name else ""
-        results.append((_line(node), f"[{kind}] {prefix}{sig}"))
+        results.append({
+            "line": _line(node),
+            "text": f"[{kind}] {prefix}{sig}",
+            "kind": kind,
+            "name": name,
+            "sig":  sig,
+        })
     return results
+
+
+def _js_q_all_call_sites_data(src, tree) -> list:
+    """Extract all call site names for indexing."""
+    names = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "call_expression"):
+        fn = node.child_by_field_name("function")
+        if fn:
+            if fn.type == "identifier":
+                names.append(_text(fn, src).strip())
+            elif fn.type == "member_expression":
+                prop = fn.child_by_field_name("property")
+                if prop:
+                    names.append(_text(prop, src).strip())
+    return names
+
+
+def _js_q_imports_data(src, tree) -> list:
+    """Return list of dicts: {line, text, module}."""
+    results = []
+    for node in _find_all(tree.root_node,
+                          lambda n: n.type in ("import_statement", "import_declaration")):
+        full = _text(node, src).strip()
+        module = ""
+        src_node = node.child_by_field_name("source")
+        if src_node:
+            raw = _text(src_node, src).strip().strip("'\"")
+            module = raw.lstrip("./").split("/")[0]
+        results.append({"line": _line(node), "text": full, "module": module})
+    return results
+
+
+# ── Query functions ───────────────────────────────────────────────────────────
+
+def js_q_classes(src, tree, lines):
+    """List class / interface / enum declarations."""
+    return [(_r["line"], _r["text"]) for _r in _js_q_classes_data(src, tree)]
+
+
+def js_q_methods(src, tree, lines):
+    """List function declarations and class method definitions."""
+    return [(_r["line"], _r["text"]) for _r in _js_q_methods_data(src, tree)]
 
 
 def js_q_calls(src, tree, lines, func_name):
@@ -206,11 +344,7 @@ def js_q_all_refs(src, tree, lines, name):
 
 def js_q_imports(src, tree, lines):
     """List import statements."""
-    results = []
-    for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("import_statement", "import_declaration")):
-        results.append((_line(node), _text(node, src).strip()))
-    return results
+    return [(_r["line"], _r["text"]) for _r in _js_q_imports_data(src, tree)]
 
 
 def js_q_params(src, tree, lines, func_name):

@@ -9,44 +9,169 @@ EXTENSIONS = frozenset({".py"})
 import sys
 import tree_sitter_python as tspython
 
-from ..ast.cs import _find_all, _text  # shared traversal helpers
-from ..ast.py import (
-    _line,
-    _py_in_literal,
-    _py_enclosing_class,
-    _py_base_names,
-)
+from .cs import _find_all, _text
+
+# ── Inlined from src/ast/py.py ──────────────────────────────────────────────
+
+_PY_LITERAL_NODES = {"comment", "string", "concatenated_string"}
 
 
-def py_q_classes(src, tree, lines):
+def _line(node) -> int:
+    return node.start_point[0] + 1
+
+
+def _py_in_literal(node) -> bool:
+    p = node.parent
+    while p:
+        if p.type in _PY_LITERAL_NODES:
+            return True
+        p = p.parent
+    return False
+
+
+def _py_enclosing_class(node, src) -> str:
+    p = node.parent
+    while p:
+        if p.type == "class_definition":
+            nn = p.child_by_field_name("name")
+            if nn:
+                return _text(nn, src).strip()
+        p = p.parent
+    return ""
+
+
+def _py_base_names(node, src) -> list:
+    names = []
+    superclasses = node.child_by_field_name("superclasses")
+    if not superclasses:
+        return names
+    for child in superclasses.named_children:
+        if child.type == "identifier":
+            names.append(_text(child, src).strip())
+        elif child.type == "attribute":
+            attr = child.child_by_field_name("attribute")
+            if attr:
+                names.append(_text(attr, src).strip())
+        elif child.type == "subscript":
+            val = child.child_by_field_name("value")
+            if val and val.type == "identifier":
+                names.append(_text(val, src).strip())
+    return names
+
+
+# ── Data extraction functions ─────────────────────────────────────────────────
+
+def _py_q_classes_data(src, tree) -> list:
+    """Return list of dicts: {line, text, name, bases}."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "class_definition"):
         name_node = node.child_by_field_name("name")
         if not name_node:
             continue
-        name = _text(name_node, src).strip()
+        name  = _text(name_node, src).strip()
         bases = _py_base_names(node, src)
         suffix = f"({', '.join(bases)})" if bases else ""
-        results.append((_line(node), f"[class] {name}{suffix}"))
+        results.append({
+            "line":  _line(node),
+            "text":  f"[class] {name}{suffix}",
+            "name":  name,
+            "bases": bases,
+        })
     return results
+
+
+def _py_q_methods_data(src, tree) -> list:
+    """Return list of dicts: {line, text, kind, name, sig, return_type, param_types}."""
+    results = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "function_definition"):
+        name_node   = node.child_by_field_name("name")
+        if not name_node:
+            continue
+        name        = _text(name_node, src).strip()
+        params_node = node.child_by_field_name("parameters")
+        return_node = node.child_by_field_name("return_type")
+        params_str  = _text(params_node, src).strip() if params_node else "()"
+        ret_str     = _text(return_node, src).strip() if return_node else None
+        ret_display = f" -> {ret_str}" if ret_str else ""
+        cls         = _py_enclosing_class(node, src)
+        kind        = "method" if cls else "def"
+        cls_prefix  = f"[in {cls}] " if cls else ""
+        param_types = []
+        if params_node:
+            for p in params_node.named_children:
+                if p.type in ("typed_parameter", "typed_default_parameter"):
+                    pt = p.child_by_field_name("type")
+                    if pt:
+                        param_types.append(_text(pt, src).strip())
+        results.append({
+            "line":        _line(node),
+            "text":        f"[{kind}] {cls_prefix}{name}{params_str}{ret_display}",
+            "kind":        kind,
+            "name":        name,
+            "sig":         f"def {name}{params_str}" + (f" -> {ret_str}" if ret_str else ""),
+            "return_type": ret_str,
+            "param_types": param_types,
+        })
+    return results
+
+
+def _py_q_attrs_data(src, tree, name=None) -> list:
+    """Return list of dicts: {line, text, attr_name}."""
+    results = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "decorator"):
+        full  = _text(node, src).strip()
+        dname = full.lstrip("@").split("(")[0].split(".")[-1].strip()
+        if name and dname != name:
+            continue
+        results.append({"line": _line(node), "text": full, "attr_name": dname})
+    return results
+
+
+def _py_q_imports_data(src, tree) -> list:
+    """Return list of dicts: {line, text, module}."""
+    results = []
+    for node in _find_all(tree.root_node,
+                          lambda n: n.type in ("import_statement", "import_from_statement",
+                                               "future_import_statement")):
+        full = _text(node, src).strip()
+        module = ""
+        if node.type == "import_statement":
+            for child in node.named_children:
+                if child.type == "dotted_name":
+                    module = _text(child, src).split(".")[0]
+                    break
+                elif child.type == "aliased_import" and child.named_children:
+                    module = _text(child.named_children[0], src).split(".")[0]
+                    break
+        elif node.type == "import_from_statement":
+            m = node.child_by_field_name("module_name")
+            if m:
+                module = _text(m, src).lstrip(".").split(".")[0]
+        results.append({"line": _line(node), "text": full, "module": module})
+    return results
+
+
+def _py_q_all_call_sites_data(src, tree) -> list:
+    """Extract all call site names for indexing."""
+    names = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "call"):
+        fn = node.child_by_field_name("function")
+        if fn:
+            if fn.type == "identifier":
+                names.append(_text(fn, src).strip())
+            elif fn.type == "attribute":
+                attr = fn.child_by_field_name("attribute")
+                if attr:
+                    names.append(_text(attr, src).strip())
+    return names
+
+
+def py_q_classes(src, tree, lines):
+    return [(_r["line"], _r["text"]) for _r in _py_q_classes_data(src, tree)]
 
 
 def py_q_methods(src, tree, lines):
-    results = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "function_definition"):
-        name_node = node.child_by_field_name("name")
-        if not name_node:
-            continue
-        name = _text(name_node, src).strip()
-        params_node = node.child_by_field_name("parameters")
-        return_node = node.child_by_field_name("return_type")
-        params_str = _text(params_node, src).strip() if params_node else "()"
-        ret_str = f" -> {_text(return_node, src).strip()}" if return_node else ""
-        cls = _py_enclosing_class(node, src)
-        kind = "method" if cls else "def"
-        cls_prefix = f"[in {cls}] " if cls else ""
-        results.append((_line(node), f"[{kind}] {cls_prefix}{name}{params_str}{ret_str}"))
-    return results
+    return [(_r["line"], _r["text"]) for _r in _py_q_methods_data(src, tree)]
 
 
 def py_q_calls(src, tree, lines, method_name):
@@ -126,23 +251,11 @@ def py_q_declarations(src, tree, lines, name, include_body=False, symbol_kind=No
 
 
 def py_q_decorators(src, tree, lines, name=None):
-    results = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "decorator"):
-        full = _text(node, src).strip()
-        dname = full.lstrip("@").split("(")[0].split(".")[-1].strip()
-        if name and dname != name:
-            continue
-        results.append((_line(node), full))
-    return results
+    return [(_r["line"], _r["text"]) for _r in _py_q_attrs_data(src, tree, name)]
 
 
 def py_q_imports(src, tree, lines):
-    results = []
-    for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("import_statement", "import_from_statement",
-                                               "future_import_statement")):
-        results.append((_line(node), _text(node, src).strip()))
-    return results
+    return [(_r["line"], _r["text"]) for _r in _py_q_imports_data(src, tree)]
 
 
 def py_q_params(src, tree, lines, method_name):
