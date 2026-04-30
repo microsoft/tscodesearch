@@ -400,12 +400,12 @@ def verify_all_schemas(client) -> dict:
             "collection":         root.collection,
         }
         if not exists:
-            print(f"[schema] MISSING {coll} (not yet indexed)", flush=True)
+            print(f"[schema] MISSING {root.collection} (not yet indexed)", flush=True)
         elif warnings:
             for w in warnings:
-                print(f"[schema] WARN  {coll}: {w}", flush=True)
+                print(f"[schema] WARN  {root.collection}: {w}", flush=True)
         else:
-            print(f"[schema] OK    {coll}", flush=True)
+            print(f"[schema] OK    {root.collection}", flush=True)
     return results
 
 
