@@ -191,68 +191,65 @@ class TestParseRoots(unittest.TestCase):
         self.assertIsNone(exts["default"])
 
 
-# ── _run_query path resolution ────────────────────────────────────────────────
+# ── _resolve_query_paths path resolution ─────────────────────────────────────
 
 class TestRunQueryPathResolution(unittest.TestCase):
-    """_run_query() maps Windows paths from MCP client to server-local paths."""
+    """_resolve_query_paths() translates and validates paths from client requests."""
 
-    def _paths_opened(self, file_path: str, host_roots: dict, roots: dict) -> list[str]:
-        """Return the filesystem path(s) that _run_query passed to open()."""
+    def _resolve(self, file_path: str, host_roots: dict, roots: dict) -> list[str]:
+        """Call _resolve_query_paths with patched HOST_ROOTS/ROOTS."""
         import indexserver.api as _api
-
-        opened = []
-        def fake_open(path, mode="r", **kw):
-            opened.append(path)
-            raise OSError("intercepted")
-
         with patch.dict("indexserver.api.HOST_ROOTS", host_roots, clear=True), \
-             patch.dict("indexserver.api.ROOTS", roots, clear=True), \
-             patch("builtins.open", fake_open):
-            _api._run_query("methods", "", [file_path])
-
-        return opened
+             patch.dict("indexserver.api.ROOTS", roots, clear=True):
+            return _api._resolve_query_paths([file_path])
 
     def test_docker_windows_to_container_path(self):
         """C:/repos/src/Widget.cs → /source/default/Widget.cs in Docker."""
-        opened = self._paths_opened(
+        result = self._resolve(
             "C:/repos/src/Widget.cs",
             host_roots={"default": "C:/repos/src"},
             roots={"default": "/source/default"},
         )
-        self.assertEqual(len(opened), 1)
-        self.assertEqual(opened[0], "/source/default/Widget.cs")
+        self.assertEqual(result, ["/source/default/Widget.cs"])
 
     def test_docker_subdir_path(self):
-        opened = self._paths_opened(
+        result = self._resolve(
             "C:/repos/src/services/Widget.cs",
             host_roots={"default": "C:/repos/src"},
             roots={"default": "/source/default"},
         )
-        self.assertEqual(opened[0], "/source/default/services/Widget.cs")
+        self.assertEqual(result, ["/source/default/services/Widget.cs"])
 
     def test_wsl_windows_to_mnt_path(self):
         """C:/repos/src/Widget.cs → /mnt/c/repos/src/Widget.cs in WSL."""
-        opened = self._paths_opened(
+        result = self._resolve(
             "C:/repos/src/Widget.cs",
             host_roots={"default": "C:/repos/src"},
             roots={"default": "/mnt/c/repos/src"},
         )
-        self.assertEqual(len(opened), 1)
-        self.assertEqual(opened[0], "/mnt/c/repos/src/Widget.cs")
+        self.assertEqual(result, ["/mnt/c/repos/src/Widget.cs"])
 
     def test_case_insensitive_host_root_matching(self):
         """HOST_ROOT matching is case-insensitive (Windows FS)."""
-        opened = self._paths_opened(
+        result = self._resolve(
             "C:/REPOS/SRC/Widget.cs",
             host_roots={"default": "C:/repos/src"},
             roots={"default": "/source/default"},
         )
-        # Should match and produce: /source/default/Widget.cs
-        self.assertEqual(len(opened), 1)
-        self.assertIn("Widget.cs", opened[0])
+        self.assertEqual(len(result), 1)
+        self.assertIn("Widget.cs", result[0])
 
-    def test_result_file_key_is_original_external_path(self):
-        """_run_query returns the original Windows path as 'file' key."""
+    def test_path_outside_root_raises(self):
+        """A path not under any configured root raises ValueError."""
+        with self.assertRaises(ValueError):
+            self._resolve(
+                "/etc/passwd",
+                host_roots={},
+                roots={"default": "/source/default"},
+            )
+
+    def test_result_file_key_is_native_path(self):
+        """_run_query uses the native (server-local) path as the 'file' key."""
         import indexserver.api as _api
 
         src = b"namespace Widget { public class Widget { } }"
@@ -261,21 +258,12 @@ class TestRunQueryPathResolution(unittest.TestCase):
             tmp_path = f.name
 
         try:
-            external_path = "C:/repos/src/Widget.cs"
-            # Map the fake Windows path to our real temp file
-            local_dir = os.path.dirname(tmp_path).replace("\\", "/")
-            os.path.basename(tmp_path)
-            with patch.dict("indexserver.api.HOST_ROOTS",
-                            {"default": "C:/repos/src"}, clear=True), \
-                 patch.dict("indexserver.api.ROOTS",
-                            {"default": local_dir}, clear=True):
-                results = _api._run_query("classes", "", [external_path])
+            native_path = tmp_path.replace("\\", "/")
+            results = _api._run_query("classes", "", [native_path])
+            for r in results:
+                self.assertEqual(r["file"], native_path)
         finally:
             os.unlink(tmp_path)
-
-        # If tree-sitter found something, the result must use the original path
-        for r in results:
-            self.assertEqual(r["file"], external_path)
 
 
 # ── /query-codebase host_root stripping ──────────────────────────────────────

@@ -304,36 +304,17 @@ def _get_query_module():
 
 
 def _run_query(mode: str, pattern: str, files: list, include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
-    """Run a tree-sitter AST query against a list of absolute file paths.
+    """Run a tree-sitter AST query against a list of normalized absolute file paths.
+
+    Callers are responsible for normalizing paths with os.path.realpath and
+    verifying they fall under a configured root before passing them here.
 
     Returns a list of {"file": path, "matches": [{"line": N, "text": "..."}]}
     where line is 1-indexed.  Only files with at least one match are included.
     """
     _q = _get_query_module()
-
-    # Build the set of allowed roots once. Paths that resolve outside every
-    # Paths that don't fall under a configured root are rejected (path-traversal guard).
-    # When ROOTS is empty any() returns False, so all paths are rejected — safe default.
-    allowed_roots = [os.path.realpath(to_native_path(r)).rstrip("/\\") for r in ROOTS.values() if r]
-
     results = []
-    for file_path in files:
-        # Map Windows host path to native local path using HOST_ROOTS → ROOTS.
-        # Node.js passes Windows-style paths (e.g. C:/myproject/src/Foo.cs);
-        # the server resolves them to the local filesystem path using config.
-        resolved = file_path.replace("\\", "/")
-        for name, host_root in HOST_ROOTS.items():
-            hr = host_root.replace("\\", "/").rstrip("/")
-            if resolved.lower().startswith(hr.lower() + "/") or resolved.lower() == hr.lower():
-                rel = resolved[len(hr):]  # includes leading /
-                resolved = ROOTS[name].rstrip("/") + rel
-                break
-        native = os.path.realpath(to_native_path(resolved))
-        # Reject paths that don't start with a known root (also rejects everything
-        # when allowed_roots is empty, since any([]) is False).
-        if not any(native.startswith(r + os.sep) or native == r for r in allowed_roots):
-            print(f"WARN: {file_path!r} resolved outside configured roots, skipping", file=sys.stderr)
-            continue
+    for native in files:
         ext = os.path.splitext(native)[1].lower()
         try:
             with open(native, "rb") as _f:
@@ -346,8 +327,39 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
                                 symbol_kind=symbol_kind,
                                 uses_kind=uses_kind)
         if matches:
-            results.append({"file": file_path, "matches": matches})
+            results.append({"file": native, "matches": matches})
     return results
+
+
+def _resolve_query_paths(raw_files: list) -> list[str]:
+    """Translate and validate a list of raw file paths from a client request.
+
+    1. Translates Windows host paths to native paths via HOST_ROOTS → ROOTS.
+    2. Normalizes each path with os.path.realpath.
+    3. Rejects any path that doesn't start with a configured root.
+
+    Returns the list of safe, normalized absolute paths.
+    Raises ValueError if any path falls outside every configured root.
+    """
+    allowed_roots = [os.path.realpath(to_native_path(r)).rstrip("/\\") for r in ROOTS.values() if r]
+    safe: list[str] = []
+    for file_path in raw_files:
+        # Translate Windows host path (e.g. C:/myproject/src/Foo.cs) to the
+        # server-local path (/mnt/c/myproject/src/Foo.cs) using HOST_ROOTS → ROOTS.
+        resolved = file_path.replace("\\", "/")
+        for name, host_root in HOST_ROOTS.items():
+            hr = host_root.replace("\\", "/").rstrip("/")
+            if resolved.lower().startswith(hr.lower() + "/") or resolved.lower() == hr.lower():
+                rel = resolved[len(hr):]  # includes leading /
+                resolved = ROOTS[name].rstrip("/") + rel
+                break
+        native = os.path.realpath(to_native_path(resolved))
+        # Guard: normalized path must start with a known configured root.
+        # any([]) is False, so an empty allowed_roots rejects everything.
+        if not any(native.startswith(r + os.sep) or native == r for r in allowed_roots):
+            raise ValueError(f"path not under a configured root: {file_path!r}")
+        safe.append(native)
+    return safe
 
 
 # ── Mode mapping: extension mode key → (Typesense mode flag, AST mode) ─────────
@@ -735,7 +747,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "files must be a non-empty list"})
                 return
             try:
-                results = _run_query(mode, pattern, files,
+                safe_files = _resolve_query_paths(files)
+                results = _run_query(mode, pattern, safe_files,
                                      include_body=include_body,
                                      symbol_kind=symbol_kind,
                                      uses_kind=uses_kind_q)

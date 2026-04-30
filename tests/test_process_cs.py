@@ -20,7 +20,7 @@ if _root not in sys.path:
 from tests.helpers import (
     _FOO_CS, _BAR_CS, _QUALIFIED_CS, _GENERIC_WRAPPER_CS, _BLOBSTORE_CS,
 )
-from indexserver.api import _run_query, HOST_ROOTS, ROOTS
+from indexserver.api import _run_query
 from indexserver.indexer import extract_metadata
 import query.dispatch as _q
 from query.cs import (
@@ -289,21 +289,9 @@ class TestQueryApi(unittest.TestCase):
         ]:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(src)
-        # _run_query rejects paths not under a configured root.
-        # Register tmpdir as the allowed root for the duration of these tests.
-        cls._orig_host_roots = HOST_ROOTS.copy()
-        cls._orig_roots = ROOTS.copy()
-        HOST_ROOTS.clear()
-        ROOTS.clear()
-        ROOTS["__test__"] = cls.tmpdir
-
     @classmethod
     def tearDownClass(cls):
         import shutil
-        HOST_ROOTS.clear()
-        HOST_ROOTS.update(cls._orig_host_roots)
-        ROOTS.clear()
-        ROOTS.update(cls._orig_roots)
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _direct(self, path, fn):
