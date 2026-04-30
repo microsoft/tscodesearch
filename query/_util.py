@@ -13,14 +13,13 @@ class FileDescription:
     attrs: list   = dc_field(default_factory=list)
 
 
-# ── C# ────────────────────────────────────────────────────────────────────────
-
 @dataclass
-class CsClassInfo:
+class ClassInfo:
+    """A type declaration (class, struct, interface, enum, trait, union, …)."""
     line: int
     name: str
     kind: str
-    bases: list
+    bases: list = dc_field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -29,193 +28,50 @@ class CsClassInfo:
 
 
 @dataclass
-class CsMemberInfo:
+class MethodInfo:
+    """A function, method, constructor, property accessor, or event member."""
     line: int
     name: str
-    kind: str          # "method" | "ctor" | "field" | "prop" | "event"
-    sig: str | None = None
-    return_type: str | None = None
-    param_types: list = dc_field(default_factory=list)
-    field_type: str | None = None
-
-    @property
-    def text(self) -> str:
-        label = f"[{self.kind}]".ljust(9)
-        if self.kind in ("method", "ctor"):
-            return f"{label}{self.sig}"
-        return f"{label}{self.field_type} {self.name}".rstrip()
-
-
-@dataclass
-class CsFieldInfo:
-    line: int
-    name: str
-    kind: str          # "field" | "prop"
-    field_type: str
-
-    @property
-    def text(self) -> str:
-        label = f"[{self.kind}]".ljust(8)
-        return f"{label}{self.field_type} {self.name}".rstrip()
-
-
-@dataclass
-class CsUsingInfo:
-    line: int
-    text: str
-    namespace: str
-
-
-@dataclass
-class CsAttrInfo:
-    line: int
-    text: str
-    attr_name: str
-
-
-# ── Python ────────────────────────────────────────────────────────────────────
-
-@dataclass
-class PyClassInfo:
-    line: int
-    name: str
-    bases: list
-
-    @property
-    def text(self) -> str:
-        suffix = f"({', '.join(self.bases)})" if self.bases else ""
-        return f"[class] {self.name}{suffix}"
-
-
-@dataclass
-class PyMethodInfo:
-    line: int
-    name: str
-    kind: str          # "def" | "method"
-    params_str: str
+    kind: str
+    sig: str = ""
     cls_name: str = ""
-    return_type: str | None = None
+    return_type: str = ""
     param_types: list = dc_field(default_factory=list)
 
     @property
-    def sig(self) -> str:
-        ret = f" -> {self.return_type}" if self.return_type else ""
-        return f"def {self.name}{self.params_str}{ret}"
-
-    @property
     def text(self) -> str:
         prefix = f"[in {self.cls_name}] " if self.cls_name else ""
-        ret = f" -> {self.return_type}" if self.return_type else ""
-        return f"[{self.kind}] {prefix}{self.name}{self.params_str}{ret}"
+        return f"[{self.kind}] {prefix}{self.sig}".rstrip()
 
 
 @dataclass
-class PyAttrInfo:
+class FieldInfo:
+    """A field or property declaration."""
+    line: int
+    name: str
+    kind: str
+    field_type: str = ""
+
+    @property
+    def text(self) -> str:
+        return f"[{self.kind}] {self.field_type} {self.name}".rstrip()
+
+
+@dataclass
+class ImportInfo:
+    """An import, using directive, or use declaration."""
     line: int
     text: str
-    attr_name: str
+    module: str = ""
 
 
 @dataclass
-class PyImportInfo:
+class AttrInfo:
+    """A decorator or attribute annotation."""
     line: int
     text: str
-    module: str
+    attr_name: str = ""
 
-
-# ── JavaScript / TypeScript ───────────────────────────────────────────────────
-
-@dataclass
-class JsClassInfo:
-    line: int
-    name: str
-    kind: str
-    bases: list
-
-    @property
-    def text(self) -> str:
-        suffix = f" : {', '.join(self.bases)}" if self.bases else ""
-        return f"[{self.kind}] {self.name}{suffix}"
-
-
-@dataclass
-class JsMethodInfo:
-    line: int
-    name: str
-    kind: str          # "function" | "method"
-    sig: str
-    cls_name: str = ""
-
-    @property
-    def text(self) -> str:
-        prefix = f"[in {self.cls_name}] " if self.cls_name else ""
-        return f"[{self.kind}] {prefix}{self.sig}"
-
-
-@dataclass
-class JsImportInfo:
-    line: int
-    text: str
-    module: str
-
-
-# ── Rust ──────────────────────────────────────────────────────────────────────
-
-@dataclass
-class RustClassInfo:
-    line: int
-    name: str
-    kind: str
-
-    @property
-    def text(self) -> str:
-        return f"[{self.kind}] {self.name}"
-
-
-@dataclass
-class RustMethodInfo:
-    line: int
-    name: str
-    kind: str
-    sig: str
-    impl_type: str = ""
-
-    @property
-    def text(self) -> str:
-        prefix = f"[in {self.impl_type}] " if self.impl_type else ""
-        return f"[{self.kind}] {prefix}{self.sig}"
-
-
-# ── C / C++ ───────────────────────────────────────────────────────────────────
-
-@dataclass
-class CppClassInfo:
-    line: int
-    name: str
-    kind: str
-    bases: list
-
-    @property
-    def text(self) -> str:
-        suffix = f" : {', '.join(self.bases)}" if self.bases else ""
-        return f"[{self.kind}] {self.name}{suffix}"
-
-
-@dataclass
-class CppMethodInfo:
-    line: int
-    name: str
-    kind: str          # "function" | "method"
-    sig: str
-    cls_name: str = ""
-
-    @property
-    def text(self) -> str:
-        prefix = f"[in {self.cls_name}] " if self.cls_name else ""
-        return f"[{self.kind}] {prefix}{self.sig}"
-
-
-# ── Shared ────────────────────────────────────────────────────────────────────
 
 def _make_matches(results):
     """Convert (line, text) tuples from query functions to list[{"line": N, "text": "..."}]."""

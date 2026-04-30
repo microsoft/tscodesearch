@@ -9,8 +9,7 @@ EXTENSIONS = frozenset({".py"})
 import sys
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser
-from ._util import (_make_matches, FileDescription,
-                    PyClassInfo, PyMethodInfo, PyAttrInfo, PyImportInfo)
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, AttrInfo, ImportInfo
 
 from .cs import _find_all, _text
 
@@ -68,7 +67,7 @@ def _py_base_names(node, src) -> list:
 # ── Data extraction functions ─────────────────────────────────────────────────
 
 def _py_q_classes_data(src, tree) -> list:
-    """Return list[PyClassInfo] for all class definitions."""
+    """Return list[ClassInfo] for all class definitions."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "class_definition"):
         name_node = node.child_by_field_name("name")
@@ -76,12 +75,12 @@ def _py_q_classes_data(src, tree) -> list:
             continue
         name  = _text(name_node, src).strip()
         bases = _py_base_names(node, src)
-        results.append(PyClassInfo(line=_line(node), name=name, bases=bases))
+        results.append(ClassInfo(line=_line(node), name=name, kind="class", bases=bases))
     return results
 
 
 def _py_q_methods_data(src, tree) -> list:
-    """Return list[PyMethodInfo] for all function definitions."""
+    """Return list[MethodInfo] for all function definitions."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "function_definition"):
         name_node   = node.child_by_field_name("name")
@@ -91,9 +90,11 @@ def _py_q_methods_data(src, tree) -> list:
         params_node = node.child_by_field_name("parameters")
         return_node = node.child_by_field_name("return_type")
         params_str  = _text(params_node, src).strip() if params_node else "()"
-        ret_str     = _text(return_node, src).strip() if return_node else None
+        ret_str     = _text(return_node, src).strip() if return_node else ""
         cls         = _py_enclosing_class(node, src)
         kind        = "method" if cls else "def"
+        ret_suffix  = f" {ret_str}" if ret_str else ""
+        sig         = f"def {name}{params_str}{ret_suffix}"
         param_types = []
         if params_node:
             for p in params_node.named_children:
@@ -101,26 +102,26 @@ def _py_q_methods_data(src, tree) -> list:
                     pt = p.child_by_field_name("type")
                     if pt:
                         param_types.append(_text(pt, src).strip())
-        results.append(PyMethodInfo(line=_line(node), name=name, kind=kind,
-                                    params_str=params_str, cls_name=cls or "",
+        results.append(MethodInfo(line=_line(node), name=name, kind=kind,
+                                    sig=sig, cls_name=cls or "",
                                     return_type=ret_str, param_types=param_types))
     return results
 
 
 def _py_q_attrs_data(src, tree, name=None) -> list:
-    """Return list[PyAttrInfo] for all decorators."""
+    """Return list[AttrInfo] for all decorators."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "decorator"):
         full  = _text(node, src).strip()
         dname = full.lstrip("@").split("(")[0].split(".")[-1].strip()
         if name and dname != name:
             continue
-        results.append(PyAttrInfo(line=_line(node), text=full, attr_name=dname))
+        results.append(AttrInfo(line=_line(node), text=full, attr_name=dname))
     return results
 
 
 def _py_q_imports_data(src, tree) -> list:
-    """Return list[PyImportInfo] for all import statements."""
+    """Return list[ImportInfo] for all import statements."""
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("import_statement", "import_from_statement",
@@ -139,7 +140,7 @@ def _py_q_imports_data(src, tree) -> list:
             m = node.child_by_field_name("module_name")
             if m:
                 module = _text(m, src).lstrip(".").split(".")[0]
-        results.append(PyImportInfo(line=_line(node), text=full, module=module))
+        results.append(ImportInfo(line=_line(node), text=full, module=module))
     return results
 
 

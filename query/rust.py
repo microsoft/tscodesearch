@@ -17,7 +17,7 @@ EXTENSIONS = frozenset({".rs"})
 import sys
 import tree_sitter_rust as tsrust
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, RustClassInfo, RustMethodInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo
 
 _RUST_LANG   = Language(tsrust.language())
 _rust_parser = Parser(_RUST_LANG)
@@ -137,19 +137,19 @@ def _fn_sig(node, src: bytes) -> str:
 # ── Data extraction functions ──────────────────────────────────────────────────
 
 def _rust_q_classes_data(src, tree) -> list:
-    """Return list[RustClassInfo] for all struct/enum/trait/type declarations."""
+    """Return list[ClassInfo] for all struct/enum/trait/type declarations."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
         name = _type_name(node, src)
         if not name:
             continue
         kind = node.type.replace("_item", "")
-        results.append(RustClassInfo(line=_line(node), name=name, kind=kind))
+        results.append(ClassInfo(line=_line(node), name=name, kind=kind))
     return results
 
 
 def _rust_q_methods_data(src, tree) -> list:
-    """Return list[RustMethodInfo] for all function items and impl methods."""
+    """Return list[MethodInfo] for all function items and impl methods."""
     results = []
     seen = set()
 
@@ -170,8 +170,8 @@ def _rust_q_methods_data(src, tree) -> list:
                 p = p.parent
             kind = "method" if in_impl else "fn"
             name = _fn_name(node, src) or ""
-            results.append(RustMethodInfo(line=ln, name=name, kind=kind,
-                                           sig=sig, impl_type=impl_type))
+            results.append(MethodInfo(line=ln, name=name, kind=kind,
+                                           sig=sig, cls_name=impl_type))
     return results
 
 

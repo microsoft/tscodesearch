@@ -17,7 +17,7 @@ EXTENSIONS = frozenset({".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"})
 import sys
 import tree_sitter_cpp as tscpp
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, CppClassInfo, CppMethodInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo
 
 _CPP_LANG   = Language(tscpp.language())
 _cpp_parser = Parser(_CPP_LANG)
@@ -225,7 +225,7 @@ def _fn_sig(node, src: bytes) -> str:
 # ── Data extraction functions ──────────────────────────────────────────────────
 
 def _cpp_q_classes_data(src, tree) -> list:
-    """Return list[CppClassInfo] for all class/struct/union/enum declarations."""
+    """Return list[ClassInfo] for all class/struct/union/enum declarations."""
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
         name = _class_name(node, src)
@@ -233,12 +233,12 @@ def _cpp_q_classes_data(src, tree) -> list:
             continue
         kind = node.type.replace("_specifier", "").replace("_", " ")
         bases = _base_class_names(node, src)
-        results.append(CppClassInfo(line=_line(node), name=name, kind=kind, bases=bases))
+        results.append(ClassInfo(line=_line(node), name=name, kind=kind, bases=bases))
     return results
 
 
 def _cpp_q_methods_data(src, tree) -> list:
-    """Return list[CppMethodInfo] for all function definitions and member declarations."""
+    """Return list[MethodInfo] for all function definitions and member declarations."""
     results = []
 
     def _enclosing_class(node):
@@ -256,7 +256,7 @@ def _cpp_q_methods_data(src, tree) -> list:
         sig = _fn_sig(node, src)
         cls = _enclosing_class(node)
         kind = "method" if cls else "function"
-        results.append(CppMethodInfo(line=_line(node), name=name, kind=kind,
+        results.append(MethodInfo(line=_line(node), name=name, kind=kind,
                                      sig=sig, cls_name=cls))
 
     for node in _find_all(tree.root_node, lambda n: n.type == "declaration"):
@@ -272,7 +272,7 @@ def _cpp_q_methods_data(src, tree) -> list:
         if not name:
             continue
         sig = _text(node, src).rstrip(";").strip()
-        results.append(CppMethodInfo(line=_line(node), name=name, kind="function",
+        results.append(MethodInfo(line=_line(node), name=name, kind="function",
                                      sig=sig, cls_name=""))
 
     for node in _find_all(tree.root_node, lambda n: n.type == "field_declaration"):
@@ -281,7 +281,7 @@ def _cpp_q_methods_data(src, tree) -> list:
             continue
         sig = _member_fn_sig(node, src)
         cls = _enclosing_class(node)
-        results.append(CppMethodInfo(line=_line(node), name=name, kind="method",
+        results.append(MethodInfo(line=_line(node), name=name, kind="method",
                                      sig=sig, cls_name=cls))
 
     results.sort(key=lambda r: r.line)

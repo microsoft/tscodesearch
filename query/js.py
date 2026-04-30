@@ -23,8 +23,7 @@ import sys
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Parser
-from ._util import (_make_matches, FileDescription,
-                    JsClassInfo, JsMethodInfo, JsImportInfo)
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo
 
 _JS_LANG  = Language(tsjs.language())
 _js_parser  = Parser(_JS_LANG)
@@ -127,7 +126,7 @@ def _fn_sig(node, src: bytes) -> str:
 # ── Data extraction functions ─────────────────────────────────────────────────
 
 def _js_q_classes_data(src, tree) -> list:
-    """Return list[JsClassInfo] for all class/interface/enum declarations."""
+    """Return list[ClassInfo] for all class/interface/enum declarations."""
     results = []
     type_nodes = {
         "class_declaration", "abstract_class_declaration",
@@ -143,12 +142,12 @@ def _js_q_classes_data(src, tree) -> list:
                  .replace("_alias", " alias")
                  .replace("abstract_", "abstract "))
         bases = _class_bases(node, src)
-        results.append(JsClassInfo(line=_line(node), name=name, kind=kind, bases=bases))
+        results.append(ClassInfo(line=_line(node), name=name, kind=kind, bases=bases))
     return results
 
 
 def _js_q_methods_data(src, tree) -> list:
-    """Return list[JsMethodInfo] for all function/method definitions."""
+    """Return list[MethodInfo] for all function/method definitions."""
     results = []
     fn_types = {
         "function_declaration", "generator_function_declaration",
@@ -169,7 +168,7 @@ def _js_q_methods_data(src, tree) -> list:
                     cls_name = _text(nn, src).strip()
                 break
             p = p.parent
-        results.append(JsMethodInfo(line=_line(node), name=name, kind=kind,
+        results.append(MethodInfo(line=_line(node), name=name, kind=kind,
                                     sig=sig, cls_name=cls_name))
     return results
 
@@ -190,7 +189,7 @@ def _js_q_all_call_sites_data(src, tree) -> list:
 
 
 def _js_q_imports_data(src, tree) -> list:
-    """Return list[JsImportInfo] for all import statements."""
+    """Return list[ImportInfo] for all import statements."""
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("import_statement", "import_declaration")):
@@ -200,7 +199,7 @@ def _js_q_imports_data(src, tree) -> list:
         if src_node:
             raw = _text(src_node, src).strip().strip("'\"")
             module = raw.lstrip("./").split("/")[0]
-        results.append(JsImportInfo(line=_line(node), text=full, module=module))
+        results.append(ImportInfo(line=_line(node), text=full, module=module))
     return results
 
 
