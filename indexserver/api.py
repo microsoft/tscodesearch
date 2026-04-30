@@ -617,7 +617,13 @@ class _Handler(BaseHTTPRequestHandler):
             if not ROOTS:
                 self._send_json(400, {"error": "No roots configured. Add a root with: ts root --add NAME /path/to/src"})
                 return
-            root_name = root if root else ("default" if "default" in ROOTS else next(iter(ROOTS)))
+            
+            root_name = root if root else "default";
+            # check if root matches exactly on of our known roots
+            if ROOTS.get(root_name) is None:
+                self._send_json(400, {"error": f"unknown root: {root_name!r}"})
+                return
+
             try:
                 collection, src_root = get_root(root_name)
             except ValueError as e:
