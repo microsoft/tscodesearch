@@ -314,7 +314,8 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
     """
     _q = _get_query_module()
     results = []
-    for native in files:
+    for path in files:
+        native = os.path.realpath(path)
         ext = os.path.splitext(native)[1].lower()
         try:
             with open(native, "rb") as _f:
