@@ -20,7 +20,7 @@ if _root not in sys.path:
 from tests.helpers import (
     _FOO_CS, _BAR_CS, _QUALIFIED_CS, _GENERIC_WRAPPER_CS, _BLOBSTORE_CS,
 )
-from indexserver.api import _run_query
+from indexserver.api import _run_query, HOST_ROOTS
 from indexserver.indexer import extract_metadata
 import query.dispatch as _q
 from query.cs import (
@@ -276,7 +276,6 @@ class TestQueryApi(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        import indexserver.api as _api_mod
         cls.tmpdir = tempfile.mkdtemp(prefix="ts_qapi_test_")
         cls.foo_path = os.path.join(cls.tmpdir, "Foo.cs")
         cls.bar_path = os.path.join(cls.tmpdir, "Bar.cs")
@@ -293,14 +292,13 @@ class TestQueryApi(unittest.TestCase):
         # _run_query skips paths that don't match a configured root when HOST_ROOTS
         # is non-empty. Temp paths used here aren't in production config, so clear
         # HOST_ROOTS for the duration of these tests.
-        cls._orig_host_roots = _api_mod.HOST_ROOTS.copy()
-        _api_mod.HOST_ROOTS.clear()
+        cls._orig_host_roots = HOST_ROOTS.copy()
+        HOST_ROOTS.clear()
 
     @classmethod
     def tearDownClass(cls):
         import shutil
-        import indexserver.api as _api_mod
-        _api_mod.HOST_ROOTS.update(cls._orig_host_roots)
+        HOST_ROOTS.update(cls._orig_host_roots)
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _direct(self, path, fn):

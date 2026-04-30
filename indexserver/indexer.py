@@ -185,7 +185,6 @@ def flat_from_fd(fd) -> dict:
     }
 
 
-from query.cs import _expand_type_refs  # noqa: E402 — used by tests via this module
 
 
 def extract_metadata(src_bytes: bytes, ext: str) -> dict:

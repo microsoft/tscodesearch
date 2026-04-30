@@ -17,7 +17,7 @@ EXTENSIONS = frozenset({".rs"})
 import sys
 import tree_sitter_rust as tsrust
 from tree_sitter import Language, Parser
-from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo
 
 _RUST_LANG   = Language(tsrust.language())
 _rust_parser = Parser(_RUST_LANG)

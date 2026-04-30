@@ -61,7 +61,7 @@ _EXT_TO_DESCRIBER = {
     ".sql": describe_sql_file,
 }
 
-_ALL_EXTS = set(_EXT_TO_QUERY_BYTES.keys())
+_ALL_EXTS = set(_EXT_TO_QUERY_BYTES.keys())  # noqa: F401  (re-exported — used by indexserver/query_util.py)
 
 
 def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",

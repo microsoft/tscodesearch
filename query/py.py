@@ -9,7 +9,7 @@ EXTENSIONS = frozenset({".py"})
 import sys
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser
-from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, AttrInfo, ImportInfo, CallSiteInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, AttrInfo, ImportInfo, CallSiteInfo
 
 from .cs import _find_all, _text
 

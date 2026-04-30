@@ -10,8 +10,7 @@ used by the indexer for semantic field population.
 """
 
 import re
-import sys
-from ._util import _dedupe, _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, CallSiteInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, CallSiteInfo
 
 try:
     import tree_sitter_sql as tssql
@@ -503,7 +502,7 @@ def describe_sql_file(src_bytes: bytes, ext: str = "") -> FileDescription:
             for inv in extract_invocations(root, src_bytes):
                 calls.append(CallSiteInfo(name=inv))
         except Exception:
-            pass
+            pass  # tree-sitter SQL parse failure; fall back to regex-only extraction
 
     for name in extract_proc_names_regex(src_bytes):
         methods.append(MethodInfo(line=0, name=name, kind="procedure"))

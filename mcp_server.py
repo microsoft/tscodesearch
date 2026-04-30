@@ -136,7 +136,7 @@ def _queue_warning() -> str:
         if parts:
             return f"[WARNING: index has outstanding work — {', '.join(parts)}. Results may be incomplete.]\n\n"
     except Exception:
-        pass
+        pass  # server may not be running; warnings are best-effort
     return ""
 
 def _truncate(output: str) -> tuple[str, bool]:
