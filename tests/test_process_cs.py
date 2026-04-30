@@ -23,6 +23,10 @@ from tests.helpers import (
 from indexserver.api import _run_query
 from indexserver.indexer import extract_metadata
 import query.dispatch as _q
+from query.cs import (
+    _cs_parser,
+    q_all_refs, q_calls, q_methods, q_implements, q_uses,
+)
 
 
 class TestQueryCs(unittest.TestCase):
@@ -272,6 +276,7 @@ class TestQueryApi(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        import indexserver.api as _api_mod
         cls.tmpdir = tempfile.mkdtemp(prefix="ts_qapi_test_")
         cls.foo_path = os.path.join(cls.tmpdir, "Foo.cs")
         cls.bar_path = os.path.join(cls.tmpdir, "Bar.cs")
@@ -285,17 +290,24 @@ class TestQueryApi(unittest.TestCase):
         ]:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(src)
+        # _run_query skips paths that don't match a configured root when HOST_ROOTS
+        # is non-empty. Temp paths used here aren't in production config, so clear
+        # HOST_ROOTS for the duration of these tests.
+        cls._orig_host_roots = _api_mod.HOST_ROOTS.copy()
+        _api_mod.HOST_ROOTS.clear()
 
     @classmethod
     def tearDownClass(cls):
         import shutil
+        import indexserver.api as _api_mod
+        _api_mod.HOST_ROOTS.update(cls._orig_host_roots)
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _direct(self, path, fn):
         """Call a query function directly (as query_ast MCP tool does)."""
         with open(path, "rb") as _f:
             src = _f.read()
-        tree = _q._cs_parser.parse(src)
+        tree = _cs_parser.parse(src)
         lines = src.decode("utf-8", errors="replace").splitlines()
         return fn(src, tree, lines)
 
@@ -332,7 +344,7 @@ class TestQueryApi(unittest.TestCase):
     def test_ident_matches_direct_q_all_refs(self):
         """_run_query('all_refs', ...) returns same (line, text) pairs as q_all_refs directly."""
         direct = self._direct(self.generic_path,
-                              lambda s, t, l: _q.q_all_refs(s, t, l, "IBlobStore"))
+                              lambda s, t, l: q_all_refs(s, t, l, "IBlobStore"))
         via_api = _run_query("all_refs", "IBlobStore", [self.generic_path])
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -360,7 +372,7 @@ class TestQueryApi(unittest.TestCase):
     def test_calls_matches_direct_q_calls(self):
         """_run_query('calls', 'DoWork', ...) matches q_calls directly."""
         direct = self._direct(self.bar_path,
-                              lambda s, t, l: _q.q_calls(s, t, l, "DoWork"))
+                              lambda s, t, l: q_calls(s, t, l, "DoWork"))
         via_api = _run_query("calls", "DoWork", [self.bar_path])
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -378,7 +390,7 @@ class TestQueryApi(unittest.TestCase):
 
     def test_methods_matches_direct_q_methods(self):
         """_run_query('methods', ...) returns same pairs as q_methods directly."""
-        direct = self._direct(self.foo_path, _q.q_methods)
+        direct = self._direct(self.foo_path, q_methods)
         via_api = _run_query("methods", "", [self.foo_path])
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -387,7 +399,7 @@ class TestQueryApi(unittest.TestCase):
 
     def test_implements_matches_direct(self):
         direct = self._direct(self.foo_path,
-                              lambda s, t, l: _q.q_implements(s, t, l, "IDisposable"))
+                              lambda s, t, l: q_implements(s, t, l, "IDisposable"))
         via_api = _run_query("implements", "IDisposable", [self.foo_path])
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -396,7 +408,7 @@ class TestQueryApi(unittest.TestCase):
 
     def test_field_type_matches_direct(self):
         direct = self._direct(self.generic_path,
-                              lambda s, t, l: _q.q_uses(s, t, l, "IBlobStore", uses_kind="field"))
+                              lambda s, t, l: q_uses(s, t, l, "IBlobStore", uses_kind="field"))
         via_api = _run_query("uses", "IBlobStore", [self.generic_path], uses_kind="field")
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -405,7 +417,7 @@ class TestQueryApi(unittest.TestCase):
 
     def test_param_type_matches_direct(self):
         direct = self._direct(self.generic_path,
-                              lambda s, t, l: _q.q_uses(s, t, l, "IBlobStore", uses_kind="param"))
+                              lambda s, t, l: q_uses(s, t, l, "IBlobStore", uses_kind="param"))
         via_api = _run_query("uses", "IBlobStore", [self.generic_path], uses_kind="param")
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))

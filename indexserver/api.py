@@ -324,9 +324,10 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
                 resolved = ROOTS[name].rstrip("/") + rel
                 break
         else:
-            print(f"WARN: {file_path!r} doesn't match any configured root, skipping", file=sys.stderr)
-            continue
-        native = to_native_path(resolved)
+            if HOST_ROOTS:
+                print(f"WARN: {file_path!r} doesn't match any configured root, skipping", file=sys.stderr)
+                continue
+        native = os.path.realpath(to_native_path(resolved))
         ext = os.path.splitext(native)[1].lower()
         try:
             with open(native, "rb") as _f:
