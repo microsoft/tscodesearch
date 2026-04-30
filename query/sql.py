@@ -11,6 +11,7 @@ used by the indexer for semantic field population.
 
 import re
 import sys
+from ._util import _make_matches
 
 
 
@@ -436,3 +437,32 @@ def extract_invocations(root, src: bytes) -> list:
                     names.append(name)
                 break
     return names
+
+
+
+
+# ── Process function ──────────────────────────────────────────────────────────
+
+def process_sql_file(path, mode, mode_arg, include_body=False, **kwargs):
+    """Parse a SQL file and return list[{"line": N, "text": "..."}] for the given mode."""
+    try:
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
+    except OSError as e:
+        print(f"ERROR reading {path}: {e}", file=sys.stderr)
+        return []
+
+    text = src_bytes.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+
+    dispatch = {
+        "text":         lambda: sql_q_text(lines, mode_arg),
+        "declarations": lambda: sql_q_declarations(text, lines, mode_arg),
+        "fields":       lambda: sql_q_fields(text, lines, mode_arg),
+        "calls":        lambda: sql_q_calls(text, lines, mode_arg),
+        "classes":      lambda: sql_q_classes(text, lines),
+        "methods":      lambda: sql_q_methods(text, lines),
+    }
+
+    fn = dispatch.get(mode) or (lambda: sql_q_text(lines, mode_arg) if mode_arg else [])
+    return _make_matches(fn() or [])

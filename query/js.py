@@ -23,6 +23,15 @@ import sys
 from dataclasses import dataclass
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
+from tree_sitter import Language, Parser
+from ._util import _make_matches
+
+_JS_LANG  = Language(tsjs.language())
+_js_parser  = Parser(_JS_LANG)
+_TS_LANG  = Language(tsts.language_typescript())
+_ts_parser  = Parser(_TS_LANG)
+_TSX_LANG = Language(tsts.language_tsx())
+_tsx_parser = Parser(_TSX_LANG)
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
 
@@ -404,28 +413,24 @@ def js_q_attrs(src, tree, lines, attr_name=None):
 
 # ── Process function ──────────────────────────────────────────────────────────
 
-def process_js_file(path, mode, mode_arg, show_path, count_only, context=0,
-                    src_root=None, include_body=False, **kwargs):
-    import os
-    from tree_sitter import Language, Parser
-    ext = os.path.splitext(path)[1].lower()
-    if ext in TS_EXTENSIONS:
-        lang = Language(tsts.language_tsx() if ext in TSX_EXTENSIONS else tsts.language_typescript())
-    else:
-        lang = Language(tsjs.language())
-    parser = Parser(lang)
+def process_js_file(path, mode, mode_arg, include_body=False, **kwargs):
+    """Parse a JS/TS file and return list[{"line": N, "text": "..."}] for the given mode."""
+    import os as _os
+    ext = _os.path.splitext(path)[1].lower()
+    parser = _tsx_parser if ext in TSX_EXTENSIONS else (
+        _ts_parser if ext in TS_EXTENSIONS else _js_parser)
 
     try:
         with open(path, "rb") as _f:
             src_bytes = _f.read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
     try:
         tree = parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -443,43 +448,6 @@ def process_js_file(path, mode, mode_arg, show_path, count_only, context=0,
     }
 
     fn = dispatch.get(mode)
-    if not fn:
-        print(f"Unknown mode for JS/TS: {mode!r}", file=sys.stderr)
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-
-    from .config import SRC_ROOT as _SRC_ROOT
-    _effective_root = (src_root or _SRC_ROOT).rstrip("/").replace("\\", "/")
-    _path_norm = path.replace("\\", "/")
-    if _effective_root and _path_norm.lower().startswith(_effective_root.lower() + "/"):
-        _disp_base = _path_norm[len(_effective_root) + 1:]
-    else:
-        _disp_base = _path_norm
-
-    if count_only:
-        print(f"{len(results):4d}  {_disp_base}")
-        return len(results)
-
-    for line_num_str, text in results:
-        if show_path:
-            print(f"{_disp_base}:{line_num_str}: {text}")
-        else:
-            print(f"{line_num_str}: {text}")
-
-        if context > 0 and mode != "declarations":
-            try:
-                row = int(line_num_str) - 1
-                start = max(0, row - context)
-                end   = min(len(lines), row + context + 1)
-                for i, ln in enumerate(lines[start:end], start):
-                    if i == row:
-                        continue
-                    prefix = f"  {_disp_base}:{i + 1}-" if show_path else f"  {i + 1}-"
-                    print(f"{prefix} {ln}")
-                print()
-            except (ValueError, IndexError):
-                pass
-    return len(results)
+    if fn is None:
+        raise ValueError(f"Unknown mode: {mode!r}")
+    return _make_matches(fn() or [])

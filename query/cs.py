@@ -9,6 +9,46 @@ EXTENSIONS = frozenset({".cs"})
 import re
 import sys
 from dataclasses import dataclass, field as dc_field
+import tree_sitter_c_sharp as tscsharp
+from tree_sitter import Language, Parser
+from ._util import _make_matches
+
+_CS_LANG = Language(tscsharp.language())
+_cs_parser = Parser(_CS_LANG)
+
+
+# ── C# preprocessor normaliser ────────────────────────────────────────────────
+
+_PP_RE = re.compile(rb'^\s*#\s*(\w+)')
+
+def _strip_else_branches(src_bytes: bytes) -> bytes:
+    """Pre-process C# source: assume all #if conditions are true, blank #else/#elif branches."""
+    lines = src_bytes.splitlines(keepends=True)
+    result: list[bytes] = []
+    skip_stack: list[bool] = []
+
+    def _skipping() -> bool:
+        return bool(skip_stack) and skip_stack[-1]
+
+    for line in lines:
+        m = _PP_RE.match(line)
+        directive = m.group(1).lower() if m else b""
+        if directive in (b"if", b"ifdef", b"ifndef"):
+            skip_stack.append(_skipping())
+            result.append(b"\n")
+        elif directive in (b"elif", b"else"):
+            if skip_stack:
+                skip_stack[-1] = True
+            result.append(b"\n")
+        elif directive == b"endif":
+            if skip_stack:
+                skip_stack.pop()
+            result.append(b"\n")
+        elif directive:
+            result.append(b"\n")
+        else:
+            result.append(b"\n" if _skipping() else line)
+    return b"".join(result)
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
 
@@ -1223,25 +1263,20 @@ def q_all_refs(src, tree, lines, name):
 
 # ── Process function ──────────────────────────────────────────────────────────
 
-def process_cs_file(path, mode, mode_arg, show_path, count_only, context=0,
-                 src_root=None, include_body=False, symbol_kind=None, uses_kind=None):
-    import tree_sitter_c_sharp as tscsharp
-    from tree_sitter import Language, Parser
-
-    _CS = Language(tscsharp.language())
-    _parser = Parser(_CS)
-
+def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, uses_kind=None):
+    """Parse a C# file and return list[{"line": N, "text": "..."}] for the given mode."""
     try:
         with open(path, "rb") as _f:
             src_bytes = _f.read()
     except OSError as e:
         print(f"ERROR reading {path}: {e}", file=sys.stderr)
-        return 0
+        return []
+    src_bytes = _strip_else_branches(src_bytes)
     try:
-        tree = _parser.parse(src_bytes)
+        tree = _cs_parser.parse(src_bytes)
     except Exception as e:
         print(f"ERROR parsing {path}: {e}", file=sys.stderr)
-        return 0
+        return []
 
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
@@ -1264,46 +1299,6 @@ def process_cs_file(path, mode, mode_arg, show_path, count_only, context=0,
     }
 
     fn = dispatch.get(mode)
-    if not fn:
-        return 0
-
-    results = fn()
-    if not results:
-        return 0
-
-    return _print_results(results, path, lines, show_path, count_only, context, src_root, mode)
-
-
-def _print_results(results, path, lines, show_path, count_only, context, src_root, mode):
-    from .config import SRC_ROOT as _SRC_ROOT
-    _effective_root = (src_root or _SRC_ROOT).rstrip("/").replace("\\", "/")
-    _path_norm = path.replace("\\", "/")
-    if _effective_root and _path_norm.lower().startswith(_effective_root.lower() + "/"):
-        _disp_base = _path_norm[len(_effective_root) + 1:]
-    else:
-        _disp_base = _path_norm
-
-    if count_only:
-        print(f"{len(results):4d}  {_disp_base}")
-        return len(results)
-
-    for line_num_str, text in results:
-        if show_path:
-            print(f"{_disp_base}:{line_num_str}: {text}")
-        else:
-            print(f"{line_num_str}: {text}")
-
-        if context > 0 and mode != "declarations":
-            try:
-                row = int(line_num_str) - 1
-                start = max(0, row - context)
-                end   = min(len(lines), row + context + 1)
-                for i, ln in enumerate(lines[start:end], start):
-                    if i == row:
-                        continue
-                    prefix = f"  {_disp_base}:{i + 1}-" if show_path else f"  {i + 1}-"
-                    print(f"{prefix} {ln}")
-                print()
-            except (ValueError, IndexError):
-                pass
-    return len(results)
+    if fn is None:
+        raise ValueError(f"Unknown mode: {mode!r}")
+    return _make_matches(fn() or [])

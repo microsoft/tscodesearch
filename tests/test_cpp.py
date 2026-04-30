@@ -231,7 +231,7 @@ class TestProcessCppFile(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, mode, mode_arg=None):
-        from query.dispatch import process_cpp_file
+        from query.cpp import process_cpp_file
         matches = process_cpp_file(path=self.path, mode=mode, mode_arg=mode_arg)
         path_norm = self.path.replace("\\", "/")
         root_norm = self.tmpdir.replace("\\", "/").rstrip("/")

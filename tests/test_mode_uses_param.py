@@ -22,7 +22,7 @@ from tests.fixtures import (
     PARAM_TYPED_BLOBSTORE_MULTI, FIELD_ONLY_NO_PARAMS, PARAM_TYPED_WITH_MODIFIERS,
 )
 from indexserver.indexer import extract_cs_metadata
-from query.dispatch import q_uses
+from query.cs import q_uses
 
 
 # ══════════════════════════════════════════════════════════════════════════════

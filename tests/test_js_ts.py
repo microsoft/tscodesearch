@@ -288,7 +288,7 @@ class TestProcessJsFile(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, path, mode, mode_arg=None):
-        from query.dispatch import process_js_file
+        from query.js import process_js_file
         matches = process_js_file(path=path, mode=mode, mode_arg=mode_arg)
         path_norm = path.replace("\\", "/")
         root_norm = self.tmpdir.replace("\\", "/").rstrip("/")

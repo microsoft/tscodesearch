@@ -249,7 +249,7 @@ class TestProcessRustFile(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, mode, mode_arg=None):
-        from query.dispatch import process_rust_file
+        from query.rust import process_rust_file
         matches = process_rust_file(path=self.path, mode=mode, mode_arg=mode_arg)
         path_norm = self.path.replace("\\", "/")
         root_norm = self.tmpdir.replace("\\", "/").rstrip("/")

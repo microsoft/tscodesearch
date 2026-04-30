@@ -22,7 +22,7 @@ import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
 
 from indexserver.indexer import extract_cs_metadata
-from query.dispatch import (
+from query.cs import (
     q_classes, q_methods, q_fields, q_calls, q_implements, q_attrs, q_usings, q_uses, q_casts, q_all_refs,
 )
 
