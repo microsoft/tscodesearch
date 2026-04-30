@@ -311,6 +311,7 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
     """
     _q = _get_query_module()
 
+    allowed_roots = [os.path.realpath(to_native_path(root)).rstrip("/\\") for root in ROOTS.values() if root]
     results = []
     for file_path in files:
         # Map Windows host path to native local path using HOST_ROOTS → ROOTS.
@@ -328,6 +329,9 @@ def _run_query(mode: str, pattern: str, files: list, include_body: bool = False,
                 print(f"WARN: {file_path!r} doesn't match any configured root, skipping", file=sys.stderr)
                 continue
         native = os.path.realpath(to_native_path(resolved))
+        if allowed_roots and not any(os.path.commonpath([root, native]) == root for root in allowed_roots):
+            print(f"WARN: {file_path!r} resolved outside configured roots, skipping", file=sys.stderr)
+            continue
         ext = os.path.splitext(native)[1].lower()
         try:
             with open(native, "rb") as _f:
