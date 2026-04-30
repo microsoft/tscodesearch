@@ -11,7 +11,7 @@ used by the indexer for semantic field population.
 
 import re
 import sys
-from ._util import _make_matches
+from ._util import _make_matches, FileDescription
 
 
 
@@ -466,3 +466,8 @@ def process_sql_file(path, mode, mode_arg, include_body=False, **kwargs):
 
     fn = dispatch.get(mode) or (lambda: sql_q_text(lines, mode_arg) if mode_arg else [])
     return _make_matches(fn() or [])
+
+
+def describe_sql_file(path: str) -> FileDescription:
+    """Return a FileDescription for a SQL file (no structured extraction)."""
+    return FileDescription(path=path, language="sql")

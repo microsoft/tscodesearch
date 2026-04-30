@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Parser
-from ._util import _make_matches
+from ._util import _make_matches, FileDescription
 
 _JS_LANG  = Language(tsjs.language())
 _js_parser  = Parser(_JS_LANG)
@@ -451,3 +451,28 @@ def process_js_file(path, mode, mode_arg, include_body=False, **kwargs):
     if fn is None:
         raise ValueError(f"Unknown mode: {mode!r}")
     return _make_matches(fn() or [])
+
+
+def describe_js_file(path: str) -> FileDescription:
+    """Parse path once and return all structured JS/TS data as a FileDescription."""
+    import os as _os
+    ext = _os.path.splitext(path)[1].lower()
+    parser = _tsx_parser if ext in TSX_EXTENSIONS else (
+        _ts_parser if ext in TS_EXTENSIONS else _js_parser)
+    try:
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
+    except OSError as e:
+        print(f"ERROR reading {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="js")
+    try:
+        tree = parser.parse(src_bytes)
+    except Exception as e:
+        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="js")
+    return FileDescription(
+        path=path, language="js",
+        classes=_js_q_classes_data(src_bytes, tree),
+        methods=_js_q_methods_data(src_bytes, tree),
+        imports=_js_q_imports_data(src_bytes, tree),
+    )

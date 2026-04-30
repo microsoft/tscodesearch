@@ -11,7 +11,7 @@ import sys
 from dataclasses import dataclass, field as dc_field
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
-from ._util import _make_matches
+from ._util import _make_matches, FileDescription
 
 _CS_LANG = Language(tscsharp.language())
 _cs_parser = Parser(_CS_LANG)
@@ -1302,3 +1302,27 @@ def process_cs_file(path, mode, mode_arg, include_body=False, symbol_kind=None, 
     if fn is None:
         raise ValueError(f"Unknown mode: {mode!r}")
     return _make_matches(fn() or [])
+
+
+def describe_cs_file(path: str) -> FileDescription:
+    """Parse path once and return all structured C# data as a FileDescription."""
+    try:
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
+    except OSError as e:
+        print(f"ERROR reading {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="cs")
+    src_bytes = _strip_else_branches(src_bytes)
+    try:
+        tree = _cs_parser.parse(src_bytes)
+    except Exception as e:
+        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="cs")
+    return FileDescription(
+        path=path, language="cs",
+        classes=_q_classes_data(src_bytes, tree),
+        methods=_q_methods_data(src_bytes, tree),
+        fields=_q_fields_data(src_bytes, tree),
+        imports=_q_usings_data(src_bytes, tree),
+        attrs=_q_attrs_data(src_bytes, tree),
+    )

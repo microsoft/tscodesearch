@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass, field as dc_field
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser
-from ._util import _make_matches
+from ._util import _make_matches, FileDescription
 
 from .cs import _find_all, _text
 
@@ -386,3 +386,25 @@ def process_py_file(path, mode, mode_arg, include_body=False, symbol_kind=None, 
     if fn is None:
         raise ValueError(f"Unknown mode: {mode!r}")
     return _make_matches(fn() or [])
+
+
+def describe_py_file(path: str) -> FileDescription:
+    """Parse path once and return all structured Python data as a FileDescription."""
+    try:
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
+    except OSError as e:
+        print(f"ERROR reading {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="py")
+    try:
+        tree = _py_parser.parse(src_bytes)
+    except Exception as e:
+        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="py")
+    return FileDescription(
+        path=path, language="py",
+        classes=_py_q_classes_data(src_bytes, tree),
+        methods=_py_q_methods_data(src_bytes, tree),
+        imports=_py_q_imports_data(src_bytes, tree),
+        attrs=_py_q_attrs_data(src_bytes, tree),
+    )

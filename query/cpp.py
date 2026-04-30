@@ -18,7 +18,7 @@ import sys
 from dataclasses import dataclass
 import tree_sitter_cpp as tscpp
 from tree_sitter import Language, Parser
-from ._util import _make_matches
+from ._util import _make_matches, FileDescription
 
 _CPP_LANG   = Language(tscpp.language())
 _cpp_parser = Parser(_CPP_LANG)
@@ -556,3 +556,23 @@ def process_cpp_file(path, mode, mode_arg, include_body=False, **kwargs):
     if fn is None:
         raise ValueError(f"Unknown mode: {mode!r}")
     return _make_matches(fn() or [])
+
+
+def describe_cpp_file(path: str) -> FileDescription:
+    """Parse path once and return all structured C/C++ data as a FileDescription."""
+    try:
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
+    except OSError as e:
+        print(f"ERROR reading {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="cpp")
+    try:
+        tree = _cpp_parser.parse(src_bytes)
+    except Exception as e:
+        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="cpp")
+    return FileDescription(
+        path=path, language="cpp",
+        classes=_cpp_q_classes_data(src_bytes, tree),
+        methods=_cpp_q_methods_data(src_bytes, tree),
+    )

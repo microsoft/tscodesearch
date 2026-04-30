@@ -18,7 +18,7 @@ import sys
 from dataclasses import dataclass
 import tree_sitter_rust as tsrust
 from tree_sitter import Language, Parser
-from ._util import _make_matches
+from ._util import _make_matches, FileDescription
 
 _RUST_LANG   = Language(tsrust.language())
 _rust_parser = Parser(_RUST_LANG)
@@ -409,3 +409,23 @@ def process_rust_file(path, mode, mode_arg, include_body=False, **kwargs):
     if fn is None:
         raise ValueError(f"Unknown mode: {mode!r}")
     return _make_matches(fn() or [])
+
+
+def describe_rust_file(path: str) -> FileDescription:
+    """Parse path once and return all structured Rust data as a FileDescription."""
+    try:
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
+    except OSError as e:
+        print(f"ERROR reading {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="rust")
+    try:
+        tree = _rust_parser.parse(src_bytes)
+    except Exception as e:
+        print(f"ERROR parsing {path}: {e}", file=sys.stderr)
+        return FileDescription(path=path, language="rust")
+    return FileDescription(
+        path=path, language="rust",
+        classes=_rust_q_classes_data(src_bytes, tree),
+        methods=_rust_q_methods_data(src_bytes, tree),
+    )
