@@ -650,6 +650,7 @@ class _Handler(BaseHTTPRequestHandler):
             # Resolve absolute paths for AST-eligible files
             file_list: list[str] = []
             hit_by_path: dict[str, dict] = {}
+            native_src_root = os.path.realpath(to_native_path(src_root))
             for hit in ast_hits:
                 rel = hit["document"].get("relative_path", "").replace("\\", "/")
                 # Strip the Windows host_root prefix (e.g. "C:/repos/src/Foo.cs" →
@@ -657,9 +658,12 @@ class _Handler(BaseHTTPRequestHandler):
                 # Without this, Docker produces "/source/default/C:/repos/src/Foo.cs".
                 if host_root_prefix and rel.lower().startswith(host_root_prefix.lower() + "/"):
                     rel = rel[len(host_root_prefix) + 1:]
-                abs_path = to_native_path(
+                abs_path = os.path.realpath(to_native_path(
                     src_root.rstrip("/\\") + "/" + rel
-                )
+                ))
+                # Ensure the resolved path is actually under src_root (prevents traversal).
+                if not (abs_path.startswith(native_src_root + os.sep) or abs_path == native_src_root):
+                    continue
                 if os.path.isfile(abs_path):
                     file_list.append(abs_path)
                     hit_by_path[abs_path] = hit
