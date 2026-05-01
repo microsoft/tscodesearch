@@ -339,6 +339,8 @@ def _resolve_query_paths(raw_files: list) -> list[Path]:
     """
     safe: list[Path] = []
     for file_path in raw_files:
+        if not isinstance(file_path, str):
+            raise ValueError(f"file path must be a string: {file_path!r}")
         p = file_path.replace("\\", "/")
         matched_root = rel = None
         for root in ALL_ROOTS.values():
@@ -357,9 +359,13 @@ def _resolve_query_paths(raw_files: list) -> list[Path]:
 
         if matched_root is None or rel is None:
             raise ValueError(f"path does not match any configured root: {file_path!r}")
-        
+
+        # Ensure we only ever join a safe relative suffix.
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ValueError(f"invalid relative path: {file_path!r}")
+
         # Build local path from trusted config base + verified-relative suffix.
-        # rel is a relative Path; resolve() + is_relative_to guards against symlink escape.
+        # rel is a validated relative Path; resolve() + is_relative_to guards against symlink escape.
         local_root = Path(matched_root.local_path).resolve()
         native = (local_root / rel).resolve()
         if not native.is_relative_to(local_root):
