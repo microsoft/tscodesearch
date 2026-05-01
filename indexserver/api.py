@@ -364,13 +364,14 @@ def _resolve_query_paths(raw_files: list) -> list[Path]:
         if rel.is_absolute() or ".." in rel.parts:
             raise ValueError(f"invalid relative path: {file_path!r}")
 
-        # Build local path from trusted config base + verified-relative suffix.
-        # rel is a validated relative Path; resolve() + is_relative_to guards against symlink escape.
-        local_root = Path(matched_root.local_path).resolve()
-        native = (local_root / rel).resolve()
-        if not native.is_relative_to(local_root):
+        # Build local path from trusted config base + validated relative suffix.
+        # os.path.realpath + startswith is the sanitizer pattern CodeQL recognizes
+        # for path injection; it catches symlink escape after the relative-path checks above.
+        local_root = os.path.realpath(matched_root.local_path)
+        native = os.path.realpath(os.path.join(local_root, str(rel)))
+        if not native.startswith(local_root + "/"):
             raise ValueError(f"path not under a configured root: {file_path!r}")
-        safe.append(native)
+        safe.append(Path(native))
     return safe
 
 
