@@ -99,18 +99,12 @@ if (uninstall) {
 
 console.log(`Mode: ${mode}`);
 
-// [1] Build MCP server
-step(1, 'Building MCP server');
-runOrDie('npm', ['install', '--no-fund', '--no-audit'], 'npm install', { cwd: REPO });
-runOrDie('npm', ['run', 'build'], 'TypeScript build', { cwd: REPO });
-console.log('  Done.');
-
-// [2] Register MCP
-step(2, 'Registering MCP server with Claude Code');
+// [1] Register MCP
+step(1, 'Registering MCP server with Claude Code');
 run('claude', ['mcp', 'remove', '--scope', 'user', 'tscodesearch'], { stdio: 'pipe' });
 runOrDie('claude', [
   'mcp', 'add', '--scope', 'user', 'tscodesearch',
-  '--', 'node.exe', join(REPO, 'mcp_server.js'),
+  '--', join(REPO, '.client-venv', 'Scripts', 'python.exe'), join(REPO, 'mcp_server.py'),
 ], 'claude mcp add');
 
 // Update VS Code tscodesearch.repoPath
@@ -126,6 +120,38 @@ try {
 } catch (e) {
   console.log(`  WARNING: Could not update VS Code settings: ${e.message}`);
   console.log(`  Set tscodesearch.repoPath manually to ${REPO}`);
+}
+
+// [2] Client venv — mcp_server.py + query_single_file (Windows Python, no WSL required)
+step(2, 'Creating client venv (.client-venv)');
+{
+  const clientVenv = join(REPO, '.client-venv');
+  const pyExe      = join(clientVenv, 'Scripts', 'python.exe');
+  const pipExe     = join(clientVenv, 'Scripts', 'pip.exe');
+  const reqs       = join(REPO, 'requirements-client.txt');
+
+  function findPython() {
+    for (const cmd of ['py', 'python', 'python3']) {
+      const v = capture(cmd, ['--version']);
+      if (v && v.startsWith('Python 3')) return cmd;
+    }
+    return null;
+  }
+
+  if (existsSync(pyExe)) {
+    console.log('  Already exists, updating packages...');
+    runOrDie(pipExe, ['install', '--quiet', '--upgrade', '-r', reqs], 'pip install (client)');
+  } else {
+    const python = findPython();
+    if (!python) {
+      console.log('  WARNING: Python 3 not found in PATH — skipping client venv.');
+      console.log('  Install Python 3.9+ and re-run setup to enable query_single_file.');
+    } else {
+      runOrDie(python, ['-m', 'venv', clientVenv], 'python -m venv');
+      runOrDie(pipExe, ['install', '--quiet', '--upgrade', '-r', reqs], 'pip install (client)');
+      console.log('  Done.');
+    }
+  }
 }
 
 // [3] WSL environment (wsl mode only)

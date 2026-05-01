@@ -1,10 +1,10 @@
 """
-Tests for process_cs_file() — the C# structural query API (no server needed).
+Tests for the C# structural query API — query_file() / query_cs_bytes() (no server needed).
 
-Verifies each query mode and consistency between query.py and indexer.py.
+Verifies each query mode and consistency between query/ and indexer.py.
 
 Run (from WSL):
-    ~/.local/indexserver-venv/bin/pytest codesearch/tests/test_process_cs.py -v
+    ~/.local/indexserver-venv/bin/pytest tests/test_process_cs.py -v
 """
 
 import os
@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
@@ -21,8 +22,12 @@ from tests.helpers import (
     _FOO_CS, _BAR_CS, _QUALIFIED_CS, _GENERIC_WRAPPER_CS, _BLOBSTORE_CS,
 )
 from indexserver.api import _run_query
-from indexserver.indexer import extract_cs_metadata
-import src.query.dispatch as _q
+from indexserver.indexer import extract_metadata
+import query.dispatch as _q
+from query.cs import (
+    _cs_parser,
+    q_all_refs, q_calls, q_methods, q_implements, q_uses,
+)
 
 
 class TestQueryCs(unittest.TestCase):
@@ -48,9 +53,10 @@ class TestQueryCs(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, path, mode, mode_arg=None, uses_kind=None):
-        matches = _q.process_cs_file(
-            path=path, mode=mode, mode_arg=mode_arg, uses_kind=uses_kind,
-        )
+        with open(path, "rb") as _f:
+            src_bytes = _f.read()
+        matches = _q.query_file(src_bytes, ".cs", mode, mode_arg or "",
+                                uses_kind=uses_kind)
         path_norm = path.replace("\\", "/")
         root_norm = self.tmpdir.replace("\\", "/").rstrip("/")
         disp = (path_norm[len(root_norm) + 1:]
@@ -162,13 +168,13 @@ class TestQueryCs(unittest.TestCase):
     # ── consistency: query.py ↔ indexer.py ───────────────────────────────────
 
     def test_class_names_consistent(self):
-        meta = extract_cs_metadata(_FOO_CS.encode())
+        meta = extract_metadata(_FOO_CS.encode(), ".cs")
         self.assertIn("Foo", meta["class_names"])
         n, out = self._run(self.foo_path, "classes")
         self.assertIn("Foo", out)
 
     def test_member_sigs_consistent(self):
-        meta = extract_cs_metadata(_FOO_CS.encode())
+        meta = extract_metadata(_FOO_CS.encode(), ".cs")
         sigs = meta["member_sigs"]
         self.assertTrue(any("Dispose" in s for s in sigs), f"member_sigs: {sigs}")
         n, out = self._run(self.foo_path, "methods")
@@ -176,31 +182,31 @@ class TestQueryCs(unittest.TestCase):
         self.assertIn("DoWork", out)
 
     def test_base_types_consistent(self):
-        meta = extract_cs_metadata(_FOO_CS.encode())
+        meta = extract_metadata(_FOO_CS.encode(), ".cs")
         self.assertIn("IDisposable", meta["base_types"])
         n, out = self._run(self.foo_path, "implements", "IDisposable")
         self.assertGreater(n, 0)
 
     def test_call_sites_consistent(self):
-        meta = extract_cs_metadata(_BAR_CS.encode())
+        meta = extract_metadata(_BAR_CS.encode(), ".cs")
         self.assertIn("DoWork", meta["call_sites"])
         n, out = self._run(self.bar_path, "calls", "DoWork")
         self.assertGreater(n, 0)
 
     def test_type_refs_consistent(self):
-        meta = extract_cs_metadata(_BAR_CS.encode())
+        meta = extract_metadata(_BAR_CS.encode(), ".cs")
         self.assertIn("Foo", meta["type_refs"])
         n, out = self._run(self.bar_path, "uses", "Foo", uses_kind="field")
         self.assertGreater(n, 0)
 
     def test_attr_names_consistent(self):
-        meta = extract_cs_metadata(_FOO_CS.encode())
+        meta = extract_metadata(_FOO_CS.encode(), ".cs")
         self.assertIn("Serializable", meta["attr_names"])
         n, out = self._run(self.foo_path, "attrs", "Serializable")
         self.assertGreater(n, 0)
 
     def test_usings_consistent(self):
-        meta = extract_cs_metadata(_FOO_CS.encode())
+        meta = extract_metadata(_FOO_CS.encode(), ".cs")
         self.assertIn("System", meta["usings"])
         n, out = self._run(self.foo_path, "usings")
         self.assertIn("System", out)
@@ -271,20 +277,19 @@ class TestQueryApi(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmpdir = tempfile.mkdtemp(prefix="ts_qapi_test_")
-        cls.foo_path = os.path.join(cls.tmpdir, "Foo.cs")
-        cls.bar_path = os.path.join(cls.tmpdir, "Bar.cs")
-        cls.blob_path = os.path.join(cls.tmpdir, "BlobStore.cs")
-        cls.generic_path = os.path.join(cls.tmpdir, "GenericWrapper.cs")
+        tmpdir = Path(tempfile.mkdtemp(prefix="ts_qapi_test_"))
+        cls.tmpdir = tmpdir
+        cls.foo_path = tmpdir / "Foo.cs"
+        cls.bar_path = tmpdir / "Bar.cs"
+        cls.blob_path = tmpdir / "BlobStore.cs"
+        cls.generic_path = tmpdir / "GenericWrapper.cs"
         for path, src in [
             (cls.foo_path, _FOO_CS),
             (cls.bar_path, _BAR_CS),
             (cls.blob_path, _BLOBSTORE_CS),
             (cls.generic_path, _GENERIC_WRAPPER_CS),
         ]:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(src)
-
+            path.write_text(src, encoding="utf-8")
     @classmethod
     def tearDownClass(cls):
         import shutil
@@ -294,7 +299,7 @@ class TestQueryApi(unittest.TestCase):
         """Call a query function directly (as query_ast MCP tool does)."""
         with open(path, "rb") as _f:
             src = _f.read()
-        tree = _q._parser.parse(src)
+        tree = _cs_parser.parse(src)
         lines = src.decode("utf-8", errors="replace").splitlines()
         return fn(src, tree, lines)
 
@@ -322,16 +327,16 @@ class TestQueryApi(unittest.TestCase):
             self.assertGreaterEqual(m["line"], 1)
 
     def test_original_path_preserved(self):
-        """File path in result must match exactly what was passed in."""
+        """File path in result is the resolved string form of the input Path."""
         result = _run_query("all_refs", "IBlobStore", [self.generic_path])
-        self.assertEqual(result[0]["file"], self.generic_path)
+        self.assertEqual(result[0]["file"], str(self.generic_path.resolve()))
 
     # ── ident mode vs direct call ──────────────────────────────────────────────
 
     def test_ident_matches_direct_q_all_refs(self):
         """_run_query('all_refs', ...) returns same (line, text) pairs as q_all_refs directly."""
         direct = self._direct(self.generic_path,
-                              lambda s, t, l: _q.q_all_refs(s, t, l, "IBlobStore"))
+                              lambda s, t, l: q_all_refs(s, t, l, "IBlobStore"))
         via_api = _run_query("all_refs", "IBlobStore", [self.generic_path])
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -359,7 +364,7 @@ class TestQueryApi(unittest.TestCase):
     def test_calls_matches_direct_q_calls(self):
         """_run_query('calls', 'DoWork', ...) matches q_calls directly."""
         direct = self._direct(self.bar_path,
-                              lambda s, t, l: _q.q_calls(s, t, l, "DoWork"))
+                              lambda s, t, l: q_calls(s, t, l, "DoWork"))
         via_api = _run_query("calls", "DoWork", [self.bar_path])
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -377,7 +382,7 @@ class TestQueryApi(unittest.TestCase):
 
     def test_methods_matches_direct_q_methods(self):
         """_run_query('methods', ...) returns same pairs as q_methods directly."""
-        direct = self._direct(self.foo_path, _q.q_methods)
+        direct = self._direct(self.foo_path, q_methods)
         via_api = _run_query("methods", "", [self.foo_path])
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -386,7 +391,7 @@ class TestQueryApi(unittest.TestCase):
 
     def test_implements_matches_direct(self):
         direct = self._direct(self.foo_path,
-                              lambda s, t, l: _q.q_implements(s, t, l, "IDisposable"))
+                              lambda s, t, l: q_implements(s, t, l, "IDisposable"))
         via_api = _run_query("implements", "IDisposable", [self.foo_path])
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -395,7 +400,7 @@ class TestQueryApi(unittest.TestCase):
 
     def test_field_type_matches_direct(self):
         direct = self._direct(self.generic_path,
-                              lambda s, t, l: _q.q_uses(s, t, l, "IBlobStore", uses_kind="field"))
+                              lambda s, t, l: q_uses(s, t, l, "IBlobStore", uses_kind="field"))
         via_api = _run_query("uses", "IBlobStore", [self.generic_path], uses_kind="field")
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -404,7 +409,7 @@ class TestQueryApi(unittest.TestCase):
 
     def test_param_type_matches_direct(self):
         direct = self._direct(self.generic_path,
-                              lambda s, t, l: _q.q_uses(s, t, l, "IBlobStore", uses_kind="param"))
+                              lambda s, t, l: q_uses(s, t, l, "IBlobStore", uses_kind="param"))
         via_api = _run_query("uses", "IBlobStore", [self.generic_path], uses_kind="param")
         api_pairs = [(m["line"], m["text"]) for m in via_api[0]["matches"]]
         self.assertEqual(api_pairs, list(direct))
@@ -415,15 +420,15 @@ class TestQueryApi(unittest.TestCase):
         result = _run_query("all_refs", "IBlobStore",
                             [self.generic_path, self.blob_path])
         paths = [r["file"] for r in result]
-        self.assertIn(self.generic_path, paths)
-        self.assertIn(self.blob_path, paths)
+        self.assertIn(str(self.generic_path.resolve()), paths)
+        self.assertIn(str(self.blob_path.resolve()), paths)
 
     def test_multiple_files_only_matching_files_in_result(self):
         result = _run_query("all_refs", "IBlobStore",
                             [self.foo_path, self.generic_path])
         paths = [r["file"] for r in result]
-        self.assertNotIn(self.foo_path, paths)  # Foo.cs has no IBlobStore
-        self.assertIn(self.generic_path, paths)
+        self.assertNotIn(str(self.foo_path.resolve()), paths)  # Foo.cs has no IBlobStore
+        self.assertIn(str(self.generic_path.resolve()), paths)
 
     # ── error handling ────────────────────────────────────────────────────────
 
@@ -434,14 +439,14 @@ class TestQueryApi(unittest.TestCase):
 
     def test_missing_file_is_silently_skipped(self):
         result = _run_query("all_refs", "IBlobStore",
-                            ["/tmp/does_not_exist_999.cs"])
+                            [Path("/tmp/does_not_exist_999.cs")])
         self.assertEqual(result, [])
 
     def test_missing_file_does_not_prevent_other_results(self):
         result = _run_query("all_refs", "IBlobStore",
-                            ["/tmp/does_not_exist_999.cs", self.generic_path])
+                            [Path("/tmp/does_not_exist_999.cs"), self.generic_path])
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["file"], self.generic_path)
+        self.assertEqual(result[0]["file"], str(self.generic_path.resolve()))
 
 
 if __name__ == "__main__":

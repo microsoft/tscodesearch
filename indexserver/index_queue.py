@@ -57,8 +57,6 @@ class IndexQueue:
         self._n_deleted   = 0
         self._n_skipped   = 0
         self._n_errors    = 0
-        # collection → Windows host root (empty string = no host path prefix)
-        self._host_roots: dict[str, str] = {}
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -80,14 +78,6 @@ class IndexQueue:
             self._thread.join(timeout=timeout)
 
     # ── public interface ──────────────────────────────────────────────────────
-
-    def register_host_root(self, collection: str, host_root: str) -> None:
-        """Register the Windows host root for a collection.
-
-        When set, build_document stores the full host path (e.g.
-        C:/repos/src/Foo.cs) in relative_path instead of just Foo.cs.
-        """
-        self._host_roots[collection] = host_root.replace("\\", "/").rstrip("/")
 
     def enqueue(
         self,
@@ -217,8 +207,7 @@ class IndexQueue:
         n_skipped = 0
 
         for full_path, rel, collection, action, mtime in batch:
-            host_root = self._host_roots.get(collection, "")
-            stored_id = _file_id((host_root + "/" + rel) if host_root else rel)
+            stored_id = _file_id(rel)
             if action == "delete":
                 deletes.setdefault(collection, []).append(stored_id)
             else:
@@ -238,7 +227,7 @@ class IndexQueue:
                         except Exception:
                             pass  # doc absent or fetch failed — proceed with upsert
 
-                    doc = build_document(full_path, rel, host_root=host_root)
+                    doc = build_document(full_path, rel)
                     if doc:
                         upserts.setdefault(collection, []).append(doc)
                 except OSError:

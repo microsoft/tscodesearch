@@ -1,0 +1,567 @@
+"""
+C/C++ AST query functions powered by tree-sitter.
+
+Modes:
+  classes      - List class/struct/union/enum declarations
+  methods      - List function definitions
+  calls        - Find call sites of FUNC
+  implements   - Find classes that inherit from BASE
+  declarations - Find declaration(s) by name
+  all_refs     - Find every identifier occurrence
+  includes     - List #include directives
+  params       - Show parameter list of FUNC
+"""
+
+EXTENSIONS = frozenset({".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"})
+
+import sys
+import tree_sitter_cpp as tscpp
+from tree_sitter import Language, Parser
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo
+
+_CPP_LANG   = Language(tscpp.language())
+_cpp_parser = Parser(_CPP_LANG)
+
+
+# ── Node type sets ─────────────────────────────────────────────────────────────
+
+_TYPE_DECL_NODES = {
+    "class_specifier",
+    "struct_specifier",
+    "union_specifier",
+    "enum_specifier",
+}
+
+_FUNCTION_NODES = {
+    "function_definition",
+    "function_declaration",
+}
+
+_LITERAL_NODES = {
+    "comment",
+    "string_literal",
+    "raw_string_literal",
+    "char_literal",
+    "concatenated_string",
+}
+
+
+# ── Basic helpers ──────────────────────────────────────────────────────────────
+
+def _find_all(node, predicate, results=None):
+    if results is None:
+        results = []
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if predicate(n):
+            results.append(n)
+        stack.extend(reversed(n.children))
+    return results
+
+
+def _text(node, src: bytes) -> str:
+    return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
+def _in_literal(node) -> bool:
+    p = node.parent
+    while p:
+        if p.type in _LITERAL_NODES:
+            return True
+        p = p.parent
+    return False
+
+
+def _line(node) -> int:
+    return node.start_point[0] + 1
+
+
+# ── C++-specific helpers ───────────────────────────────────────────────────────
+
+def _class_name(node, src: bytes) -> str:
+    """Get name from class_specifier / struct_specifier."""
+    n = node.child_by_field_name("name")
+    return _text(n, src).strip() if n else ""
+
+
+def _base_class_names(node, src: bytes) -> list:
+    """Get base class names from a class_specifier's base_class_clause.
+
+    Iterates direct children only — does NOT recurse — so template type
+    arguments (e.g. the T in Base<T>) are never mistaken for base classes.
+    Handles simple types (Foo), qualified types (A::Foo), and template
+    types (Foo<T>).
+    """
+    names = []
+    for child in node.children:
+        if child.type != "base_class_clause":
+            continue
+        for item in child.children:
+            if item.type == "type_identifier":
+                t = _text(item, src).strip()
+                if t not in ("public", "private", "protected", "virtual") and t:
+                    names.append(t)
+            elif item.type == "qualified_identifier":
+                # A::B::Foo → Foo  /  A::B::Foo<T> → Foo
+                name_node = item.child_by_field_name("name")
+                if name_node:
+                    if name_node.type == "template_type":
+                        tname = name_node.child_by_field_name("name")
+                        if tname:
+                            names.append(_text(tname, src).strip())
+                    else:
+                        names.append(_text(name_node, src).strip())
+            elif item.type == "template_type":
+                # Foo<T> → Foo (ignore template args)
+                name_node = item.child_by_field_name("name")
+                if name_node:
+                    names.append(_text(name_node, src).strip())
+    return names
+
+
+def _member_fn_name(node, src: bytes) -> str:
+    """Return the function name if node is a field_declaration for a member function.
+
+    Handles pure virtual (virtual void init() = 0), const, and pointer-return
+    variants.  Returns "" for ordinary field declarations (int x, etc.).
+    """
+    if node.type != "field_declaration":
+        return ""
+    decl = node.child_by_field_name("declarator")
+    if decl is None:
+        return ""
+    if decl.type == "function_declarator":
+        inner = decl.child_by_field_name("declarator")
+        return _fn_declarator_name(inner, src) if inner else ""
+    if decl.type in ("pointer_declarator", "reference_declarator"):
+        inner = decl.child_by_field_name("declarator")
+        if inner and inner.type == "function_declarator":
+            name_node = inner.child_by_field_name("declarator")
+            return _fn_declarator_name(name_node, src) if name_node else ""
+    return ""
+
+
+def _member_fn_sig(node, src: bytes) -> str:
+    """Build a signature string for a field_declaration member function."""
+    name = _member_fn_name(node, src)
+    if not name:
+        return ""
+    type_node = node.child_by_field_name("type")
+    ret_txt = _text(type_node, src).strip() if type_node else ""
+    decl = node.child_by_field_name("declarator")
+    params_node = None
+    if decl:
+        fn_decl = decl if decl.type == "function_declarator" else None
+        if fn_decl is None and decl.type in ("pointer_declarator", "reference_declarator"):
+            fn_decl = decl.child_by_field_name("declarator")
+        if fn_decl and fn_decl.type == "function_declarator":
+            params_node = fn_decl.child_by_field_name("parameters")
+    params_txt = _text(params_node, src).strip() if params_node else "()"
+    return f"{ret_txt} {name}{params_txt}".strip()
+
+
+def _fn_declarator_name(node, src: bytes) -> str:
+    """Recursively extract the identifier name from a declarator node."""
+    # function_declarator → declarator → (pointer_declarator →)* identifier / qualified_identifier
+    if node.type in ("identifier", "field_identifier"):
+        return _text(node, src).strip()
+    if node.type == "qualified_identifier":
+        # A::B::foo → just return the last part (may itself be operator_name)
+        name_node = node.child_by_field_name("name")
+        if name_node:
+            return _fn_declarator_name(name_node, src)
+        return _text(node, src).strip()
+    if node.type == "operator_name":
+        # operator+, operator[], operator=, etc. — return the full token
+        return _text(node, src).strip()
+    if node.type == "destructor_name":
+        # ~ClassName — return as-is so it's distinguishable from the constructor
+        return _text(node, src).strip()
+    # recurse into declarator / pointer_declarator
+    decl = node.child_by_field_name("declarator")
+    if decl:
+        return _fn_declarator_name(decl, src)
+    for c in node.children:
+        r = _fn_declarator_name(c, src)
+        if r:
+            return r
+    return ""
+
+
+def _fn_name(node, src: bytes) -> str:
+    """Get function name from a function_definition node."""
+    decl = node.child_by_field_name("declarator")
+    if not decl:
+        return ""
+    # declarator might be function_declarator directly
+    if decl.type == "function_declarator":
+        inner = decl.child_by_field_name("declarator")
+        return _fn_declarator_name(inner, src) if inner else ""
+    return _fn_declarator_name(decl, src)
+
+
+def _fn_sig(node, src: bytes) -> str:
+    """Build a signature string for a function_definition node."""
+    name = _fn_name(node, src)
+    # Return type is the type child
+    type_node = node.child_by_field_name("type")
+    ret_txt = _text(type_node, src).strip() if type_node else ""
+    # Parameter list
+    decl = node.child_by_field_name("declarator")
+    params_node = None
+    if decl:
+        if decl.type == "function_declarator":
+            params_node = decl.child_by_field_name("parameters")
+        else:
+            # could be pointer_declarator wrapping function_declarator
+            for c in _find_all(decl, lambda n: n.type == "function_declarator"):
+                params_node = c.child_by_field_name("parameters")
+                break
+    params_txt = _text(params_node, src).strip() if params_node else "()"
+    return f"{ret_txt} {name}{params_txt}".strip()
+
+
+# ── Data extraction functions ──────────────────────────────────────────────────
+
+def _cpp_q_classes_data(src, tree) -> list:
+    """Return list[ClassInfo] for all class/struct/union/enum declarations."""
+    results = []
+    for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
+        name = _class_name(node, src)
+        if not name:
+            continue
+        kind = node.type.replace("_specifier", "").replace("_", " ")
+        bases = _base_class_names(node, src)
+        results.append(ClassInfo(line=_line(node), name=name, kind=kind, bases=bases))
+    return results
+
+
+def _cpp_q_methods_data(src, tree) -> list:
+    """Return list[MethodInfo] for all function definitions and member declarations."""
+    results = []
+
+    def _enclosing_class(node):
+        p = node.parent
+        while p:
+            if p.type in _TYPE_DECL_NODES:
+                return _class_name(p, src)
+            p = p.parent
+        return ""
+
+    for node in _find_all(tree.root_node, lambda n: n.type == "function_definition"):
+        name = _fn_name(node, src)
+        if not name:
+            continue
+        sig = _fn_sig(node, src)
+        cls = _enclosing_class(node)
+        kind = "method" if cls else "function"
+        results.append(MethodInfo(line=_line(node), name=name, kind=kind,
+                                     sig=sig, cls_name=cls))
+
+    for node in _find_all(tree.root_node, lambda n: n.type == "declaration"):
+        if _enclosing_class(node):
+            continue
+        fn_decl = next(
+            (c for c in node.children if c.type == "function_declarator"), None
+        )
+        if fn_decl is None:
+            continue
+        name_node = fn_decl.child_by_field_name("declarator")
+        name = _fn_declarator_name(name_node, src) if name_node else ""
+        if not name:
+            continue
+        sig = _text(node, src).rstrip(";").strip()
+        results.append(MethodInfo(line=_line(node), name=name, kind="function",
+                                     sig=sig, cls_name=""))
+
+    for node in _find_all(tree.root_node, lambda n: n.type == "field_declaration"):
+        name = _member_fn_name(node, src)
+        if not name:
+            continue
+        sig = _member_fn_sig(node, src)
+        cls = _enclosing_class(node)
+        results.append(MethodInfo(line=_line(node), name=name, kind="method",
+                                     sig=sig, cls_name=cls))
+
+    results.sort(key=lambda r: r.line)
+    return results
+
+
+# ── Query functions ───────────────────────────────────────────────────────────
+
+def cpp_q_classes(src, tree, lines):
+    """List class/struct/union/enum declarations."""
+    return [(_r.line, _r.text) for _r in _cpp_q_classes_data(src, tree)]
+
+
+def cpp_q_methods(src, tree, lines):
+    """List function definitions and member function declarations."""
+    return [(_r.line, _r.text) for _r in _cpp_q_methods_data(src, tree)]
+
+
+def cpp_q_calls(src, tree, lines, func_name):
+    """Find call sites of FUNC."""
+    # Support qualified name: Class::method or obj.method
+    if "::" in func_name:
+        qualifier, bare_name = func_name.rsplit("::", 1)
+        qual_sep = "::"
+    elif "." in func_name:
+        qualifier, bare_name = func_name.rsplit(".", 1)
+        qual_sep = "."
+    else:
+        qualifier, bare_name = None, func_name
+        qual_sep = None
+
+    results = []
+    seen_rows = set()
+
+    for node in _find_all(tree.root_node, lambda n: n.type == "call_expression"):
+        if _in_literal(node):
+            continue
+        fn = node.child_by_field_name("function")
+        if not fn:
+            continue
+        matched = None
+        if fn.type == "identifier":
+            if qualifier is None:
+                matched = _text(fn, src).strip()
+        elif fn.type == "field_expression":
+            field = fn.child_by_field_name("field")
+            arg   = fn.child_by_field_name("argument")
+            if field:
+                matched = _text(field, src).strip()
+                if qualifier and arg:
+                    arg_txt = _text(arg, src).strip()
+                    if not (arg_txt == qualifier or arg_txt.endswith(qual_sep + qualifier)):
+                        matched = None
+        elif fn.type == "qualified_identifier":
+            name_node = fn.child_by_field_name("name")
+            scope_node = fn.child_by_field_name("scope")
+            if name_node:
+                matched = _text(name_node, src).strip()
+                if qualifier and scope_node:
+                    scope_txt = _text(scope_node, src).strip()
+                    if not (scope_txt == qualifier or scope_txt.endswith("::" + qualifier)):
+                        matched = None
+
+        if matched == bare_name:
+            row = node.start_point[0]
+            if row not in seen_rows:
+                seen_rows.add(row)
+                raw = _text(node, src).replace("\n", " ")
+                if len(raw) > 140:
+                    raw = raw[:140] + "…"
+                results.append((_line(node), raw))
+
+    return results
+
+
+def cpp_q_implements(src, tree, lines, base_name):
+    """Find classes/structs that inherit from BASE."""
+    results = []
+    for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
+        bases = _base_class_names(node, src)
+        if base_name not in bases:
+            continue
+        name = _class_name(node, src)
+        if not name:
+            continue
+        kind = node.type.replace("_specifier", "")
+        suffix = ", ".join(bases)
+        results.append((_line(node), f"[{kind}] {name} : {suffix}"))
+    return results
+
+
+def cpp_q_declarations(src, tree, lines, name, include_body=False):
+    """Find declaration(s) named NAME."""
+    results = []
+
+    def _matches(decl_name):
+        if not decl_name:
+            return False
+        # Accept short name (last :: segment) or full qualified name.
+        short = decl_name.split("::")[-1]
+        return short == name or decl_name == name
+
+    def _append(node, decl_name, kind):
+        start_row = node.start_point[0]
+        end_row = node.end_point[0]
+        if include_body:
+            content = "\n".join(lines[start_row:end_row + 1])
+        else:
+            body_node = node.child_by_field_name("body")
+            if body_node:
+                sig_end = body_node.start_point[0]
+                content = "\n".join(lines[start_row:sig_end]).rstrip()
+            else:
+                content = "\n".join(lines[start_row:end_row + 1])
+        header = f"── [{kind}] {name}  (lines {start_row + 1}–{end_row + 1}) ──"
+        results.append((_line(node), f"{header}\n{content}"))
+
+    # Classes / structs / enums
+    for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
+        decl_name = _class_name(node, src)
+        if _matches(decl_name):
+            kind = node.type.replace("_specifier", "")
+            _append(node, decl_name, kind)
+
+    # Function definitions and non-trailing-return-type declarations
+    for node in _find_all(tree.root_node, lambda n: n.type in _FUNCTION_NODES):
+        decl_name = _fn_name(node, src)
+        if _matches(decl_name):
+            kind = node.type.replace("_definition", "").replace("_declaration", "")
+            _append(node, decl_name, kind)
+
+    # Trailing-return-type free-function prototypes:
+    #   `auto foo(int x) -> T;` is a `declaration` node (not `function_declaration`)
+    #   because `auto` is the placeholder type and the declarator contains the real signature.
+    for node in _find_all(tree.root_node, lambda n: n.type == "declaration"):
+        fn_decl = next(
+            (c for c in node.children if c.type == "function_declarator"), None
+        )
+        if fn_decl is None:
+            continue
+        name_node = fn_decl.child_by_field_name("declarator")
+        decl_name = _fn_declarator_name(name_node, src) if name_node else ""
+        if _matches(decl_name):
+            _append(node, decl_name, "function")
+
+    # Member function declarations in class bodies (pure virtual, prototypes)
+    for node in _find_all(tree.root_node, lambda n: n.type == "field_declaration"):
+        decl_name = _member_fn_name(node, src)
+        if _matches(decl_name):
+            _append(node, decl_name, "method")
+
+    results.sort(key=lambda r: r[0])
+    return results
+
+
+def cpp_q_all_refs(src, tree, lines, name):
+    """Find every occurrence of NAME as an identifier."""
+    results = []
+    seen_rows = set()
+    for node in _find_all(tree.root_node, lambda n: n.type in ("identifier", "type_identifier")):
+        if _text(node, src).strip() != name:
+            continue
+        if _in_literal(node):
+            continue
+        row = node.start_point[0]
+        if row in seen_rows:
+            continue
+        seen_rows.add(row)
+        line_text = lines[row].strip() if row < len(lines) else ""
+        results.append((_line(node), line_text))
+    return results
+
+
+def cpp_q_includes(src, tree, lines):
+    """List #include directives."""
+    results = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "preproc_include"):
+        results.append((_line(node), _text(node, src).strip()))
+    return results
+
+
+def cpp_q_params(src, tree, lines, func_name):
+    """Show parameter list of FUNC."""
+    results = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "function_definition"):
+        if _fn_name(node, src) != func_name:
+            continue
+        # Find the function_declarator to get its parameters
+        decl = node.child_by_field_name("declarator")
+        params_node = None
+        if decl:
+            if decl.type == "function_declarator":
+                params_node = decl.child_by_field_name("parameters")
+            else:
+                for c in _find_all(decl, lambda n: n.type == "function_declarator"):
+                    params_node = c.child_by_field_name("parameters")
+                    break
+        if not params_node:
+            results.append((_line(node), "(no parameters)"))
+            continue
+        param_lines = []
+        for p in params_node.named_children:
+            if p.type == "parameter_declaration":
+                param_lines.append(f"  {_text(p, src).strip()}")
+            elif p.type == "variadic_parameter_declaration":
+                param_lines.append(f"  {_text(p, src).strip()}")
+        results.append((_line(node), "\n".join(param_lines) or "(no parameters)"))
+    return results
+
+
+# ── Process function ──────────────────────────────────────────────────────────
+
+def query_cpp_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False, **kwargs):
+    """Parse C/C++ bytes and return list[{"line": N, "text": "..."}] for the given mode."""
+    try:
+        tree = _cpp_parser.parse(src_bytes)
+    except Exception as e:
+        print(f"ERROR parsing C/C++ source: {e}", file=sys.stderr)
+        return []
+
+    lines = src_bytes.decode("utf-8", errors="replace").splitlines()
+
+    dispatch = {
+        "classes":      lambda: cpp_q_classes(src_bytes, tree, lines),
+        "methods":      lambda: cpp_q_methods(src_bytes, tree, lines),
+        "calls":        lambda: cpp_q_calls(src_bytes, tree, lines, mode_arg),
+        "implements":   lambda: cpp_q_implements(src_bytes, tree, lines, mode_arg),
+        "declarations": lambda: cpp_q_declarations(src_bytes, tree, lines, mode_arg,
+                                                   include_body=include_body),
+        "all_refs":     lambda: cpp_q_all_refs(src_bytes, tree, lines, mode_arg),
+        "includes":     lambda: cpp_q_includes(src_bytes, tree, lines),
+        "params":       lambda: cpp_q_params(src_bytes, tree, lines, mode_arg),
+    }
+
+    fn = dispatch.get(mode)
+    if fn is None:
+        raise ValueError(f"Unknown mode: {mode!r}")
+    return _make_matches(fn() or [])
+
+
+
+
+def describe_cpp_file(src_bytes: bytes, ext: str = "") -> FileDescription:
+    """Return all structured C/C++ data from src_bytes as a FileDescription."""
+    try:
+        tree = _cpp_parser.parse(src_bytes)
+    except Exception as e:
+        print(f"ERROR parsing C/C++ source: {e}", file=sys.stderr)
+        return FileDescription(language="cpp")
+
+    # call sites
+    call_sites_raw = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "call_expression"):
+        fn = node.child_by_field_name("function")
+        if fn:
+            if fn.type == "identifier":
+                call_sites_raw.append(_text(fn, src_bytes).strip())
+            elif fn.type == "field_expression":
+                f = fn.child_by_field_name("field")
+                if f:
+                    call_sites_raw.append(_text(f, src_bytes).strip())
+            elif fn.type == "qualified_identifier":
+                nn = fn.child_by_field_name("name")
+                if nn:
+                    call_sites_raw.append(_text(nn, src_bytes).strip())
+
+    # #include → ImportInfo (header name without path/extension as module)
+    imports_list = []
+    for node in _find_all(tree.root_node, lambda n: n.type == "preproc_include"):
+        path_node = node.child_by_field_name("path")
+        if path_node:
+            raw = _text(path_node, src_bytes).strip().strip("<>\"")
+            seg = raw.split("/")[-1].split(".")[0]
+            if seg:
+                imports_list.append(ImportInfo(line=_line(node), text=raw, module=seg))
+
+    return FileDescription(
+        language="cpp",
+        classes=_cpp_q_classes_data(src_bytes, tree),
+        methods=_cpp_q_methods_data(src_bytes, tree),
+        imports=imports_list,
+        call_site_infos=[CallSiteInfo(name=n) for n in call_sites_raw],
+    )

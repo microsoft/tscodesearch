@@ -22,7 +22,7 @@ dependencies = [
 dev = ["pytest"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "query/tests"]
 python_files = ["test_*.py"]
 filterwarnings = ["ignore::DeprecationWarning:typesense"]
 

@@ -20,116 +20,13 @@ if _base not in sys.path:
     sys.path.insert(0, _base)
 
 import typesense
-import tree_sitter_c_sharp as tscsharp
-from tree_sitter import Language, Parser
-
-try:
-    import tree_sitter_python as tspython
-    _PY_AVAILABLE = True
-except ImportError:
-    _PY_AVAILABLE = False
-
-try:
-    import tree_sitter_rust as tsrust
-    _RUST_AVAILABLE = True
-except ImportError:
-    _RUST_AVAILABLE = False
-
-try:
-    import tree_sitter_javascript as tsjs
-    _JS_AVAILABLE = True
-except ImportError:
-    _JS_AVAILABLE = False
-
-try:
-    import tree_sitter_typescript as tsts
-    _TS_AVAILABLE = True
-except ImportError:
-    _TS_AVAILABLE = False
-
-try:
-    import tree_sitter_cpp as tscpp
-    _CPP_AVAILABLE = True
-except ImportError:
-    _CPP_AVAILABLE = False
-
-try:
-    import tree_sitter_sql as tssql
-    _SQL_AVAILABLE = True
-except ImportError:
-    _SQL_AVAILABLE = False
 
 from indexserver.config import (
     TYPESENSE_CLIENT_CONFIG, COLLECTION, SRC_ROOT,
     INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES,
-    collection_for_root,
+    collection_for_root, to_native_path,
 )
-from src.ast.cs import (
-    _TYPE_DECL_NODES, _MEMBER_DECL_NODES, _find_all, _text, _unqualify, _unqualify_type,
-    _base_type_names, _collect_ctor_names,
-)
-_node_text = _text  # local alias — indexer historically used _node_text
-
-def _to_native_path(path: str) -> str:
-    """Convert a Windows-style path (C:/foo or C:\\foo) to the platform-native form.
-
-    On WSL (Linux), converts to /mnt/c/foo so that open() works correctly.
-    On Windows, converts forward slashes to backslashes.
-    """
-    p = path.replace("\\", "/")
-    if len(p) >= 2 and p[1] == ":":
-        if os.sep == "/":
-            # WSL: C:/foo/bar → /mnt/c/foo/bar
-            return "/mnt/" + p[0].lower() + p[2:]
-        else:
-            # Windows: C:/foo/bar → C:\foo\bar
-            return p.replace("/", "\\")
-    return p
-
-
-_SRC_ROOT_NATIVE = _to_native_path(SRC_ROOT)
-
-CS = Language(tscsharp.language())
-_parser = Parser(CS)
-
-if _PY_AVAILABLE:
-    _PY = Language(tspython.language())
-    _py_parser = Parser(_PY)
-else:
-    _py_parser = None
-
-if _RUST_AVAILABLE:
-    _RUST = Language(tsrust.language())
-    _rust_parser = Parser(_RUST)
-else:
-    _rust_parser = None
-
-if _JS_AVAILABLE:
-    _JS = Language(tsjs.language())
-    _js_parser = Parser(_JS)
-else:
-    _js_parser = None
-
-if _TS_AVAILABLE:
-    _TS = Language(tsts.language_typescript())
-    _ts_parser = Parser(_TS)
-    _TSX = Language(tsts.language_tsx())
-    _tsx_parser = Parser(_TSX)
-else:
-    _ts_parser = None
-    _tsx_parser = None
-
-if _CPP_AVAILABLE:
-    _CPP = Language(tscpp.language())
-    _cpp_parser = Parser(_CPP)
-else:
-    _cpp_parser = None
-
-if _SQL_AVAILABLE:
-    _SQL = Language(tssql.language())
-    _sql_parser = Parser(_SQL)
-else:
-    _sql_parser = None
+from query.dispatch import describe_file
 
 
 # ---------------------------------------------------------------------------
@@ -183,224 +80,75 @@ SCHEMA = build_schema(COLLECTION)
 
 
 # ---------------------------------------------------------------------------
-# Tree-sitter symbol extraction
+# Metadata extraction — derives all flat fields from FileDescription structure
 # ---------------------------------------------------------------------------
 
-def _dedupe(seq):
-    seen = set()
-    out = []
-    for x in seq:
-        if x and x not in seen:
-            seen.add(x)
-            out.append(x)
-    return out
-
-
-def _expand_type_refs(text: str) -> list:
-    """Return the unqualified type string PLUS each individual type name it contains.
-
-    This ensures that searching for a type finds it whether it appears as the
-    direct type or as a type argument of a generic wrapper:
-      'IList<IFoo>'               → ['IList<IFoo>', 'IList', 'IFoo']
-      'Task<IBlobStore>'          → ['Task<IBlobStore>', 'Task', 'IBlobStore']
-      'Dictionary<string, IFoo>' → ['Dictionary<string, IFoo>', 'Dictionary', 'string', 'IFoo']
-      'IBlobStore'                → ['IBlobStore']
-    """
-    unqual = _unqualify_type(text)
-    names = [unqual]
-    for name in re.findall(r'[A-Za-z_]\w*', unqual):
-        if name != unqual:
-            names.append(name)
+def _expand_type(t: str) -> list:
+    """Extract all identifier names from a type expression (works for <> and [] generics)."""
+    base = t.rsplit(".", 1)[-1] if "." in t else t
+    names = [base] if base else []
+    for ident in re.findall(r'[A-Za-z_]\w*', base):
+        if ident != base:
+            names.append(ident)
     return names
 
 
-def extract_cs_metadata(src_bytes: bytes) -> dict:
-    """Extract rich C# metadata for tier 1+2 semantic indexing."""
-    try:
-        tree = _parser.parse(src_bytes)
-    except Exception:
-        return {
-            "namespace": "", "class_names": [], "method_names": [],
-            "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
-            "type_refs": [], "attr_names": [], "usings": [],
-            "return_types": [], "param_types": [], "field_types": [],
-            "local_types": [], "member_accesses": [],
-        }
+def flat_from_fd(fd) -> dict:
+    """Derive all indexer flat fields from a FileDescription's structured data."""
+    from query._util import _dedupe
 
-    root = tree.root_node
-    namespace = ""
-    class_names = []
-    method_names = []
+    class_names = [c.name for c in fd.classes]
+
     base_types = []
-    call_sites = []
-    cast_types = []
-    member_sigs = []
-    type_refs = []
-    attr_names = []
-    usings = []
-    return_types = []
-    param_types = []
-    field_types = []
-    local_types = []
-    member_accesses = []
-
-    # Namespace
-    ns_nodes = _find_all(root, lambda n: n.type in (
-        "namespace_declaration", "file_scoped_namespace_declaration"
-    ))
-    if ns_nodes:
-        name_node = ns_nodes[0].child_by_field_name("name")
-        if name_node:
-            namespace = _node_text(name_node, src_bytes)
-
-    # T2: using imports
-    for node in _find_all(root, lambda n: n.type == "using_directive"):
-        for child in node.named_children:
-            if child.type in ("identifier", "qualified_name"):
-                text = _node_text(child, src_bytes)
-                usings.append(text.split(".")[0])  # top-level namespace
-                break
-
-    # attr_names
-    for node in _find_all(root, lambda n: n.type == "attribute"):
-        name_node = node.child_by_field_name("name")
-        if name_node:
-            attr_name = _node_text(name_node, src_bytes)
-            if attr_name.endswith("Attribute"):
-                attr_name = attr_name[:-len("Attribute")]
-            attr_names.append(_unqualify(attr_name))
-
-    # Type declarations
-    for node in _find_all(root, lambda n: n.type in _TYPE_DECL_NODES):
-        name_node = node.child_by_field_name("name")
-        if name_node:
-            class_names.append(_node_text(name_node, src_bytes))
-
-        # T1: base_types
-        for bt in _base_type_names(node, src_bytes):
-            unqual = _unqualify(bt)
-            # Strip generic suffix: 'IBar<C>' → 'IBar'
+    for c in fd.classes:
+        for bt in c.bases:
+            unqual = bt.rsplit(".", 1)[-1] if "." in bt else bt
             idx = unqual.find("<")
             base_types.append(unqual[:idx].strip() if idx >= 0 else unqual)
 
-    # Member declarations
-    for node in _find_all(root, lambda n: n.type in _MEMBER_DECL_NODES):
-        name_node = node.child_by_field_name("name")
-        if name_node:
-            method_names.append(_node_text(name_node, src_bytes))
-        elif node.type in ("field_declaration", "event_field_declaration"):
-            for var in _find_all(node, lambda n: n.type == "variable_declarator"):
-                vname = var.child_by_field_name("name")
-                if vname:
-                    method_names.append(_node_text(vname, src_bytes))
+    method_names = [m.name for m in fd.methods]
+    _NO_SIG_KINDS = {"field", "property", "event"}
+    member_sigs = (
+        [m.sig for m in fd.methods if m.sig and m.kind not in _NO_SIG_KINDS]
+        + [f.sig for f in fd.fields if f.sig]
+    )
 
-        # member_sigs (methods + constructors)
-        if node.type in ("method_declaration", "local_function_statement",
-                         "constructor_declaration"):
-            ret_node = node.child_by_field_name("returns") or node.child_by_field_name("type")
-            name_node2 = node.child_by_field_name("name")
-            params_node = node.child_by_field_name("parameters")
-            if name_node2 and params_node:
-                ret_txt = _node_text(ret_node, src_bytes).strip() if ret_node else ""
-                mname = _node_text(name_node2, src_bytes)
-                sig_param_types = []
-                for param in _find_all(params_node, lambda n: n.type == "parameter"):
-                    ptype = param.child_by_field_name("type")
-                    if ptype:
-                        ptype_txt = _node_text(ptype, src_bytes).strip()
-                        sig_param_types.append(ptype_txt)
-                        param_types.extend(_expand_type_refs(ptype_txt))
-                sig = f"{ret_txt} {mname}({', '.join(sig_param_types)})".strip()
-                member_sigs.append(sig)
-                if ret_txt:
-                    return_types.extend(_expand_type_refs(ret_txt))
+    return_types = []
+    param_types  = []
+    for m in fd.methods:
+        if m.return_type:
+            return_types.extend(_expand_type(m.return_type))
+        for pt in m.param_types:
+            param_types.extend(_expand_type(pt))
 
-        # field_types + type_refs
-        if node.type in ("field_declaration", "event_field_declaration"):
-            var_decl = next((c for c in node.children if c.type == "variable_declaration"), None)
-            if var_decl:
-                type_node = var_decl.child_by_field_name("type")
-                if type_node:
-                    expanded = _expand_type_refs(_node_text(type_node, src_bytes).strip())
-                    field_types.extend(expanded)
-                    type_refs.extend(expanded)
-        elif node.type in ("property_declaration", "event_declaration"):
-            type_node = node.child_by_field_name("type")
-            if type_node:
-                expanded = _expand_type_refs(_node_text(type_node, src_bytes).strip())
-                field_types.extend(expanded)
-                type_refs.extend(expanded)
-        if node.type == "method_declaration":
-            ret_node = node.child_by_field_name("returns") or node.child_by_field_name("type")
-            if ret_node:
-                type_refs.extend(_expand_type_refs(_node_text(ret_node, src_bytes).strip()))
-        if node.type in ("method_declaration", "constructor_declaration"):
-            params_node = node.child_by_field_name("parameters")
-            if params_node:
-                for param in _find_all(params_node, lambda n: n.type == "parameter"):
-                    ptype = param.child_by_field_name("type")
-                    if ptype:
-                        type_refs.extend(_expand_type_refs(_node_text(ptype, src_bytes).strip()))
+    field_types = []
+    for f in fd.fields:
+        if f.field_type:
+            field_types.extend(_expand_type(f.field_type))
+    for m in fd.methods:
+        if m.kind == "event" and m.sig and m.name:
+            suffix = f" {m.name}"
+            if m.sig.endswith(suffix) and len(m.sig) > len(suffix):
+                event_type = m.sig[:-len(suffix)].strip()
+                if event_type:
+                    field_types.extend(_expand_type(event_type))
 
-    # T1: call sites (method calls)
-    for node in _find_all(root, lambda n: n.type == "invocation_expression"):
-        fn_node = node.child_by_field_name("function")
-        if fn_node:
-            if fn_node.type == "member_access_expression":
-                name_node = fn_node.child_by_field_name("name")
-                if name_node:
-                    call_sites.append(_node_text(name_node, src_bytes))
-            elif fn_node.type == "identifier":
-                call_sites.append(_node_text(fn_node, src_bytes))
+    call_sites      = [cs.name for cs in fd.call_site_infos]
+    cast_types      = [t for ci in fd.cast_infos      for t in _expand_type(ci.target_type)]
+    local_types     = [t for lv in fd.local_var_infos  for t in _expand_type(lv.var_type)]
+    member_accesses = [ma.member for ma in fd.member_access_infos]
 
-    # T1: call sites (constructor calls — new Foo(...))
-    call_sites.extend(_collect_ctor_names(root, src_bytes))
-
-    # local_types + type_refs
-    for node in _find_all(root, lambda n: n.type == "local_declaration_statement"):
-        var_decl = next((c for c in node.children if c.type == "variable_declaration"), None)
-        if var_decl:
-            type_node = var_decl.child_by_field_name("type")
-            if type_node:
-                expanded = _expand_type_refs(_node_text(type_node, src_bytes).strip())
-                local_types.extend(expanded)
-                type_refs.extend(expanded)
-
-    # T2: static call receivers — PascalCase identifier as receiver of .Method(...)
-    # e.g. BlobStore.Delete(key) → 'BlobStore' added to type_refs
-    for node in _find_all(root, lambda n: n.type == "invocation_expression"):
-        fn_node = node.child_by_field_name("function")
-        if fn_node and fn_node.type == "member_access_expression":
-            expr = fn_node.child_by_field_name("expression")
-            if expr and expr.type == "identifier":
-                name = _node_text(expr, src_bytes)
-                if name and name[0].isupper():
-                    type_refs.extend(_expand_type_refs(name))
-
-    # cast_types (explicit cast target types — (Widget)obj)
-    for node in _find_all(root, lambda n: n.type == "cast_expression"):
-        type_node = node.child_by_field_name("type")
-        if type_node:
-            cast_types.extend(_expand_type_refs(_node_text(type_node, src_bytes).strip()))
-
-    # member_accesses: member_access_expression nodes that are NOT method calls
-    _invocation_fn_ids = {
-        id(node.child_by_field_name("function"))
-        for node in _find_all(root, lambda n: n.type == "invocation_expression")
-        if node.child_by_field_name("function") is not None
-        and node.child_by_field_name("function").type == "member_access_expression"
-    }
-    for node in _find_all(root, lambda n: n.type == "member_access_expression"):
-        if id(node) not in _invocation_fn_ids:
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                member_accesses.append(_node_text(name_node, src_bytes))
-
-    # base_types are also type_refs: if you implement IFoo, you're "using" IFoo
+    type_refs = list(field_types) + list(param_types) + list(return_types) + list(base_types) + list(local_types)
+    for cs in fd.call_site_infos:
+        if cs.receiver and cs.receiver[0].isupper():
+            type_refs.extend(_expand_type(cs.receiver))
     type_refs.extend(base_types)
 
+    usings     = [i.module for i in fd.imports if i.module]
+    attr_names = [a.attr_name for a in fd.attrs if a.attr_name]
+
     return {
-        "namespace":       namespace,
+        "namespace":       fd.namespace,
         "class_names":     _dedupe(class_names),
         "method_names":    _dedupe(method_names),
         "base_types":      _dedupe(base_types),
@@ -418,508 +166,11 @@ def extract_cs_metadata(src_bytes: bytes) -> dict:
     }
 
 
-def extract_py_metadata(src_bytes: bytes) -> dict:
-    """Extract Python metadata for tier 1+2 semantic indexing."""
-    _empty = {
-        "namespace": "", "class_names": [], "method_names": [],
-        "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
-        "type_refs": [], "attr_names": [], "usings": [],
-        "return_types": [], "param_types": [], "field_types": [],
-        "local_types": [], "member_accesses": [],
-    }
-    if not _PY_AVAILABLE or _py_parser is None:
-        return _empty
-    try:
-        tree = _py_parser.parse(src_bytes)
-    except Exception:
-        return _empty
-
-    root = tree.root_node
-    class_names = []
-    method_names = []
-    base_types = []
-    call_sites = []
-    member_sigs = []
-    type_refs = []
-    attr_names = []
-    usings = []
-    py_return_types = []
-    py_param_types = []
-
-    # Classes and base types
-    for node in _find_all(root, lambda n: n.type == "class_definition"):
-        name_node = node.child_by_field_name("name")
-        if name_node:
-            class_names.append(_node_text(name_node, src_bytes))
-        superclasses = node.child_by_field_name("superclasses")
-        if superclasses:
-            for child in superclasses.named_children:
-                if child.type == "identifier":
-                    base_types.append(_node_text(child, src_bytes))
-                elif child.type == "attribute":
-                    attr = child.child_by_field_name("attribute")
-                    if attr:
-                        base_types.append(_node_text(attr, src_bytes))
-
-    # Functions/methods — names, signatures, type refs
-    for node in _find_all(root, lambda n: n.type == "function_definition"):
-        name_node = node.child_by_field_name("name")
-        if name_node:
-            method_names.append(_node_text(name_node, src_bytes))
-        params_node = node.child_by_field_name("parameters")
-        return_node = node.child_by_field_name("return_type")
-        if name_node and params_node:
-            mname = _node_text(name_node, src_bytes)
-            params_txt = _node_text(params_node, src_bytes)
-            ret_txt = _node_text(return_node, src_bytes).strip() if return_node else ""
-            sig = f"def {mname}{params_txt}"
-            if ret_txt:
-                sig += f" -> {ret_txt}"
-            member_sigs.append(sig)
-        if return_node:
-            ret_type_txt = _node_text(return_node, src_bytes).strip()
-            type_refs.extend(_expand_type_refs(ret_type_txt))
-            py_return_types.extend(_expand_type_refs(ret_type_txt))
-        if params_node:
-            for param in params_node.named_children:
-                if param.type in ("typed_parameter", "typed_default_parameter"):
-                    ptype = param.child_by_field_name("type")
-                    if ptype:
-                        ptype_txt = _node_text(ptype, src_bytes).strip()
-                        type_refs.extend(_expand_type_refs(ptype_txt))
-                        py_param_types.extend(_expand_type_refs(ptype_txt))
-
-    # attr_names (decorators)
-    for node in _find_all(root, lambda n: n.type == "decorator"):
-        full_text = _node_text(node, src_bytes).strip().lstrip("@")
-        dname = full_text.split("(")[0].split(".")[-1].strip()
-        if dname:
-            attr_names.append(dname)
-
-    # Call sites
-    for node in _find_all(root, lambda n: n.type == "call"):
-        fn = node.child_by_field_name("function")
-        if fn:
-            if fn.type == "identifier":
-                call_sites.append(_node_text(fn, src_bytes))
-            elif fn.type == "attribute":
-                attr = fn.child_by_field_name("attribute")
-                if attr:
-                    call_sites.append(_node_text(attr, src_bytes))
-
-    # usings (imports)
-    for node in _find_all(root, lambda n: n.type == "import_statement"):
-        for child in node.named_children:
-            if child.type == "dotted_name":
-                usings.append(_node_text(child, src_bytes).split(".")[0])
-            elif child.type == "aliased_import" and child.named_children:
-                usings.append(_node_text(child.named_children[0], src_bytes).split(".")[0])
-
-    for node in _find_all(root, lambda n: n.type == "import_from_statement"):
-        module_node = node.child_by_field_name("module_name")
-        if module_node:
-            usings.append(_node_text(module_node, src_bytes).lstrip(".").split(".")[0])
-
-    return {
-        "namespace":       "",
-        "class_names":     _dedupe(class_names),
-        "method_names":    _dedupe(method_names),
-        "base_types":      _dedupe(base_types),
-        "call_sites":      _dedupe(call_sites),
-        "cast_types":      [],   # Python has no explicit cast syntax
-        "member_sigs":     _dedupe(member_sigs),
-        "type_refs":       _dedupe(type_refs),
-        "attr_names":      _dedupe(attr_names),
-        "usings":          _dedupe(usings),
-        "return_types":    _dedupe(py_return_types),
-        "param_types":     _dedupe(py_param_types),
-        "field_types":     [],
-        "local_types":     [],
-        "member_accesses": [],
-    }
 
 
-def extract_rust_metadata(src_bytes: bytes) -> dict:
-    """Extract Rust metadata for semantic indexing."""
-    _empty = {
-        "namespace": "", "class_names": [], "method_names": [],
-        "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
-        "type_refs": [], "attr_names": [], "usings": [],
-        "return_types": [], "param_types": [], "field_types": [],
-        "local_types": [], "member_accesses": [],
-    }
-    if not _RUST_AVAILABLE or _rust_parser is None:
-        return _empty
-    try:
-        tree = _rust_parser.parse(src_bytes)
-    except Exception:
-        return _empty
-
-    from src.ast.rust import (
-        _find_all as _rfa, _text as _rt,
-        _TYPE_DECL_NODES as _RUST_TYPE_NODES,
-        _fn_name as _rfn_name, _type_name as _rtype_name,
-        _impl_trait_name as _rimpl_trait, _fn_sig as _rfn_sig,
-    )
-
-    root = tree.root_node
-    class_names, method_names, base_types, call_sites, member_sigs = [], [], [], [], []
-    usings, type_refs = [], []
-
-    # Structs, enums, traits
-    for node in _rfa(root, lambda n: n.type in _RUST_TYPE_NODES):
-        name = _rtype_name(node, src_bytes)
-        if name:
-            class_names.append(name)
-
-    # Functions and impl methods
-    for node in _rfa(root, lambda n: n.type == "function_item"):
-        name = _rfn_name(node, src_bytes)
-        if name:
-            method_names.append(name)
-        sig = _rfn_sig(node, src_bytes)
-        if sig:
-            member_sigs.append(sig)
-
-    # impl Trait for Type → base_types
-    for node in _rfa(root, lambda n: n.type == "impl_item"):
-        t = _rimpl_trait(node, src_bytes)
-        if t:
-            base_types.append(t)
-
-    # Call sites
-    for node in _rfa(root, lambda n: n.type == "call_expression"):
-        fn = node.child_by_field_name("function")
-        if fn:
-            if fn.type == "identifier":
-                call_sites.append(_rt(fn, src_bytes).strip())
-            elif fn.type == "field_expression":
-                f = fn.child_by_field_name("field")
-                if f:
-                    call_sites.append(_rt(f, src_bytes).strip())
-    for node in _rfa(root, lambda n: n.type == "method_call_expression"):
-        name_node = node.child_by_field_name("name")
-        if name_node:
-            call_sites.append(_rt(name_node, src_bytes).strip())
-
-    # use declarations
-    for node in _rfa(root, lambda n: n.type == "use_declaration"):
-        _rt(node, src_bytes).strip()
-        # extract first path segment: use std::... → "std"
-        for id_node in _rfa(node, lambda n: n.type == "identifier"):
-            seg = _rt(id_node, src_bytes).strip()
-            if seg and seg not in ("use", "self", "super", "crate"):
-                usings.append(seg)
-            break
-
-    return {
-        "namespace":       "",
-        "class_names":     _dedupe(class_names),
-        "method_names":    _dedupe(method_names),
-        "base_types":      _dedupe(base_types),
-        "call_sites":      _dedupe(call_sites),
-        "cast_types":      [],
-        "member_sigs":     _dedupe(member_sigs),
-        "type_refs":       _dedupe(type_refs),
-        "attr_names":      [],
-        "usings":          _dedupe(usings),
-        "return_types":    [],
-        "param_types":     [],
-        "field_types":     [],
-        "local_types":     [],
-        "member_accesses": [],
-    }
-
-
-def extract_js_metadata(src_bytes: bytes, parser=None) -> dict:
-    """Extract JavaScript metadata for semantic indexing."""
-    _empty = {
-        "namespace": "", "class_names": [], "method_names": [],
-        "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
-        "type_refs": [], "attr_names": [], "usings": [],
-        "return_types": [], "param_types": [], "field_types": [],
-        "local_types": [], "member_accesses": [],
-    }
-    _parser = parser or _js_parser
-    if not _JS_AVAILABLE or _parser is None:
-        return _empty
-    try:
-        tree = _parser.parse(src_bytes)
-    except Exception:
-        return _empty
-
-    from src.ast.js import (
-        _find_all as _jfa, _text as _jt,
-        _class_bases, _fn_name_from_node, _fn_sig as _jfn_sig,
-    )
-
-    root = tree.root_node
-    class_names, method_names, base_types, call_sites, member_sigs = [], [], [], [], []
-    usings, attr_names = [], []
-
-    # Classes and their bases
-    class_decl_nodes = {
-        "class_declaration", "abstract_class_declaration",
-        "interface_declaration", "type_alias_declaration", "enum_declaration",
-    }
-    for node in _jfa(root, lambda n: n.type in class_decl_nodes):
-        name_node = node.child_by_field_name("name")
-        if name_node:
-            class_names.append(_jt(name_node, src_bytes).strip())
-        base_types.extend(_class_bases(node, src_bytes))
-
-    # Functions and methods
-    fn_nodes = {
-        "function_declaration", "method_definition",
-        "generator_function_declaration",
-    }
-    for node in _jfa(root, lambda n: n.type in fn_nodes):
-        name = _fn_name_from_node(node, src_bytes)
-        if name:
-            method_names.append(name)
-            member_sigs.append(_jfn_sig(node, src_bytes))
-
-    # Call sites
-    for node in _jfa(root, lambda n: n.type == "call_expression"):
-        fn = node.child_by_field_name("function")
-        if fn:
-            if fn.type == "identifier":
-                call_sites.append(_jt(fn, src_bytes).strip())
-            elif fn.type == "member_expression":
-                prop = fn.child_by_field_name("property")
-                if prop:
-                    call_sites.append(_jt(prop, src_bytes).strip())
-
-    # Imports → usings
-    for node in _jfa(root, lambda n: n.type == "import_statement"):
-        src_node = node.child_by_field_name("source")
-        if src_node:
-            raw = _jt(src_node, src_bytes).strip().strip("'\"")
-            seg = raw.lstrip("./").split("/")[0]
-            if seg:
-                usings.append(seg)
-
-    return {
-        "namespace":       "",
-        "class_names":     _dedupe(class_names),
-        "method_names":    _dedupe(method_names),
-        "base_types":      _dedupe(base_types),
-        "call_sites":      _dedupe(call_sites),
-        "cast_types":      [],
-        "member_sigs":     _dedupe(member_sigs),
-        "type_refs":       [],
-        "attr_names":      _dedupe(attr_names),
-        "usings":          _dedupe(usings),
-        "return_types":    [],
-        "param_types":     [],
-        "field_types":     [],
-        "local_types":     [],
-        "member_accesses": [],
-    }
-
-
-def extract_ts_metadata(src_bytes: bytes, parser=None) -> dict:
-    """Extract TypeScript metadata for semantic indexing."""
-    _parser = parser or _ts_parser
-    if not _TS_AVAILABLE or _parser is None:
-        return {
-            "namespace": "", "class_names": [], "method_names": [],
-            "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
-            "type_refs": [], "attr_names": [], "usings": [],
-            "return_types": [], "param_types": [], "field_types": [],
-            "local_types": [], "member_accesses": [],
-        }
-    # TS is a superset of JS — reuse JS extraction with the TS parser
-    meta = extract_js_metadata(src_bytes, parser=_parser)
-
-    # Extra: decorators → attr_names
-    from src.ast.js import _find_all as _jfa, _text as _jt
-    try:
-        tree = _parser.parse(src_bytes)
-    except Exception:
-        return meta
-
-    attr_names = []
-    for node in _jfa(tree.root_node, lambda n: n.type == "decorator"):
-        # decorator: @name or @name(args)
-        for child in node.children:
-            if child.type in ("identifier", "member_expression", "call_expression"):
-                if child.type == "call_expression":
-                    fn = child.child_by_field_name("function")
-                    if fn:
-                        attr_names.append(_jt(fn, src_bytes).strip())
-                else:
-                    attr_names.append(_jt(child, src_bytes).strip())
-                break
-
-    meta["attr_names"] = _dedupe(attr_names)
-    return meta
-
-
-def extract_cpp_metadata(src_bytes: bytes) -> dict:
-    """Extract C/C++ metadata for semantic indexing."""
-    _empty = {
-        "namespace": "", "class_names": [], "method_names": [],
-        "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
-        "type_refs": [], "attr_names": [], "usings": [],
-        "return_types": [], "param_types": [], "field_types": [],
-        "local_types": [], "member_accesses": [],
-    }
-    if not _CPP_AVAILABLE or _cpp_parser is None:
-        return _empty
-    try:
-        tree = _cpp_parser.parse(src_bytes)
-    except Exception:
-        return _empty
-
-    from src.ast.cpp import (
-        _find_all as _cfa, _text as _ct,
-        _TYPE_DECL_NODES as _CPP_TYPE_NODES,
-        _class_name as _cclass_name, _base_class_names,
-        _fn_name as _cfn_name, _fn_sig as _cfn_sig,
-    )
-
-    root = tree.root_node
-    class_names, method_names, base_types, call_sites, member_sigs = [], [], [], [], []
-    usings = []
-
-    # Classes, structs, enums
-    for node in _cfa(root, lambda n: n.type in _CPP_TYPE_NODES):
-        name = _cclass_name(node, src_bytes)
-        if name:
-            class_names.append(name)
-        base_types.extend(_base_class_names(node, src_bytes))
-
-    # Function definitions
-    for node in _cfa(root, lambda n: n.type == "function_definition"):
-        name = _cfn_name(node, src_bytes)
-        if name:
-            method_names.append(name)
-            member_sigs.append(_cfn_sig(node, src_bytes))
-
-    # Member function declarations in class bodies (pure virtual, prototypes)
-    from src.ast.cpp import _member_fn_name as _cmfn_name, _member_fn_sig as _cmfn_sig
-    for node in _cfa(root, lambda n: n.type == "field_declaration"):
-        name = _cmfn_name(node, src_bytes)
-        if name:
-            method_names.append(name)
-            member_sigs.append(_cmfn_sig(node, src_bytes))
-
-    # Call sites
-    for node in _cfa(root, lambda n: n.type == "call_expression"):
-        fn = node.child_by_field_name("function")
-        if fn:
-            if fn.type == "identifier":
-                call_sites.append(_ct(fn, src_bytes).strip())
-            elif fn.type == "field_expression":
-                f = fn.child_by_field_name("field")
-                if f:
-                    call_sites.append(_ct(f, src_bytes).strip())
-            elif fn.type == "qualified_identifier":
-                # e.g. AP_HAL::panic() or Scheduler::from_socket()
-                name_node = fn.child_by_field_name("name")
-                if name_node:
-                    call_sites.append(_ct(name_node, src_bytes).strip())
-
-    # #include → usings
-    for node in _cfa(root, lambda n: n.type == "preproc_include"):
-        path_node = node.child_by_field_name("path")
-        if path_node:
-            raw = _ct(path_node, src_bytes).strip().strip("<>\"")
-            seg = raw.split("/")[-1].split(".")[0]
-            if seg:
-                usings.append(seg)
-
-    return {
-        "namespace":       "",
-        "class_names":     _dedupe(class_names),
-        "method_names":    _dedupe(method_names),
-        "base_types":      _dedupe(base_types),
-        "call_sites":      _dedupe(call_sites),
-        "cast_types":      [],
-        "member_sigs":     _dedupe(member_sigs),
-        "type_refs":       [],
-        "attr_names":      [],
-        "usings":          _dedupe(usings),
-        "return_types":    [],
-        "param_types":     [],
-        "field_types":     [],
-        "local_types":     [],
-        "member_accesses": [],
-    }
-
-
-def extract_sql_metadata(src_bytes: bytes) -> dict:
-    """Extract SQL metadata for semantic indexing.
-
-    Uses tree-sitter for CREATE TABLE / VIEW / FUNCTION / PROCEDURE.
-    Falls back to regex for CREATE OR ALTER PROCEDURE (not in grammar)
-    and any procs the AST misses.
-    """
-    _empty = {
-        "namespace": "", "class_names": [], "method_names": [],
-        "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
-        "type_refs": [], "attr_names": [], "usings": [],
-        "return_types": [], "param_types": [], "field_types": [],
-        "local_types": [], "member_accesses": [],
-    }
-
-    from src.ast.sql import (
-        extract_table_names, extract_function_names,
-        extract_proc_names_ast, extract_proc_sigs, extract_proc_body_refs,
-        extract_proc_names_regex, extract_column_info,
-        extract_column_sigs, extract_referenced_tables, extract_invocations,
-    )
-
-    class_names = []   # tables, views
-    method_names = []  # stored procs, functions
-    member_sigs = []   # column signatures + proc signatures
-    type_refs = []     # column types
-    call_sites = []    # referenced tables, function calls
-
-    if _SQL_AVAILABLE and _sql_parser is not None:
-        try:
-            tree = _sql_parser.parse(src_bytes)
-        except Exception:
-            tree = None
-
-        if tree:
-            root = tree.root_node
-            class_names.extend(extract_table_names(root, src_bytes))
-            method_names.extend(extract_function_names(root, src_bytes))
-            # AST-based proc extraction (works with gh-pages grammar)
-            method_names.extend(extract_proc_names_ast(root, src_bytes))
-            member_sigs.extend(extract_proc_sigs(root, src_bytes))
-            # Tables referenced inside proc bodies
-            for _proc, table in extract_proc_body_refs(root, src_bytes):
-                call_sites.append(table)
-            _, col_types = extract_column_info(root, src_bytes)
-            type_refs.extend(col_types)
-            member_sigs.extend(extract_column_sigs(root, src_bytes))
-            call_sites.extend(extract_referenced_tables(root, src_bytes))
-            call_sites.extend(extract_invocations(root, src_bytes))
-
-    # Regex fallback catches CREATE OR ALTER PROCEDURE and any procs
-    # the AST missed (dedupe removes overlap)
-    method_names.extend(extract_proc_names_regex(src_bytes))
-
-    return {
-        "namespace":       "",
-        "class_names":     _dedupe(class_names),
-        "method_names":    _dedupe(method_names),
-        "base_types":      [],
-        "call_sites":      _dedupe(call_sites),
-        "cast_types":      [],
-        "member_sigs":     _dedupe(member_sigs),
-        "type_refs":       _dedupe(type_refs),
-        "attr_names":      [],
-        "usings":          [],
-        "return_types":    [],
-        "param_types":     [],
-        "field_types":     [],
-        "local_types":     [],
-        "member_accesses": [],
-    }
+def extract_metadata(src_bytes: bytes, ext: str) -> dict:
+    """Extract semantic metadata from source bytes for the given file extension."""
+    return flat_from_fd(describe_file(src_bytes, ext))
 
 
 # ---------------------------------------------------------------------------
@@ -1003,7 +254,7 @@ def should_skip_dir(dirname: str) -> bool:
 
 
 
-def build_document(full_path: str, relative_path: str, host_root: str = "") -> dict:
+def build_document(full_path: str, relative_path: str) -> dict:
     try:
         stat = os.stat(full_path)
         with open(full_path, "rb") as _f:
@@ -1012,44 +263,15 @@ def build_document(full_path: str, relative_path: str, host_root: str = "") -> d
         return None
 
     ext = os.path.splitext(full_path)[1].lower()
-    if ext == ".cs":
-        meta = extract_cs_metadata(src_bytes)
-    elif ext == ".py" and _PY_AVAILABLE:
-        meta = extract_py_metadata(src_bytes)
-    elif ext == ".rs" and _RUST_AVAILABLE:
-        meta = extract_rust_metadata(src_bytes)
-    elif ext in (".js", ".jsx", ".mjs", ".cjs") and _JS_AVAILABLE:
-        meta = extract_js_metadata(src_bytes)
-    elif ext in (".ts",) and _TS_AVAILABLE:
-        meta = extract_ts_metadata(src_bytes, parser=_ts_parser)
-    elif ext in (".tsx",) and _TS_AVAILABLE:
-        meta = extract_ts_metadata(src_bytes, parser=_tsx_parser)
-    elif ext in (".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx") and _CPP_AVAILABLE:
-        meta = extract_cpp_metadata(src_bytes)
-    elif ext == ".sql":
-        meta = extract_sql_metadata(src_bytes)
-    else:
-        meta = {
-            "namespace": "", "class_names": [], "method_names": [],
-            "base_types": [], "call_sites": [], "cast_types": [], "member_sigs": [],
-            "type_refs": [], "attr_names": [], "usings": [],
-            "return_types": [], "param_types": [], "field_types": [],
-            "local_types": [], "member_accesses": [],
-        }
+    meta = flat_from_fd(describe_file(src_bytes, ext))
 
-    # Store only unique identifier tokens — keeps the index small while
-    # preserving full recall for word-level search (we never phrase-search tokens).
     _raw = src_bytes.decode("utf-8", errors="replace")
     tokens = " ".join(dict.fromkeys(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', _raw)))
     relative_path_norm = relative_path.replace("\\", "/")
-    # If a host root is provided, prefix it so the stored path is the full
-    # Windows path (e.g. C:/repos/src/Foo.cs) rather than just Foo.cs.
-    # subsystem is always derived from the bare relative segment.
-    stored_path = (host_root.rstrip("/") + "/" + relative_path_norm) if host_root else relative_path_norm
 
     return {
-        "id":               file_id(stored_path),
-        "relative_path":    stored_path,
+        "id":               file_id(relative_path_norm),
+        "relative_path":    relative_path_norm,
         "filename":         os.path.basename(full_path),
         "extension":        ext.lstrip("."),
         "language":         _file_language(ext),
@@ -1147,24 +369,23 @@ def verify_all_schemas(client) -> dict:
     Returns a dict keyed by root name:
         {"ok": bool, "warnings": [str, ...], "collection": str}
     """
-    from indexserver.config import ROOTS
+    from indexserver.config import ALL_ROOTS
     results = {}
-    for name in ROOTS:
-        coll = collection_for_root(name)
-        exists, warnings = verify_schema(client, coll)
-        results[name] = {
+    for root in ALL_ROOTS.values():
+        exists, warnings = verify_schema(client, root.collection)
+        results[root.name] = {
             "ok":                 exists and not warnings,
             "collection_exists":  exists,
             "warnings":           warnings,
-            "collection":         coll,
+            "collection":         root.collection,
         }
         if not exists:
-            print(f"[schema] MISSING {coll} (not yet indexed)", flush=True)
+            print(f"[schema] MISSING {root.collection} (not yet indexed)", flush=True)
         elif warnings:
             for w in warnings:
-                print(f"[schema] WARN  {coll}: {w}", flush=True)
+                print(f"[schema] WARN  {root.collection}: {w}", flush=True)
         else:
-            print(f"[schema] OK    {coll}", flush=True)
+            print(f"[schema] OK    {root.collection}", flush=True)
     return results
 
 
@@ -1221,7 +442,7 @@ def walk_source_files(src_root: str, extensions=None):
     import pathspec
 
     exts = extensions if extensions is not None else INCLUDE_EXTENSIONS
-    src_root = _to_native_path(src_root)
+    src_root = to_native_path(src_root)
 
     # Cache: abs_dir -> PathSpec | None
     _spec_cache: dict = {}
@@ -1304,7 +525,6 @@ def index_file_list(
     verbose: bool = False,
     on_progress=None,
     stop_event=None,
-    host_root: str = "",
 ) -> tuple[int, int]:
     """Shared batch-upsert pipeline used by both the full indexer and the verifier.
 
@@ -1330,7 +550,7 @@ def index_file_list(
         if stop_event and stop_event.is_set():
             break
 
-        doc = build_document(full_path, rel, host_root=host_root)
+        doc = build_document(full_path, rel)
         if doc is None:
             errors += 1
             continue
@@ -1366,7 +586,7 @@ def walk_and_enqueue(
     Calls ensure_collection() first (dropping the collection when resethard=True).
     Returns (new_entries, deduped_entries).
     """
-    src_root = _to_native_path(src_root)
+    src_root = to_native_path(src_root)
     client = get_client()
     ensure_collection(client, resethard=resethard, collection=collection)
     return queue.enqueue_bulk(
@@ -1376,22 +596,19 @@ def walk_and_enqueue(
     )
 
 
-def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, collection=None, host_root=""):
+def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, collection=None):
     coll_name = collection or COLLECTION
     root_exts = None
     if src_root is None:
-        # Derive src_root (and host_root if not supplied) from config using collection name.
-        from indexserver.config import ROOTS, HOST_ROOTS, collection_for_root, extensions_for_root
-        for name in ROOTS:
-            if collection_for_root(name) == coll_name:
-                src_root = ROOTS[name]
-                if not host_root:
-                    host_root = HOST_ROOTS.get(name, "")
-                root_exts = extensions_for_root(name)
+        from indexserver.config import ALL_ROOTS
+        for root in ALL_ROOTS.values():
+            if root.collection == coll_name:
+                src_root = root.local_path
+                root_exts = root.extensions
                 break
         if src_root is None:
-            src_root = _SRC_ROOT_NATIVE
-    src_root = _to_native_path(src_root)
+            src_root = to_native_path(SRC_ROOT)
+    src_root = to_native_path(src_root)
     exts = root_exts if root_exts is not None else INCLUDE_EXTENSIONS
     client = get_client()
     ensure_collection(client, resethard=resethard, collection=coll_name)
@@ -1438,7 +655,6 @@ def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, coll
         client, _tracked_files(), coll_name,
         batch_size=batch_size, verbose=verbose,
         on_progress=_rate_report,
-        host_root=host_root,
     )
 
     elapsed = time.time() - t0
@@ -1461,8 +677,6 @@ if __name__ == "__main__":
                     help="Root directory to index (default: derived from --collection via config)")
     ap.add_argument("--collection", default=None,
                     help="Collection name (default: from config)")
-    ap.add_argument("--host-root", default="",
-                    help="Windows-side path prefix stored in indexed filenames (overrides config lookup)")
     ap.add_argument("--status", action="store_true",
                     help="Show index stats and exit")
     ap.add_argument("--verbose", action="store_true")
@@ -1479,4 +693,4 @@ if __name__ == "__main__":
             print(f"Cannot retrieve index stats: {e}")
     else:
         run_index(src_root=args.src, resethard=args.resethard, verbose=args.verbose,
-                  collection=coll, host_root=args.host_root)
+                  collection=coll)

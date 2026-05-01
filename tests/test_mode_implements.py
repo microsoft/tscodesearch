@@ -24,8 +24,8 @@ from tests.fixtures import (
     COMMENT_ONLY_IDATASTORE,
 )
 from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
-from indexserver.indexer import extract_cs_metadata, run_index
-from src.query.dispatch import q_implements
+from indexserver.indexer import extract_metadata, run_index
+from query.cs import q_implements
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -35,35 +35,35 @@ from src.query.dispatch import q_implements
 class TestBaseTypesField(unittest.TestCase):
 
     def test_interface_in_base_types(self):
-        meta = extract_cs_metadata(IMPLEMENTS_IDATASTORE.encode())
+        meta = extract_metadata(IMPLEMENTS_IDATASTORE.encode(), ".cs")
         assert "IDataStore" in meta["base_types"], \
             f"base_types: {meta['base_types']}"
 
     def test_all_bases_present(self):
-        meta = extract_cs_metadata(IMPLEMENTS_IDATASTORE.encode())
+        meta = extract_metadata(IMPLEMENTS_IDATASTORE.encode(), ".cs")
         assert "IDataStore"  in meta["base_types"]
         assert "IDisposable" in meta["base_types"]
 
     def test_param_type_not_in_base_types(self):
-        meta = extract_cs_metadata(USES_IDATASTORE_PARAM.encode())
+        meta = extract_metadata(USES_IDATASTORE_PARAM.encode(), ".cs")
         assert "IDataStore" not in meta["base_types"], \
             f"Param type must not be in base_types: {meta['base_types']}"
 
     def test_param_type_in_type_refs_not_base_types(self):
-        meta = extract_cs_metadata(USES_IDATASTORE_PARAM.encode())
+        meta = extract_metadata(USES_IDATASTORE_PARAM.encode(), ".cs")
         assert "IDataStore" in  meta["type_refs"]
         assert "IDataStore" not in meta["base_types"]
 
     def test_field_type_not_in_base_types(self):
-        meta = extract_cs_metadata(DECLARES_FIELD_IDATASTORE.encode())
+        meta = extract_metadata(DECLARES_FIELD_IDATASTORE.encode(), ".cs")
         assert "IDataStore" not in meta["base_types"]
 
     def test_comment_not_in_base_types(self):
-        meta = extract_cs_metadata(COMMENT_ONLY_IDATASTORE.encode())
+        meta = extract_metadata(COMMENT_ONLY_IDATASTORE.encode(), ".cs")
         assert "IDataStore" not in meta["base_types"]
 
     def test_class_names_populated(self):
-        meta = extract_cs_metadata(IMPLEMENTS_IDATASTORE.encode())
+        meta = extract_metadata(IMPLEMENTS_IDATASTORE.encode(), ".cs")
         assert "SqlDataStore" in meta["class_names"]
 
     def test_generic_base_type_unqualified(self):
@@ -74,7 +74,7 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "IRepository" in meta["base_types"], \
             f"Generic base type must be stored unqualified: {meta['base_types']}"
 
@@ -87,7 +87,7 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert any("IDataStore" in b for b in meta["base_types"]), \
             f"Qualified base must be stored as unqualified: {meta['base_types']}"
 
@@ -100,7 +100,7 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "IDataStore" in meta["base_types"]
 
 

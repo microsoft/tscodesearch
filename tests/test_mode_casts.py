@@ -13,7 +13,7 @@ Gaps tested (AST):
   - Each line is reported at most once even if multiple casts appear.
 
 Gaps tested (metadata / Typesense):
-  - extract_cs_metadata populates cast_types with explicit cast target types.
+  - extract_metadata populates cast_types with explicit cast target types.
   - as-casts do NOT populate cast_types.
   - cast_types field enables Typesense pre-filter for cast sites.
 """
@@ -29,8 +29,8 @@ from tests.fixtures import (
     AS_CAST_ONLY_BLOBSTORE,
 )
 from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
-from indexserver.indexer import extract_cs_metadata, run_index
-from src.query.dispatch import q_casts
+from indexserver.indexer import extract_metadata, run_index
+from query.cs import q_casts
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -148,21 +148,21 @@ namespace Synth {
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestCastTypesMetadata(unittest.TestCase):
-    """extract_cs_metadata correctly populates the cast_types field."""
+    """extract_metadata correctly populates the cast_types field."""
 
     def test_explicit_cast_in_cast_types(self):
-        meta = extract_cs_metadata(CASTS_TO_BLOBSTORE.encode())
+        meta = extract_metadata(CASTS_TO_BLOBSTORE.encode(), ".cs")
         assert "BlobStore" in meta["cast_types"], \
             f"Explicit cast target must be in cast_types: {meta['cast_types']}"
 
     def test_as_cast_not_in_cast_types(self):
         """'obj as BlobStore' must NOT populate cast_types (only explicit casts)."""
-        meta = extract_cs_metadata(AS_CAST_ONLY_BLOBSTORE.encode())
+        meta = extract_metadata(AS_CAST_ONLY_BLOBSTORE.encode(), ".cs")
         assert "BlobStore" not in meta["cast_types"], \
             f"as-cast must not appear in cast_types: {meta['cast_types']}"
 
     def test_no_cast_file_has_empty_cast_types(self):
-        meta = extract_cs_metadata(USES_BLOBSTORE_NO_CAST.encode())
+        meta = extract_metadata(USES_BLOBSTORE_NO_CAST.encode(), ".cs")
         assert "BlobStore" not in meta["cast_types"], \
             f"File with no casts must have empty cast_types: {meta['cast_types']}"
 
@@ -176,7 +176,7 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "IRepository" in meta["cast_types"], \
             f"Generic cast type must be in cast_types: {meta['cast_types']}"
         assert "Widget" in meta["cast_types"], \
@@ -184,7 +184,7 @@ namespace Synth {
 
     def test_cast_types_excludes_field_types(self):
         """Field type declarations must NOT appear in cast_types."""
-        meta = extract_cs_metadata(USES_BLOBSTORE_NO_CAST.encode())
+        meta = extract_metadata(USES_BLOBSTORE_NO_CAST.encode(), ".cs")
         # USES_BLOBSTORE_NO_CAST has BlobStore as field/param/return — not cast
         assert meta["cast_types"] == [], \
             f"Non-cast usages must not pollute cast_types: {meta['cast_types']}"

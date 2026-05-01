@@ -1,5 +1,5 @@
 """
-Tests for Rust support: extract_rust_metadata and query_rust functions.
+Tests for Rust support: extract_metadata and query_rust functions.
 
 No server needed — all tests run against sample/root1/query_fixture.rs.
 
@@ -50,13 +50,13 @@ def has(results, sub):
 
 @unittest.skipIf(_SKIP, _SKIP_MSG)
 class TestExtractRustMetadata(unittest.TestCase):
-    """Unit tests for extract_rust_metadata — no server needed."""
+    """Unit tests for extract_metadata — no server needed."""
 
     @classmethod
     def setUpClass(cls):
-        from indexserver.indexer import extract_rust_metadata
+        from indexserver.indexer import extract_metadata
         with open(FIXTURE_PATH, "rb") as _f:
-            cls._meta = extract_rust_metadata(_f.read())
+            cls._meta = extract_metadata(_f.read(), ".rs")
 
     def test_struct_names_indexed(self):
         self.assertIn("ProcessResult", self._meta["class_names"])
@@ -98,22 +98,22 @@ class TestQueryRust(unittest.TestCase):
     # ── classes ──────────────────────────────────────────────────────────────
 
     def test_classes_finds_struct(self):
-        from src.query.rust import rust_q_classes
+        from query.rust import rust_q_classes
         r = rust_q_classes(*self._fx())
         self.assertTrue(has(r, "ProcessResult"))
 
     def test_classes_finds_trait(self):
-        from src.query.rust import rust_q_classes
+        from query.rust import rust_q_classes
         r = rust_q_classes(*self._fx())
         self.assertTrue(has(r, "Processor"))
 
     def test_classes_finds_enum(self):
-        from src.query.rust import rust_q_classes
+        from query.rust import rust_q_classes
         r = rust_q_classes(*self._fx())
         self.assertTrue(has(r, "ProcessingMode"))
 
     def test_classes_kind_tagged(self):
-        from src.query.rust import rust_q_classes
+        from query.rust import rust_q_classes
         r = rust_q_classes(*self._fx())
         structs = [t for _, t in r if "[struct]" in t]
         self.assertTrue(any("ProcessResult" in t for t in structs))
@@ -121,39 +121,39 @@ class TestQueryRust(unittest.TestCase):
     # ── methods ──────────────────────────────────────────────────────────────
 
     def test_methods_finds_function(self):
-        from src.query.rust import rust_q_methods
+        from query.rust import rust_q_methods
         r = rust_q_methods(*self._fx())
         self.assertTrue(has(r, "create_processor"))
 
     def test_methods_finds_impl_method(self):
-        from src.query.rust import rust_q_methods
+        from query.rust import rust_q_methods
         r = rust_q_methods(*self._fx())
         self.assertTrue(has(r, "process"))
 
     def test_methods_shows_impl_context(self):
-        from src.query.rust import rust_q_methods
+        from query.rust import rust_q_methods
         r = rust_q_methods(*self._fx())
         self.assertTrue(any("[in " in t for _, t in r))
 
     # ── calls ─────────────────────────────────────────────────────────────────
 
     def test_calls_finds_function_call(self):
-        from src.query.rust import rust_q_calls
+        from query.rust import rust_q_calls
         r = rust_q_calls(*self._fx(), "create_processor")
         self.assertGreater(len(r), 0)
 
     def test_calls_finds_method_call(self):
-        from src.query.rust import rust_q_calls
+        from query.rust import rust_q_calls
         r = rust_q_calls(*self._fx(), "process")
         self.assertGreater(len(r), 0)
 
     def test_calls_absent_no_match(self):
-        from src.query.rust import rust_q_calls
+        from query.rust import rust_q_calls
         r = rust_q_calls(*self._fx(), "nonexistent_func_xyz")
         self.assertEqual(len(r), 0)
 
     def test_calls_skips_comment(self):
-        from src.query.rust import rust_q_calls
+        from query.rust import rust_q_calls
         # "process" appears in a comment; should not double-count that line
         r = rust_q_calls(*self._fx(), "process")
         for ln, text in r:
@@ -162,73 +162,73 @@ class TestQueryRust(unittest.TestCase):
     # ── implements ──────────────────────────────────────────────────────────
 
     def test_implements_finds_processor_impl(self):
-        from src.query.rust import rust_q_implements
+        from query.rust import rust_q_implements
         r = rust_q_implements(*self._fx(), "Processor")
         self.assertGreater(len(r), 0)
         self.assertTrue(has(r, "TextProcessor"))
 
     def test_implements_finds_logger_impl(self):
-        from src.query.rust import rust_q_implements
+        from query.rust import rust_q_implements
         r = rust_q_implements(*self._fx(), "Logger")
         self.assertGreater(len(r), 0)
 
     def test_implements_nonexistent_no_match(self):
-        from src.query.rust import rust_q_implements
+        from query.rust import rust_q_implements
         r = rust_q_implements(*self._fx(), "INonExistent999")
         self.assertEqual(len(r), 0)
 
     # ── declarations ────────────────────────────────────────────────────────
 
     def test_declarations_finds_struct(self):
-        from src.query.rust import rust_q_declarations
+        from query.rust import rust_q_declarations
         r = rust_q_declarations(*self._fx(), "ProcessResult")
         self.assertGreater(len(r), 0)
         self.assertTrue(has(r, "ProcessResult"))
 
     def test_declarations_finds_function(self):
-        from src.query.rust import rust_q_declarations
+        from query.rust import rust_q_declarations
         r = rust_q_declarations(*self._fx(), "create_processor")
         self.assertGreater(len(r), 0)
 
     def test_declarations_nonexistent_no_match(self):
-        from src.query.rust import rust_q_declarations
+        from query.rust import rust_q_declarations
         r = rust_q_declarations(*self._fx(), "ZZZNonExistentXXX")
         self.assertEqual(len(r), 0)
 
     # ── all_refs ────────────────────────────────────────────────────────────
 
     def test_all_refs_finds_type(self):
-        from src.query.rust import rust_q_all_refs
+        from query.rust import rust_q_all_refs
         r = rust_q_all_refs(*self._fx(), "ProcessResult")
         self.assertGreater(len(r), 0)
 
     def test_all_refs_absent_no_match(self):
-        from src.query.rust import rust_q_all_refs
+        from query.rust import rust_q_all_refs
         r = rust_q_all_refs(*self._fx(), "ZZZNonExistentXXX")
         self.assertEqual(len(r), 0)
 
     # ── imports ─────────────────────────────────────────────────────────────
 
     def test_imports_found(self):
-        from src.query.rust import rust_q_imports
+        from query.rust import rust_q_imports
         r = rust_q_imports(*self._fx())
         self.assertGreater(len(r), 0)
         self.assertTrue(any("use" in t for _, t in r))
 
     def test_imports_contains_std(self):
-        from src.query.rust import rust_q_imports
+        from query.rust import rust_q_imports
         r = rust_q_imports(*self._fx())
         self.assertTrue(any("std" in t for _, t in r))
 
     # ── params ──────────────────────────────────────────────────────────────
 
     def test_params_found(self):
-        from src.query.rust import rust_q_params
+        from query.rust import rust_q_params
         r = rust_q_params(*self._fx(), "create_processor")
         self.assertGreater(len(r), 0)
 
     def test_params_absent_no_match(self):
-        from src.query.rust import rust_q_params
+        from query.rust import rust_q_params
         r = rust_q_params(*self._fx(), "nonexistent_xyz")
         self.assertEqual(len(r), 0)
 
@@ -249,8 +249,10 @@ class TestProcessRustFile(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _run(self, mode, mode_arg=None):
-        from src.query.dispatch import process_rust_file
-        matches = process_rust_file(path=self.path, mode=mode, mode_arg=mode_arg)
+        from query.dispatch import query_file
+        with open(self.path, "rb") as _f:
+            src_bytes = _f.read()
+        matches = query_file(src_bytes, ".rs", mode, mode_arg or "")
         path_norm = self.path.replace("\\", "/")
         root_norm = self.tmpdir.replace("\\", "/").rstrip("/")
         disp = (path_norm[len(root_norm) + 1:]
@@ -290,36 +292,36 @@ class TestProcessRustFile(unittest.TestCase):
         tmpdir_norm = self.tmpdir.replace("\\", "/")
         self.assertNotIn(tmpdir_norm, out)
 
-    # ── consistency: process_rust_file ↔ extract_rust_metadata ───────────────
+    # ── consistency: process_rust_file ↔ extract_metadata ───────────────
 
     def test_class_names_consistent(self):
-        from indexserver.indexer import extract_rust_metadata
+        from indexserver.indexer import extract_metadata
         with open(FIXTURE_PATH, "rb") as _f:
-            meta = extract_rust_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".rs")
         self.assertIn("ProcessResult", meta["class_names"])
         n, out = self._run("classes")
         self.assertIn("ProcessResult", out)
 
     def test_method_names_consistent(self):
-        from indexserver.indexer import extract_rust_metadata
+        from indexserver.indexer import extract_metadata
         with open(FIXTURE_PATH, "rb") as _f:
-            meta = extract_rust_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".rs")
         self.assertIn("create_processor", meta["method_names"])
         n, out = self._run("methods")
         self.assertIn("create_processor", out)
 
     def test_call_sites_consistent(self):
-        from indexserver.indexer import extract_rust_metadata
+        from indexserver.indexer import extract_metadata
         with open(FIXTURE_PATH, "rb") as _f:
-            meta = extract_rust_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".rs")
         self.assertIn("process", meta["call_sites"])
         n, out = self._run("calls", "process")
         self.assertGreater(n, 0)
 
     def test_base_types_consistent(self):
-        from indexserver.indexer import extract_rust_metadata
+        from indexserver.indexer import extract_metadata
         with open(FIXTURE_PATH, "rb") as _f:
-            meta = extract_rust_metadata(_f.read())
+            meta = extract_metadata(_f.read(), ".rs")
         self.assertIn("Processor", meta["base_types"])
         n, out = self._run("implements", "Processor")
         self.assertGreater(n, 0)

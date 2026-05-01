@@ -20,7 +20,7 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-from indexserver.config import HOST, PORT, API_KEY, ROOTS, collection_for_root
+from indexserver.config import HOST, PORT, API_KEY, ALL_ROOTS
 
 _PASS = "\033[32mPASS\033[0m"
 _FAIL = "\033[31mFAIL\033[0m"
@@ -66,8 +66,9 @@ def main():
     results.append(_check("Server health", _health))
 
     # ── 2. Per-root collection + search ───────────────────────────────────────
-    for root_name, src_path in ROOTS.items():
-        coll = collection_for_root(root_name)
+    for root in ALL_ROOTS.values():
+        coll = root.collection
+        root_name = root.name
 
         def _collection(c=coll, n=root_name):
             data = _get(f"/collections/{c}")

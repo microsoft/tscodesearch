@@ -1,0 +1,11 @@
+# MCP server + query/ package dependencies — client venv (.client-venv)
+# Installed by setup.mjs step [3]. Used by mcp_server.py.
+mcp
+tree-sitter
+tree-sitter-c-sharp
+tree-sitter-python
+tree-sitter-rust
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-cpp
+tree-sitter-sql

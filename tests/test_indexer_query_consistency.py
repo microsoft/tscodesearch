@@ -1,5 +1,5 @@
 """
-Tests verifying consistency between the indexer (extract_cs_metadata) and the
+Tests verifying consistency between the indexer (extract_metadata) and the
 query functions (q_*), and documenting known gaps between the two systems.
 
 These tests run purely in-memory — no Typesense server required.
@@ -21,8 +21,8 @@ if _root not in sys.path:
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
 
-from indexserver.indexer import extract_cs_metadata
-from src.query.dispatch import (
+from indexserver.indexer import extract_metadata
+from query.cs import (
     q_classes, q_methods, q_fields, q_calls, q_implements, q_attrs, q_usings, q_uses, q_casts, q_all_refs,
 )
 
@@ -116,7 +116,7 @@ def fx():
 
 @pytest.fixture(scope="module")
 def meta():
-    return extract_cs_metadata(_FIXTURE)
+    return extract_metadata(_FIXTURE, ".cs")
 
 
 # ===========================================================================
@@ -162,7 +162,7 @@ class TestBaseTypesConsistency:
     def test_qualified_base_type_stripped_to_simple_name(self):
         """Both simple and generic qualified base types are fully stripped to bare identifiers."""
         src = b"namespace N { public class C : Acme.IFoo, Generic.IBar<C> { } }"
-        m = extract_cs_metadata(src)
+        m = extract_metadata(src, ".cs")
         # Simple qualified name: 'Acme.IFoo' -> 'IFoo'
         assert "IFoo" in m["base_types"], f"base_types: {m['base_types']}"
         assert "Acme.IFoo" not in m["base_types"]
@@ -174,7 +174,7 @@ class TestBaseTypesConsistency:
     def test_nested_generic_qualified_base_type_stripped(self):
         """Outer.MyClass<OtherClass<T>> -> 'MyClass' (first '<' determines the cut point)."""
         src = b"namespace N { public class C : Outer.MyClass<OtherClass<string>> { } }"
-        m = extract_cs_metadata(src)
+        m = extract_metadata(src, ".cs")
         assert "MyClass" in m["base_types"], f"base_types: {m['base_types']}"
         assert "MyClass<OtherClass<string>>" not in m["base_types"]
         assert "Outer.MyClass<OtherClass<string>>" not in m["base_types"]
@@ -280,7 +280,7 @@ class TestAttributesConsistency:
     def test_qualified_attribute_stripped(self):
         """[Acme.Auth.AuthorizeAttribute] must be stored as 'Authorize'."""
         src = b"namespace N { [Acme.Auth.AuthorizeAttribute] public class C {} }"
-        m = extract_cs_metadata(src)
+        m = extract_metadata(src, ".cs")
         assert "Authorize" in m["attr_names"], f"attr_names: {m['attr_names']}"
         assert "Acme.Auth.AuthorizeAttribute" not in m["attr_names"]
 
@@ -388,7 +388,7 @@ namespace N {
     }
 }
 """
-        m2 = extract_cs_metadata(src2)
+        m2 = extract_metadata(src2, ".cs")
         assert "CastOnly" not in m2["type_refs"], \
             "Cast-only types must not bleed into type_refs"
         assert "CastOnly" in m2["cast_types"], \
@@ -409,7 +409,7 @@ namespace N {
     }
 }
 """
-        m = extract_cs_metadata(src)
+        m = extract_metadata(src, ".cs")
         assert "LocalOnly" in m["type_refs"], \
             f"Local variable type must now be in type_refs: {m['type_refs']}"
 
@@ -427,7 +427,7 @@ namespace N {
     }
 }
 """
-        m = extract_cs_metadata(src)
+        m = extract_metadata(src, ".cs")
         assert "TypeOfOnly" not in m["type_refs"], \
             "GAP CONFIRMED: typeof targets in method bodies not in type_refs"
 
@@ -495,7 +495,7 @@ class TestUsingsCoarsenessGap:
     def test_indexer_deduplicates_same_prefix(self):
         """Two 'using System.*' directives should store 'System' once."""
         src = b"using System; using System.IO; using System.Text;"
-        m = extract_cs_metadata(src)
+        m = extract_metadata(src, ".cs")
         count = sum(1 for u in m["usings"] if u == "System")
         assert count == 1, f"'System' appears {count} times — expected 1 (deduped)"
 
@@ -544,13 +544,13 @@ namespace N {
 
     def test_field_style_event_found_by_indexer(self):
         """event_field_declaration is now in _MEMBER_DECL_NODES — indexer captures it."""
-        m = extract_cs_metadata(self._SRC_FIELD)
+        m = extract_metadata(self._SRC_FIELD, ".cs")
         assert "OnChanged" in m["method_names"], \
             f"event_field_declaration name missing from method_names: {m['method_names']}"
 
     def test_field_style_event_type_in_type_refs(self):
         """EventHandler from an event_field_declaration appears in type_refs."""
-        m = extract_cs_metadata(self._SRC_FIELD)
+        m = extract_metadata(self._SRC_FIELD, ".cs")
         assert "EventHandler" in m["type_refs"], \
             f"event_field_declaration type missing from type_refs: {m['type_refs']}"
 
@@ -572,7 +572,7 @@ namespace N {
 
     def test_accessor_style_event_found_by_indexer(self):
         """event_declaration name and type ARE captured by the indexer."""
-        m = extract_cs_metadata(self._SRC_ACCESSOR)
+        m = extract_metadata(self._SRC_ACCESSOR, ".cs")
         assert "OnAccessor" in m["method_names"], \
             f"accessor-style event name missing: {m['method_names']}"
         assert "EventHandler" in m["type_refs"], \
@@ -623,7 +623,7 @@ namespace N {
     }
 }
 """
-        m = extract_cs_metadata(src)
+        m = extract_metadata(src, ".cs")
         assert "BodyCastOnly" in m["cast_types"], \
             f"Cast-only body types must be in cast_types: {m['cast_types']}"
         assert "BodyCastOnly" not in m["type_refs"], \
@@ -741,7 +741,7 @@ namespace N {
     }
 }
 """
-        m = extract_cs_metadata(src)
+        m = extract_metadata(src, ".cs")
         assert "IBlobStore" in m["type_refs"], \
             f"generic type arg missing from type_refs: {m['type_refs']}"
         assert any("IList" in r for r in m["type_refs"]), \
@@ -765,13 +765,13 @@ class TestNamespaceConsistency:
 
     def test_file_scoped_namespace(self):
         src = b"namespace MyApp.Core;\npublic class C {}"
-        m = extract_cs_metadata(src)
+        m = extract_metadata(src, ".cs")
         assert m["namespace"] == "MyApp.Core", \
             f"file-scoped namespace: {m['namespace']!r}"
 
     def test_nested_namespace_uses_first(self):
         src = b"namespace Outer { namespace Inner { public class C {} } }"
-        m = extract_cs_metadata(src)
+        m = extract_metadata(src, ".cs")
         # Indexer stores the first namespace found
         assert m["namespace"] in ("Outer", "Inner"), \
             f"namespace: {m['namespace']!r}"

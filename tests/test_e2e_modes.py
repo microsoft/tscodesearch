@@ -12,7 +12,7 @@ What is tested:
   Docker mode
     - ts start / ts stop lifecycle
     - search_code: Typesense search returns results
-    - search_code filename: relative_path is the full Windows path (C:/...)
+    - search_code filename: relative_path in results is the external Windows path (C:/...)
     - query_single_file: /query with /source/<name>/... container path succeeds
     - query_single_file: /query with a bare Windows path C:/... returns no matches
       (C:/ is not accessible inside the container -- expected behaviour)
@@ -20,8 +20,7 @@ What is tested:
   WSL mode
     - ts start / ts stop lifecycle
     - search_code: same Typesense search returns results
-    - search_code filename: relative_path is a bare relative path (no root prefix)
-      because HOST_ROOTS is not written for WSL configs
+    - search_code filename: relative_path in results is the external Windows path (C:/...)
     - query_single_file: /query with a WSL-native /mnt/<drive>/... path succeeds
     - query_single_file: /query with a /source/<name>/... container path returns
       no matches (that directory does not exist in WSL -- known gap)
@@ -392,8 +391,8 @@ def check_search(port: int, query: str = "IBenchmarkService",
 
 def check_filename_docker(hits: list, src_dir: str) -> Optional[str]:
     """
-    In Docker mode the indexer stores HOST_ROOTS-prefixed paths, so
-    relative_path must start with the Windows source root.
+    Verify that each hit's relative_path is the external Windows absolute path
+    (returned by Root.to_external()) and starts with the configured source root.
     Returns one path for downstream query tests.
     """
     root_low = src_dir.replace("\\", "/").rstrip("/").lower()
@@ -411,23 +410,23 @@ def check_filename_docker(hits: list, src_dir: str) -> Optional[str]:
 
 def check_filename_wsl(hits: list, src_dir: str) -> Optional[str]:
     """
-    In WSL mode HOST_ROOTS is not written, so relative_path is a bare
-    relative path with no drive-letter or root prefix.
+    Verify that each hit's relative_path is the external Windows absolute path
+    (returned by Root.to_external()) and starts with the configured source root.
+    Falls back to accepting a bare relative path when external_path is not configured.
     Returns one path for downstream query tests.
     """
     root_low = src_dir.replace("\\", "/").rstrip("/").lower()
     paths    = [h["document"].get("relative_path", "") for h in hits]
+    full     = [p for p in paths if p.lower().startswith(root_low + "/")]
     bare     = [p for p in paths if p and not re.match(r"^[A-Za-z]:", p)
                                          and not p.startswith("/")]
-    full     = [p for p in paths if p.lower().startswith(root_low + "/")]
 
+    if full:
+        ok(f"filename (WSL): external path  e.g. {full[0]!r}")
+        return full[0]
     if bare:
         ok(f"filename (WSL): bare relative path  e.g. {bare[0]!r}")
         return bare[0]
-    if full:
-        # host_roots was somehow set -- not the default but not wrong
-        ok(f"filename (WSL): full Windows path (host_roots active)  e.g. {full[0]!r}")
-        return full[0]
     fail("filename (WSL): unexpected relative_path format",
          f"sample={paths[:3]}")
     return paths[0] if paths else None
@@ -485,7 +484,6 @@ def check_qsf_wsl(api_host: str, api_port: int, relative_path: str, src_dir: str
 
     # Build WSL-native absolute path from whatever format relative_path is in
     if re.match(r"^[A-Za-z]:", relative_path):
-        # Full Windows path already (host_roots active)
         wsl_path = win_to_wsl(relative_path)
     elif relative_path.startswith("/mnt/"):
         wsl_path = relative_path

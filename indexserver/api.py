@@ -52,8 +52,8 @@ if _base not in sys.path:
 
 
 from indexserver.config import (
-    API_KEY, API_PORT, PORT, HOST, ROOTS, HOST_ROOTS, get_root,
-    EXCLUDE_DIRS, to_native_path, collection_for_root, extensions_for_root,
+    API_KEY, API_PORT, PORT, HOST, ALL_ROOTS, get_root,
+    EXCLUDE_DIRS, to_native_path,
 )
 from indexserver.index_queue import IndexQueue
 from indexserver.indexer import get_client, verify_all_schemas
@@ -86,7 +86,7 @@ _watcher_lock  = threading.Lock()
 # Both POST /index/start and POST /verify/start feed this queue.
 _sync_thread:  threading.Thread | None = None
 _sync_lock     = threading.Lock()
-_sync_pending: list = []   # jobs: [{root_name,src_root,collection,resethard,host_root}]
+_sync_pending: list = []   # jobs: [{root_name,src_root,collection,resethard,extensions}]
 _sync_stop:    threading.Event | None = None   # stop event for the running job
 
 # Schema validation results cached at startup by verify_all_schemas().
@@ -123,8 +123,8 @@ def _enqueue_file_events(events: list) -> dict:
     Filtering (extension, excluded dirs) is applied before enqueuing.
     """
     root_map = [
-        (to_native_path(win_root).rstrip("/"), collection_for_root(name), extensions_for_root(name))
-        for name, win_root in ROOTS.items()
+        (r.local_path.rstrip("/"), r.collection, r.extensions)
+        for r in ALL_ROOTS.values()
     ]
 
     n_new = n_dedup = 0
@@ -178,11 +178,7 @@ def _drain_sync_queue() -> None:
         src_root   = job["src_root"]
         collection = job["collection"]
         resethard  = job["resethard"]
-        host_root  = job["host_root"]
         extensions = job.get("extensions")
-
-        if host_root:
-            _index_queue.register_host_root(collection, host_root)
 
         stop = threading.Event()
         _sync_stop = stop
@@ -298,49 +294,90 @@ _query_module = None
 def _get_query_module():
     global _query_module
     if _query_module is None:
-        import src.query.dispatch as _q  # src/query/dispatch.py — on sys.path via _base above
+        import query.dispatch as _q  # src/query/dispatch.py — on sys.path via _base above
         _query_module = _q
     return _query_module
 
 
-def _run_query(mode: str, pattern: str, files: list, include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
-    """Run a tree-sitter AST query against a list of absolute file paths.
+def _run_query(mode: str, pattern: str, files: list[Path], include_body: bool = False, symbol_kind: str = "", uses_kind: str = "") -> list:
+    """Run a tree-sitter AST query against a list of normalized absolute Path objects.
 
-    Delegates to the process_*_file functions in src.query.dispatch, which
-    handle reading, preprocessing, parsing, and mode dispatch per language.
-    Returns a list of {"file": path, "matches": [{"line": N, "text": "..."}]}
+    Callers are responsible for resolving paths and verifying they fall under a
+    configured root before passing them here.
+
+    Returns a list of {"file": str, "matches": [{"line": N, "text": "..."}]}
     where line is 1-indexed.  Only files with at least one match are included.
     """
     _q = _get_query_module()
-
-    # Extension → process_file function, built from each language module's EXTENSIONS set.
-    _EXT_PROCESS = _q._EXT_TO_PROCESSOR
-
     results = []
-    for file_path in files:
-        # Map Windows host path to native local path using HOST_ROOTS → ROOTS.
-        # Node.js passes Windows-style paths (e.g. C:/myproject/src/Foo.cs);
-        # the server resolves them to the local filesystem path using config.
-        resolved = file_path.replace("\\", "/")
-        for name, host_root in HOST_ROOTS.items():
-            hr = host_root.replace("\\", "/").rstrip("/")
-            if resolved.lower().startswith(hr.lower() + "/") or resolved.lower() == hr.lower():
-                rel = resolved[len(hr):]  # includes leading /
-                resolved = ROOTS[name].rstrip("/") + rel
-                break
-        native = to_native_path(resolved)
-        ext = os.path.splitext(native)[1].lower()
-        process_fn = _EXT_PROCESS.get(ext, _q.process_cs_file)
-        matches = process_fn(native, mode, pattern,
-                             include_body=include_body,
-                             symbol_kind=symbol_kind,
-                             uses_kind=uses_kind)
+    for path in files:
+        native = path.resolve()
+        ext = native.suffix.lower()
+        try:
+            src_bytes = native.read_bytes()
+        except OSError as e:
+            print(f"ERROR reading {native}: {e}", file=sys.stderr)
+            continue
+        matches = _q.query_file(src_bytes, ext, mode, pattern,
+                                include_body=include_body,
+                                symbol_kind=symbol_kind,
+                                uses_kind=uses_kind)
         if matches:
-            results.append({"file": file_path, "matches": matches})
+            results.append({"file": str(native), "matches": matches})
     return results
 
 
+def _resolve_query_paths(raw_files: list) -> list[Path]:
+    """Translate and validate a list of raw file paths from a client request.
+
+    1. Translates Windows host paths to native paths via Root.external_path → Root.local_path.
+    2. Normalizes each path with Path.resolve().
+    3. Rejects any path that isn't relative to a configured root.
+
+    Returns the list of safe, resolved Path objects.
+    Raises ValueError if any path falls outside every configured root.
+    """
+    safe: list[Path] = []
+    for file_path in raw_files:
+        if not isinstance(file_path, str):
+            raise ValueError(f"file path must be a string: {file_path!r}")
+        p = file_path.replace("\\", "/")
+        matched_root = rel = None
+        for root in ALL_ROOTS.values():
+            if root.external_path:
+                ep = root.external_path.rstrip("/")
+                if p.lower().startswith(ep.lower() + "/"):
+                    rel = Path(p[len(ep) + 1:])
+                    matched_root = root
+                    break
+            if root.local_path:
+                lp = root.local_path.rstrip("/")
+                if p.startswith(lp + "/"):
+                    rel = Path(p[len(lp) + 1:])
+                    matched_root = root
+                    break
+
+        if matched_root is None or rel is None:
+            raise ValueError(f"path does not match any configured root: {file_path!r}")
+
+        # Ensure we only ever join a safe relative suffix.
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ValueError(f"invalid relative path: {file_path!r}")
+
+        # Build local path from trusted config base + validated relative suffix.
+        # os.path.realpath + startswith is the sanitizer pattern CodeQL recognizes
+        # for path injection; it catches symlink escape after the relative-path checks above.
+        local_root = os.path.realpath(matched_root.local_path)
+        native = os.path.realpath(os.path.join(local_root, str(rel)))
+        if not native.startswith(local_root + "/"):
+            raise ValueError(f"path not under a configured root: {file_path!r}")
+        safe.append(Path(native))
+    return safe
+
+
 # ── Mode mapping: extension mode key → (Typesense mode flag, AST mode) ─────────
+
+_QUERY_CODEBASE_MAX_LIMIT = 250
 
 _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
     # Primary modes
@@ -433,21 +470,20 @@ class _Handler(BaseHTTPRequestHandler):
 
             # Per-root collection status: live doc count + cached schema check
             collections: dict = {}
-            for root_name in ROOTS:
-                coll = collection_for_root(root_name)
-                schema = _schema_status.get(root_name, {})
+            for root in ALL_ROOTS.values():
+                schema = _schema_status.get(root.name, {})
                 ndocs: int | None = None
                 if _ts_client is not None:
                     try:
-                        info = _ts_client.collections[coll].retrieve()
+                        info = _ts_client.collections[root.collection].retrieve()
                         ndocs = info.get("num_documents")
                     except Exception:
                         pass
                 # Use the live Typesense retrieve() as the authoritative existence check;
                 # the cached _schema_status may be stale (e.g. collection just created).
                 col_live_exists = ndocs is not None
-                collections[root_name] = {
-                    "collection":        coll,
+                collections[root.name] = {
+                    "collection":        root.collection,
                     "num_documents":     ndocs,
                     "collection_exists": col_live_exists,
                     "schema_ok":         col_live_exists and schema.get("ok", False),
@@ -467,15 +503,13 @@ class _Handler(BaseHTTPRequestHandler):
                                       "error": "Typesense is still loading"})
                 return
             body = self._read_body()
-            root_arg  = body.get("root", "")
-            root_name = root_arg if root_arg else ("default" if "default" in ROOTS else next(iter(ROOTS)))
             try:
-                collection, src_root = get_root(root_name)
+                root = get_root(body.get("root", ""))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
-            result = check_ready(src_root=src_root, collection=collection,
-                                 extensions=extensions_for_root(root_name))
+            result = check_ready(src_root=root.local_path, collection=root.collection,
+                                 extensions=root.extensions)
             self._send_json(200, result)
             return
 
@@ -525,20 +559,17 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "Typesense is still loading, please wait", "loading": True})
                 return
             body = self._read_body()
-            root_arg  = body.get("root", "")
-            root_name = root_arg if root_arg else ("default" if "default" in ROOTS else next(iter(ROOTS)))
             try:
-                collection, src_root = get_root(root_name)
+                root = get_root(body.get("root", ""))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
             resethard = bool(body.get("resethard", False))
-            host_root = HOST_ROOTS.get(root_name, "")
 
             with _sync_lock:
-                job = {"root_name": root_name, "src_root": src_root, "collection": collection,
-                       "resethard": resethard, "host_root": host_root,
-                       "extensions": extensions_for_root(root_name)}
+                job = {"root_name": root.name, "src_root": root.local_path,
+                       "collection": root.collection, "resethard": resethard,
+                       "extensions": root.extensions}
                 _sync_pending.append(job)
                 queued_pos = len(_sync_pending)
                 if not (_sync_thread and _sync_thread.is_alive()):
@@ -554,8 +585,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "started":    queued_pos == 0,
                 "queued":     queued_pos > 0,
                 "position":   queued_pos,
-                "collection": collection,
-                "src_root":   src_root,
+                "collection": root.collection,
+                "src_root":   root.local_path,
             })
             return
 
@@ -569,8 +600,14 @@ class _Handler(BaseHTTPRequestHandler):
             pattern      = body.get("pattern", "")
             sub          = body.get("sub", "") or None
             ext          = body.get("ext", "") or None
-            root         = body.get("root", "")
-            limit        = int(body.get("limit", 50))
+            try:
+                limit = int(body.get("limit", 50))
+            except (TypeError, ValueError):
+                self._send_json(400, {"error": "limit must be an integer"})
+                return
+            if not (1 <= limit <= _QUERY_CODEBASE_MAX_LIMIT):
+                self._send_json(400, {"error": f"limit must be between 1 and {_QUERY_CODEBASE_MAX_LIMIT}"})
+                return
             include_body = bool(body.get("include_body", False))
             symbol_kind  = str(body.get("symbol_kind", "") or "")
             uses_kind    = str(body.get("uses_kind", "") or "")
@@ -581,18 +618,16 @@ class _Handler(BaseHTTPRequestHandler):
 
             ts_mode_flag, ast_mode = _EXT_TO_TS_AND_AST[mode]
 
-            if not ROOTS:
+            if not ALL_ROOTS:
                 self._send_json(400, {"error": "No roots configured. Add a root with: ts root --add NAME /path/to/src"})
                 return
-            root_name = root if root else ("default" if "default" in ROOTS else next(iter(ROOTS)))
+
             try:
-                collection, src_root = get_root(root_name)
+                root = get_root(body.get("root", ""))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
-            # Windows path prefix stored in Typesense relative_path (e.g. "C:/repos/src").
-            # Must be stripped before prepending the server-local src_root.
-            host_root_prefix = HOST_ROOTS.get(root_name, "").replace("\\", "/").rstrip("/")
+            collection = root.collection
 
             # Import search lazily from scripts/search.py (not a package, use importlib)
             import importlib.util as _ilu
@@ -644,26 +679,27 @@ class _Handler(BaseHTTPRequestHandler):
             pending_hits  = hits[limit:]
 
             # Resolve absolute paths for AST-eligible files
-            file_list: list[str] = []
+            file_list: list[Path] = []
             hit_by_path: dict[str, dict] = {}
+            native_src_root = Path(root.local_path).resolve()
             for hit in ast_hits:
-                rel = hit["document"].get("relative_path", "").replace("\\", "/")
-                # Strip the Windows host_root prefix (e.g. "C:/repos/src/Foo.cs" →
-                # "Foo.cs") so prepending the server-local src_root produces a valid path.
-                # Without this, Docker produces "/source/default/C:/repos/src/Foo.cs".
-                if host_root_prefix and rel.lower().startswith(host_root_prefix.lower() + "/"):
-                    rel = rel[len(host_root_prefix) + 1:]
-                abs_path = to_native_path(
-                    src_root.rstrip("/\\") + "/" + rel
-                )
-                if os.path.isfile(abs_path):
+                rel = hit["document"].get("relative_path", "")
+                abs_path = Path(root.to_local(rel)).resolve()
+                # Ensure the resolved path is actually under src_root (prevents traversal).
+                try:
+                    abs_path.relative_to(native_src_root)
+                except ValueError:
+                    continue
+                if abs_path.is_file():
                     file_list.append(abs_path)
-                    hit_by_path[abs_path] = hit
+                    hit_by_path[str(abs_path)] = hit
 
             # Run AST query on eligible files
             ast_results = _run_query(ast_mode, pattern, file_list, include_body=include_body, symbol_kind=symbol_kind, uses_kind=uses_kind)
 
             # Build response: AST-expanded files (only those with matches)
+            # relative_path in the index is stored as a relative path; convert to
+            # external (Windows) form so clients always receive absolute paths.
             response_hits = []
             for ast_item in ast_results:
                 file_path = ast_item["file"]
@@ -674,7 +710,7 @@ class _Handler(BaseHTTPRequestHandler):
                 response_hits.append({
                     "document": {
                         "id":            doc.get("id", ""),
-                        "relative_path": doc.get("relative_path", ""),
+                        "relative_path": root.to_external(doc.get("relative_path", "")),
                         "subsystem":     doc.get("subsystem", ""),
                         "filename":      doc.get("filename", ""),
                     },
@@ -688,7 +724,7 @@ class _Handler(BaseHTTPRequestHandler):
                 response_hits.append({
                     "document": {
                         "id":            doc.get("id", ""),
-                        "relative_path": doc.get("relative_path", ""),
+                        "relative_path": root.to_external(doc.get("relative_path", "")),
                         "subsystem":     doc.get("subsystem", ""),
                         "filename":      doc.get("filename", ""),
                     },
@@ -721,7 +757,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "files must be a non-empty list"})
                 return
             try:
-                results = _run_query(mode, pattern, files,
+                safe_files = _resolve_query_paths(files)
+                results = _run_query(mode, pattern, safe_files,
                                      include_body=include_body,
                                      symbol_kind=symbol_kind,
                                      uses_kind=uses_kind_q)
@@ -790,18 +827,13 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
 
     # Auto-sync all roots on every startup so the index is repaired after downtime
     with _sync_lock:
-        for root_name in ROOTS:
-            try:
-                collection, src_root = get_root(root_name)
-            except ValueError:
-                continue
+        for root in ALL_ROOTS.values():
             _sync_pending.append({
-                "root_name":  root_name,
-                "src_root":   src_root,
-                "collection": collection,
+                "root_name":  root.name,
+                "src_root":   root.local_path,
+                "collection": root.collection,
                 "resethard":  False,
-                "host_root":  HOST_ROOTS.get(root_name, ""),
-                "extensions": extensions_for_root(root_name),
+                "extensions": root.extensions,
             })
         if _sync_pending:
             _sync_thread = threading.Thread(

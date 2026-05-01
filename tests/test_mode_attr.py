@@ -25,8 +25,8 @@ from tests.fixtures import (
     HAS_CACHEABLE_ATTR, HAS_OBSOLETE_NOT_CACHEABLE, NO_ATTRS,
 )
 from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
-from indexserver.indexer import extract_cs_metadata, build_document, run_index
-from src.query.dispatch import q_attrs
+from indexserver.indexer import extract_metadata, build_document, run_index
+from query.cs import q_attrs
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -36,16 +36,16 @@ from src.query.dispatch import q_attrs
 class TestAttributesField(unittest.TestCase):
 
     def test_attribute_indexed(self):
-        meta = extract_cs_metadata(HAS_CACHEABLE_ATTR.encode())
+        meta = extract_metadata(HAS_CACHEABLE_ATTR.encode(), ".cs")
         assert "Cacheable" in meta["attr_names"], \
             f"attr_names: {meta['attr_names']}"
 
     def test_wrong_attribute_not_indexed(self):
-        meta = extract_cs_metadata(HAS_OBSOLETE_NOT_CACHEABLE.encode())
+        meta = extract_metadata(HAS_OBSOLETE_NOT_CACHEABLE.encode(), ".cs")
         assert "Cacheable" not in meta["attr_names"]
 
     def test_no_attributes_empty(self):
-        meta = extract_cs_metadata(NO_ATTRS.encode())
+        meta = extract_metadata(NO_ATTRS.encode(), ".cs")
         assert meta["attr_names"] == []
 
     def test_suffix_stripped(self):
@@ -55,7 +55,7 @@ namespace Synth {
     public class Payload { }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "Serializable" in meta["attr_names"], \
             f"attr_names: {meta['attr_names']}"
 
@@ -67,7 +67,7 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "Cacheable" not in meta["attr_names"]
 
     def test_attribute_in_comment_not_indexed(self):
@@ -79,7 +79,7 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "Cacheable" not in meta["attr_names"]
 
     def test_multiple_attributes_all_indexed(self):
@@ -91,7 +91,7 @@ namespace Synth {
     public class Multi { }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         for attr in ("Cacheable", "Serializable", "Obsolete"):
             assert attr in meta["attr_names"], f"'{attr}' missing: {meta['attr_names']}"
 
@@ -104,7 +104,7 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "TestMethod" in meta["attr_names"]
 
     def test_property_level_attribute(self):
@@ -116,18 +116,18 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert "Required" in meta["attr_names"]
 
     def test_attribute_args_not_in_attr_names_list(self):
         """Attribute arguments (like ttl: 60) must not appear as attribute names."""
-        meta = extract_cs_metadata(HAS_CACHEABLE_ATTR.encode())
+        meta = extract_metadata(HAS_CACHEABLE_ATTR.encode(), ".cs")
         assert "ttl" not in meta["attr_names"]
         assert "60"  not in meta["attr_names"]
 
     def test_attr_names_not_in_type_refs(self):
         """Attribute names must not contaminate type_refs."""
-        meta = extract_cs_metadata(HAS_CACHEABLE_ATTR.encode())
+        meta = extract_metadata(HAS_CACHEABLE_ATTR.encode(), ".cs")
         assert "Cacheable" not in meta["type_refs"]
 
     def test_build_document_tokens_includes_attribute(self):

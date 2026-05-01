@@ -20,8 +20,8 @@ from tests.base import _parse
 from tests.fixtures import (
     USING_SYSTEM_GENERIC, USING_WITH_ALIAS, NO_USINGS,
 )
-from indexserver.indexer import extract_cs_metadata
-from src.query.dispatch import q_usings
+from indexserver.indexer import extract_metadata
+from query.cs import q_usings
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -102,26 +102,26 @@ namespace Synth {
 class TestUsingsField(unittest.TestCase):
 
     def test_usings_field_populated(self):
-        meta = extract_cs_metadata(USING_SYSTEM_GENERIC.encode())
+        meta = extract_metadata(USING_SYSTEM_GENERIC.encode(), ".cs")
         assert meta["usings"], f"usings field must not be empty: {meta['usings']}"
 
     def test_usings_contains_namespace(self):
-        meta = extract_cs_metadata(USING_SYSTEM_GENERIC.encode())
+        meta = extract_metadata(USING_SYSTEM_GENERIC.encode(), ".cs")
         assert any("System" in u for u in meta["usings"])
 
     def test_no_usings_empty_field(self):
-        meta = extract_cs_metadata(NO_USINGS.encode())
+        meta = extract_metadata(NO_USINGS.encode(), ".cs")
         assert meta["usings"] == []
 
     def test_alias_in_usings_field(self):
-        meta = extract_cs_metadata(USING_WITH_ALIAS.encode())
+        meta = extract_metadata(USING_WITH_ALIAS.encode(), ".cs")
         # The alias directive should appear in usings
         assert any("BS" in u or "Storage" in u for u in meta["usings"]), \
             f"Alias using not in usings field: {meta['usings']}"
 
     def test_usings_not_in_type_refs(self):
         """Namespaces imported via 'using' must not contaminate type_refs."""
-        meta = extract_cs_metadata(USING_SYSTEM_GENERIC.encode())
+        meta = extract_metadata(USING_SYSTEM_GENERIC.encode(), ".cs")
         # 'Tasks' from 'System.Threading.Tasks' should not pollute type_refs
         # as a standalone type name
         for tr in meta["type_refs"]:

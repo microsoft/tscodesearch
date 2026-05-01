@@ -27,15 +27,15 @@ def accounts_bytes():
         return f.read()
 
 
-# ── extract_sql_metadata tests ────────────────────────────────────────────────
+# ── extract_metadata tests ────────────────────────────────────────────────
 
 class TestExtractSqlMetadata:
-    """Unit tests for the indexer's extract_sql_metadata()."""
+    """Unit tests for the indexer's extract_metadata()."""
 
     @pytest.fixture(autouse=True)
     def _load(self, catalog_bytes):
-        from indexserver.indexer import extract_sql_metadata
-        self.meta = extract_sql_metadata(catalog_bytes)
+        from indexserver.indexer import extract_metadata
+        self.meta = extract_metadata(catalog_bytes, ".sql")
 
     def test_tables_found(self):
         """CREATE TABLE names should appear in class_names."""
@@ -93,8 +93,8 @@ class TestExtractSqlMetadataAccounts:
 
     @pytest.fixture(autouse=True)
     def _load(self, accounts_bytes):
-        from indexserver.indexer import extract_sql_metadata
-        self.meta = extract_sql_metadata(accounts_bytes)
+        from indexserver.indexer import extract_metadata
+        self.meta = extract_metadata(accounts_bytes, ".sql")
 
     def test_tables_found(self):
         cn = self.meta["class_names"]
@@ -126,41 +126,40 @@ class TestSqlAstHelpers:
         self.src = catalog_bytes
 
     def test_extract_table_names(self):
-        from src.ast.sql import extract_table_names
+        from query.sql import extract_table_names
         names = extract_table_names(self.root, self.src)
         assert any("Products" in n for n in names)
         assert any("Orders" in n for n in names)
 
     def test_extract_function_names(self):
-        from src.ast.sql import extract_function_names
+        from query.sql import extract_function_names
         names = extract_function_names(self.root, self.src)
         assert any("fn_GetProductCount" in n for n in names)
 
     def test_extract_proc_names_regex(self):
-        from src.ast.sql import extract_proc_names_regex
+        from query.sql import extract_proc_names_regex
         names = extract_proc_names_regex(self.src)
         assert any("proc_GetProductById" in n for n in names)
 
     def test_extract_column_info(self):
-        from src.ast.sql import extract_column_info
+        from query.sql import extract_column_info
         col_names, col_types = extract_column_info(self.root, self.src)
         assert "ProductId" in col_names
         assert "ProductName" in col_names
 
     def test_extract_column_sigs(self):
-        from src.ast.sql import extract_column_sigs
+        from query.sql import extract_column_sigs
         sigs = extract_column_sigs(self.root, self.src)
         assert any("ProductId" in s for s in sigs), f"ProductId not in sigs: {sigs}"
         assert any("UNIQUEIDENTIFIER" in s.upper() for s in sigs), f"Type missing: {sigs}"
 
     def test_object_name_helper(self):
-        from src.ast.sql import _object_name
-        from src.ast.cs import _find_all
+        from query.sql import _object_name, _find_all
         refs = _find_all(self.root, lambda n: n.type == "object_reference")
         refs_found = [r for r in refs if _object_name(r, self.src) == "Products"]
         assert len(refs_found) > 0
 
     def test_extract_referenced_tables(self):
-        from src.ast.sql import extract_referenced_tables
+        from query.sql import extract_referenced_tables
         names = extract_referenced_tables(self.root, self.src)
         assert any("Products" in n for n in names)

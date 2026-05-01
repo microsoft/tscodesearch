@@ -2,7 +2,7 @@
 Tests for sig / listing modes.
 
 Covers:
-  - extract_cs_metadata: member_sigs (param types, return types, constructors, locals)
+  - extract_metadata: member_sigs (param types, return types, constructors, locals)
   - q_methods / q_classes / q_fields semantics (declarations only, no call contamination)
   - Narrow pre-filter (Bug 2): listing modes must not include calls-only files
   - Fixed sig search query_by (Bug 1): method_names removed to avoid false positives
@@ -24,42 +24,42 @@ from tests.fixtures import (
     LISTING_TARGET, CALLS_IBLOBSERVICE, CONTENT_ONLY_BLOBSTORE,
 )
 from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
-from indexserver.indexer import extract_cs_metadata, run_index
-from src.query.dispatch import q_methods, q_classes, q_fields
+from indexserver.indexer import extract_metadata, run_index
+from query.cs import q_methods, q_classes, q_fields
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# extract_cs_metadata — member_sigs field
+# extract_metadata — member_sigs field
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestMemberSigs(unittest.TestCase):
-    """extract_cs_metadata correctly populates member_sigs."""
+    """extract_metadata correctly populates member_sigs."""
 
     def test_param_type_in_member_sigs(self):
-        meta = extract_cs_metadata(SIG_HAS_PARAM.encode())
+        meta = extract_metadata(SIG_HAS_PARAM.encode(), ".cs")
         assert any("BlobStore" in s for s in meta["member_sigs"]), \
             f"member_sigs: {meta['member_sigs']}"
 
     def test_return_type_in_member_sigs(self):
         """Return type uses child_by_field_name('returns') — must be captured."""
-        meta = extract_cs_metadata(SIG_HAS_PARAM.encode())
+        meta = extract_metadata(SIG_HAS_PARAM.encode(), ".cs")
         sigs = meta["member_sigs"]
         assert any("BlobStore" in s and "Retrieve" in s for s in sigs), \
             f"Return type 'BlobStore' must appear in Retrieve sig. Got: {sigs}"
 
     def test_calls_only_no_blobstore_in_member_sigs(self):
-        meta = extract_cs_metadata(CALLS_ONLY.encode())
+        meta = extract_metadata(CALLS_ONLY.encode(), ".cs")
         assert not any("BlobStore" in s for s in meta["member_sigs"]), \
             f"calls-only file must have no BlobStore in member_sigs: {meta['member_sigs']}"
 
     def test_call_targets_not_in_member_sigs(self):
-        meta = extract_cs_metadata(CALLS_ONLY.encode())
+        meta = extract_metadata(CALLS_ONLY.encode(), ".cs")
         for sig in meta["member_sigs"]:
             assert "FetchBlob" not in sig and "StoreBlob" not in sig, \
                 f"call target leaked into member_sigs: {sig!r}"
 
     def test_constructor_in_member_sigs(self):
-        meta = extract_cs_metadata(LISTING_TARGET.encode())
+        meta = extract_metadata(LISTING_TARGET.encode(), ".cs")
         assert any("WidgetProcessor" in s for s in meta["member_sigs"]), \
             "Constructor must appear in member_sigs"
 
@@ -74,12 +74,12 @@ namespace Synth {
     }
 }
 """
-        meta = extract_cs_metadata(src.encode())
+        meta = extract_metadata(src.encode(), ".cs")
         assert any("LocalHelper" in s for s in meta["member_sigs"]), \
             f"local function not in member_sigs: {meta['member_sigs']}"
 
     def test_method_names_field_has_all_names(self):
-        meta = extract_cs_metadata(SIG_HAS_PARAM.encode())
+        meta = extract_metadata(SIG_HAS_PARAM.encode(), ".cs")
         for name in ("Store", "Retrieve", "LogEntry", "WriteTag"):
             assert name in meta["method_names"], \
                 f"Expected '{name}' in method_names: {meta['method_names']}"
@@ -230,23 +230,23 @@ class TestPrefilterFieldSelection(unittest.TestCase):
     def test_calls_only_absent_from_narrow_prefilter_fields(self):
         """CALLS_IBLOBSERVICE has BlobStore-adjacent terms only in call_sites/tokens,
         not in the narrow pre-filter fields."""
-        meta = extract_cs_metadata(CALLS_IBLOBSERVICE.encode())
+        meta = extract_metadata(CALLS_IBLOBSERVICE.encode(), ".cs")
         for field in ("member_sigs", "type_refs", "base_types", "class_names"):
             vals = meta[field]
             assert not any("BlobStore" in v for v in vals), \
                 f"BlobStore found in narrow-prefilter field '{field}': {vals}"
 
     def test_sig_file_present_in_narrow_prefilter_fields(self):
-        meta = extract_cs_metadata(SIG_HAS_PARAM.encode())
+        meta = extract_metadata(SIG_HAS_PARAM.encode(), ".cs")
         assert any("BlobStore" in s for s in meta["member_sigs"])
 
     def test_listing_target_present_in_narrow_prefilter_fields(self):
-        meta = extract_cs_metadata(LISTING_TARGET.encode())
+        meta = extract_metadata(LISTING_TARGET.encode(), ".cs")
         assert any("BlobStore" in s for s in meta["member_sigs"])
         assert "BlobStore" in meta["type_refs"]
 
     def test_class_name_only_hits_class_names_field(self):
-        meta = extract_cs_metadata(NAME_CONTAINS.encode())
+        meta = extract_metadata(NAME_CONTAINS.encode(), ".cs")
         assert "BlobStoreMigrator" in meta["class_names"]
         assert not any("BlobStore" in s for s in meta["member_sigs"])
 
