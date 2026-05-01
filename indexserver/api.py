@@ -337,28 +337,34 @@ def _resolve_query_paths(raw_files: list) -> list[Path]:
     Returns the list of safe, resolved Path objects.
     Raises ValueError if any path falls outside every configured root.
     """
-    allowed_roots = [Path(os.path.realpath(r.local_path)) for r in ALL_ROOTS.values() if r.local_path]
     safe: list[Path] = []
     for file_path in raw_files:
         p = file_path.replace("\\", "/")
-        local = to_native_path(p)  # default: platform-level conversion only
+        matched_root = rel = None
         for root in ALL_ROOTS.values():
             if root.external_path:
                 ep = root.external_path.rstrip("/")
                 if p.lower().startswith(ep.lower() + "/"):
-                    local = root.to_local(p[len(ep) + 1:])
+                    rel = Path(p[len(ep) + 1:])
+                    matched_root = root
                     break
-                if p.lower() == ep.lower():
-                    local = root.local_path
+            if root.local_path:
+                lp = root.local_path.rstrip("/")
+                if p.startswith(lp + "/"):
+                    rel = Path(p[len(lp) + 1:])
+                    matched_root = root
                     break
-        native = Path(os.path.realpath(local)).resolve()
-        # Guard: resolved path must be relative to a known configured root.
-        for r in allowed_roots:
-            if native.is_relative_to(r):
-                safe.append(native)
-                break
-        else:
+
+        if matched_root is None or rel is None:
+            raise ValueError(f"path does not match any configured root: {file_path!r}")
+        
+        # Build local path from trusted config base + verified-relative suffix.
+        # rel is a relative Path; resolve() + is_relative_to guards against symlink escape.
+        local_root = Path(matched_root.local_path).resolve()
+        native = (local_root / rel).resolve()
+        if not native.is_relative_to(local_root):
             raise ValueError(f"path not under a configured root: {file_path!r}")
+        safe.append(native)
     return safe
 
 
