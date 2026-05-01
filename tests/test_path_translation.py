@@ -7,8 +7,7 @@ Path contract:
     - always receives Windows paths in query results
 
   Typesense index
-    - relative_path stored as full Windows path:  C:/repos/src/sub/Widget.cs
-      (host_root prefix from HOST_ROOTS + bare relative segment)
+    - relative_path stored as a bare relative path:  sub/Widget.cs
 
   Indexserver (Python in WSL or Docker)
     - opens files using server-local paths:  /mnt/c/repos/src/Widget.cs  (WSL)
@@ -22,7 +21,7 @@ Covered here (no Typesense server required):
   TestToNativePath           — to_native_path() under WSL / Docker / Windows
   TestParseRoots             — _parse_roots() auto-derives local_path in WSL
   TestRunQueryPathResolution — _run_query() maps Windows paths → local paths
-  TestQueryCodebasePathStrip — host_root prefix stripped before abs_path construction
+  TestRootPathConversion     — Root.to_local() and Root.to_external()
   TestToWindowsPathLogic     — MCP-side toWindowsPath() logic (Python port)
   TestPathIntegration        — end-to-end path round-trip (requires server)
 """
@@ -135,7 +134,7 @@ class TestParseRoots(unittest.TestCase):
         self.assertEqual(roots["default"].local_path, "C:/repos/src")
         self.assertEqual(roots["default"].external_path, "C:/repos/src")
 
-    def test_only_local_path_no_host_root(self):
+    def test_only_local_path_no_external_path(self):
         roots = self._parse({
             "default": {"local_path": "/source/default"}
         })
@@ -201,19 +200,19 @@ class TestParseRoots(unittest.TestCase):
 class TestRunQueryPathResolution(unittest.TestCase):
     """_resolve_query_paths() translates and validates paths from client requests."""
 
-    def _resolve(self, file_path: str, host_roots: dict, roots: dict) -> list[Path]:
-        """Call _resolve_query_paths with patched ALL_ROOTS built from host_roots + roots dicts."""
+    def _resolve(self, file_path: str, external_paths: dict, roots: dict) -> list[Path]:
+        """Call _resolve_query_paths with patched ALL_ROOTS built from external_paths + roots dicts."""
         import indexserver.api as _api
         from indexserver.config import Root, collection_for_root, INCLUDE_EXTENSIONS
         patched = {
             name: Root(
                 name=name,
                 local_path=roots.get(name, ""),
-                external_path=host_roots.get(name, ""),
+                external_path=external_paths.get(name, ""),
                 collection=collection_for_root(name),
                 extensions=INCLUDE_EXTENSIONS,
             )
-            for name in set(list(roots) + list(host_roots))
+            for name in set(list(roots) + list(external_paths))
         }
         with patch.dict("indexserver.api.ALL_ROOTS", patched, clear=True):
             return _api._resolve_query_paths([file_path])
@@ -222,7 +221,7 @@ class TestRunQueryPathResolution(unittest.TestCase):
         """C:/repos/src/Widget.cs → /source/default/Widget.cs in Docker."""
         result = self._resolve(
             "C:/repos/src/Widget.cs",
-            host_roots={"default": "C:/repos/src"},
+            external_paths={"default": "C:/repos/src"},
             roots={"default": "/source/default"},
         )
         self.assertEqual(result, [Path("/source/default/Widget.cs")])
@@ -230,7 +229,7 @@ class TestRunQueryPathResolution(unittest.TestCase):
     def test_docker_subdir_path(self):
         result = self._resolve(
             "C:/repos/src/services/Widget.cs",
-            host_roots={"default": "C:/repos/src"},
+            external_paths={"default": "C:/repos/src"},
             roots={"default": "/source/default"},
         )
         self.assertEqual(result, [Path("/source/default/services/Widget.cs")])
@@ -239,16 +238,16 @@ class TestRunQueryPathResolution(unittest.TestCase):
         """C:/repos/src/Widget.cs → /mnt/c/repos/src/Widget.cs in WSL."""
         result = self._resolve(
             "C:/repos/src/Widget.cs",
-            host_roots={"default": "C:/repos/src"},
+            external_paths={"default": "C:/repos/src"},
             roots={"default": "/mnt/c/repos/src"},
         )
         self.assertEqual(result, [Path("/mnt/c/repos/src/Widget.cs")])
 
-    def test_case_insensitive_host_root_matching(self):
-        """HOST_ROOT matching is case-insensitive (Windows FS)."""
+    def test_case_insensitive_external_path_matching(self):
+        """external_path matching is case-insensitive (Windows FS)."""
         result = self._resolve(
             "C:/REPOS/SRC/Widget.cs",
-            host_roots={"default": "C:/repos/src"},
+            external_paths={"default": "C:/repos/src"},
             roots={"default": "/source/default"},
         )
         self.assertEqual(len(result), 1)
@@ -259,7 +258,7 @@ class TestRunQueryPathResolution(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._resolve(
                 "/etc/passwd",
-                host_roots={},
+                external_paths={},
                 roots={"default": "/source/default"},
             )
 
@@ -281,65 +280,58 @@ class TestRunQueryPathResolution(unittest.TestCase):
             os.unlink(tmp_path)
 
 
-# ── /query-codebase host_root stripping ──────────────────────────────────────
+# ── Root.to_local / Root.to_external ─────────────────────────────────────────
 
-class TestQueryCodebasePathStrip(unittest.TestCase):
-    """host_root prefix stripped from Typesense relative_path before abs_path build."""
+class TestRootPathConversion(unittest.TestCase):
+    """Root.to_local() converts stored relative path → local abs path.
+    Root.to_external() converts stored relative path → external abs path.
+    """
 
-    @staticmethod
-    def _strip(rel: str, host_root_prefix: str) -> str:
-        """Mirrors the stripping logic from the /query-codebase handler."""
-        rel = rel.replace("\\", "/")
-        hr = host_root_prefix.replace("\\", "/").rstrip("/")
-        if hr and rel.lower().startswith(hr.lower() + "/"):
-            rel = rel[len(hr) + 1:]
-        return rel
-
-    def test_strips_windows_prefix(self):
-        self.assertEqual(
-            self._strip("C:/repos/src/sub/Widget.cs", "C:/repos/src"),
-            "sub/Widget.cs",
+    def _root(self, local_path, external_path=""):
+        from indexserver.config import Root, collection_for_root, INCLUDE_EXTENSIONS
+        return Root(
+            name="default",
+            local_path=local_path,
+            external_path=external_path,
+            collection=collection_for_root("default"),
+            extensions=INCLUDE_EXTENSIONS,
         )
 
-    def test_strips_root_level_file(self):
-        self.assertEqual(
-            self._strip("C:/repos/src/Widget.cs", "C:/repos/src"),
-            "Widget.cs",
-        )
+    def test_to_local_wsl(self):
+        root = self._root("/mnt/c/repos/src", "C:/repos/src")
+        self.assertEqual(root.to_local("sub/Widget.cs"), "/mnt/c/repos/src/sub/Widget.cs")
 
-    def test_case_insensitive(self):
-        self.assertEqual(
-            self._strip("c:/repos/src/Widget.cs", "C:/REPOS/SRC"),
-            "Widget.cs",
-        )
+    def test_to_local_docker(self):
+        root = self._root("/source/default", "")
+        self.assertEqual(root.to_local("sub/Widget.cs"), "/source/default/sub/Widget.cs")
 
-    def test_no_prefix_bare_relative_unchanged(self):
-        self.assertEqual(
-            self._strip("sub/Widget.cs", ""),
-            "sub/Widget.cs",
-        )
+    def test_to_local_strips_leading_slash(self):
+        root = self._root("/mnt/c/repos/src", "C:/repos/src")
+        self.assertEqual(root.to_local("/sub/Widget.cs"), "/mnt/c/repos/src/sub/Widget.cs")
 
-    def test_different_root_not_stripped(self):
-        result = self._strip("D:/other/src/Widget.cs", "C:/repos/src")
-        self.assertEqual(result, "D:/other/src/Widget.cs")
+    def test_to_local_backslashes_normalised(self):
+        root = self._root("/mnt/c/repos/src", "C:/repos/src")
+        self.assertEqual(root.to_local("sub\\Widget.cs"), "/mnt/c/repos/src/sub/Widget.cs")
 
-    def test_docker_path_construction(self):
-        """After stripping, prepending Docker src_root gives correct path."""
-        from indexserver.config import to_native_path
-        rel = self._strip("C:/repos/src/sub/Widget.cs", "C:/repos/src")
-        abs_path = to_native_path("/source/default" + "/" + rel)
-        self.assertEqual(abs_path, "/source/default/sub/Widget.cs")
+    def test_to_external_with_external_path(self):
+        root = self._root("/mnt/c/repos/src", "C:/repos/src")
+        self.assertEqual(root.to_external("sub/Widget.cs"), "C:/repos/src/sub/Widget.cs")
 
-    def test_wsl_path_construction(self):
-        """After stripping, prepending WSL src_root gives correct path."""
-        from indexserver.config import to_native_path
-        rel = self._strip("C:/repos/src/sub/Widget.cs", "C:/repos/src")
-        abs_path = to_native_path("/mnt/c/repos/src" + "/" + rel)
-        self.assertEqual(abs_path, "/mnt/c/repos/src/sub/Widget.cs")
+    def test_to_external_no_external_path_falls_back_to_local(self):
+        root = self._root("/source/default", "")
+        self.assertEqual(root.to_external("sub/Widget.cs"), "/source/default/sub/Widget.cs")
 
-    def test_backslash_in_stored_path(self):
-        result = self._strip("C:\\repos\\src\\Widget.cs", "C:/repos/src")
-        self.assertEqual(result, "Widget.cs")
+    def test_to_external_strips_leading_slash(self):
+        root = self._root("/mnt/c/repos/src", "C:/repos/src")
+        self.assertEqual(root.to_external("/sub/Widget.cs"), "C:/repos/src/sub/Widget.cs")
+
+    def test_to_local_root_level_file(self):
+        root = self._root("/mnt/c/repos/src", "C:/repos/src")
+        self.assertEqual(root.to_local("Widget.cs"), "/mnt/c/repos/src/Widget.cs")
+
+    def test_to_external_root_level_file(self):
+        root = self._root("/mnt/c/repos/src", "C:/repos/src")
+        self.assertEqual(root.to_external("Widget.cs"), "C:/repos/src/Widget.cs")
 
 
 # ── MCP-side toWindowsPath logic ──────────────────────────────────────────────
@@ -437,7 +429,7 @@ class TestPathIntegration(unittest.TestCase):
     Requires the indexserver to be running (ts start).
     These tests verify the contract that:
       - /query accepts Windows paths and returns them unchanged in results
-      - /query-codebase returns relative_path as a Windows path (with host_root prefix)
+      - /query-codebase returns relative_path as the external (Windows) absolute path
     """
 
     @classmethod
@@ -514,7 +506,7 @@ class TestPathIntegration(unittest.TestCase):
                              "result 'file' must match the Windows path sent in the request")
 
     def test_query_codebase_relative_path_is_external_path(self):
-        """/query-codebase: relative_path in results must be a Windows path."""
+        """/query-codebase: relative_path in results must be the external (Windows) path."""
         root = self.all_roots.get("default")
         if not root or not root.external_path:
             self.skipTest("no external_path configured for default root")
@@ -528,12 +520,12 @@ class TestPathIntegration(unittest.TestCase):
         if not hits:
             return  # no data indexed in test env — nothing to assert
 
-        host_root = root.external_path.replace("\\", "/").rstrip("/")
+        external_prefix = root.external_path.replace("\\", "/").rstrip("/")
         for hit in hits:
             rel = hit.get("document", {}).get("relative_path", "")
             self.assertTrue(
-                rel.lower().startswith(host_root.lower() + "/"),
-                f"relative_path {rel!r} should start with host_root {host_root!r}",
+                rel.lower().startswith(external_prefix.lower() + "/"),
+                f"relative_path {rel!r} should be external path starting with {external_prefix!r}",
             )
 
 

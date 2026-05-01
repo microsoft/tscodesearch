@@ -25,25 +25,11 @@ from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 
 from indexserver.config import (
-    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, ALL_ROOTS,
+    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, ALL_ROOTS, to_native_path,
 )
 
 DEBOUNCE_SECONDS  = 2.0
 POLL_INTERVAL_SEC = 10   # polling interval for PollingObserver on /mnt/ paths
-
-
-def _to_wsl_path(path: str) -> str:
-    """Convert a Windows-style drive path to a WSL mount path.
-
-    Examples:
-        C:/myproject/src    ->  /mnt/c/myproject/src
-        C:\\myproject\\src  ->  /mnt/c/myproject/src
-        /mnt/c/...        ->  (unchanged)
-    """
-    p = path.replace("\\", "/")
-    if len(p) >= 2 and p[1] == ":":
-        return "/mnt/" + p[0].lower() + p[2:]
-    return p
 
 
 class CsChangeHandler(FileSystemEventHandler):
@@ -131,11 +117,11 @@ def run_watcher(src_root=None, collection=None, stop_event=None, queue=None):
         raise ValueError("run_watcher requires a queue argument")
 
     if src_root is not None and collection is not None:
-        wsl_path = _to_wsl_path(src_root)
+        wsl_path = to_native_path(src_root)
         roots_map = {wsl_path: (collection, None)}
     else:
         roots_map = {
-            _to_wsl_path(r.local_path): (r.collection, r.extensions)
+            to_native_path(r.local_path): (r.collection, r.extensions)
             for r in ALL_ROOTS.values()
         }
 

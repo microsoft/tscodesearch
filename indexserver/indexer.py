@@ -24,28 +24,9 @@ import typesense
 from indexserver.config import (
     TYPESENSE_CLIENT_CONFIG, COLLECTION, SRC_ROOT,
     INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES,
-    collection_for_root,
+    collection_for_root, to_native_path,
 )
 from query.dispatch import describe_file
-
-def _to_native_path(path: str) -> str:
-    """Convert a Windows-style path (C:/foo or C:\\foo) to the platform-native form.
-
-    On WSL (Linux), converts to /mnt/c/foo so that open() works correctly.
-    On Windows, converts forward slashes to backslashes.
-    """
-    p = path.replace("\\", "/")
-    if len(p) >= 2 and p[1] == ":":
-        if os.sep == "/":
-            # WSL: C:/foo/bar → /mnt/c/foo/bar
-            return "/mnt/" + p[0].lower() + p[2:]
-        else:
-            # Windows: C:/foo/bar → C:\foo\bar
-            return p.replace("/", "\\")
-    return p
-
-
-_SRC_ROOT_NATIVE = _to_native_path(SRC_ROOT)
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +254,7 @@ def should_skip_dir(dirname: str) -> bool:
 
 
 
-def build_document(full_path: str, relative_path: str, host_root: str = "") -> dict:
+def build_document(full_path: str, relative_path: str) -> dict:
     try:
         stat = os.stat(full_path)
         with open(full_path, "rb") as _f:
@@ -287,11 +268,10 @@ def build_document(full_path: str, relative_path: str, host_root: str = "") -> d
     _raw = src_bytes.decode("utf-8", errors="replace")
     tokens = " ".join(dict.fromkeys(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', _raw)))
     relative_path_norm = relative_path.replace("\\", "/")
-    stored_path = (host_root.rstrip("/") + "/" + relative_path_norm) if host_root else relative_path_norm
 
     return {
-        "id":               file_id(stored_path),
-        "relative_path":    stored_path,
+        "id":               file_id(relative_path_norm),
+        "relative_path":    relative_path_norm,
         "filename":         os.path.basename(full_path),
         "extension":        ext.lstrip("."),
         "language":         _file_language(ext),
@@ -462,7 +442,7 @@ def walk_source_files(src_root: str, extensions=None):
     import pathspec
 
     exts = extensions if extensions is not None else INCLUDE_EXTENSIONS
-    src_root = _to_native_path(src_root)
+    src_root = to_native_path(src_root)
 
     # Cache: abs_dir -> PathSpec | None
     _spec_cache: dict = {}
@@ -545,7 +525,6 @@ def index_file_list(
     verbose: bool = False,
     on_progress=None,
     stop_event=None,
-    host_root: str = "",
 ) -> tuple[int, int]:
     """Shared batch-upsert pipeline used by both the full indexer and the verifier.
 
@@ -571,7 +550,7 @@ def index_file_list(
         if stop_event and stop_event.is_set():
             break
 
-        doc = build_document(full_path, rel, host_root=host_root)
+        doc = build_document(full_path, rel)
         if doc is None:
             errors += 1
             continue
@@ -607,7 +586,7 @@ def walk_and_enqueue(
     Calls ensure_collection() first (dropping the collection when resethard=True).
     Returns (new_entries, deduped_entries).
     """
-    src_root = _to_native_path(src_root)
+    src_root = to_native_path(src_root)
     client = get_client()
     ensure_collection(client, resethard=resethard, collection=collection)
     return queue.enqueue_bulk(
@@ -617,22 +596,19 @@ def walk_and_enqueue(
     )
 
 
-def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, collection=None, host_root=""):
+def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, collection=None):
     coll_name = collection or COLLECTION
     root_exts = None
     if src_root is None:
-        # Derive src_root (and host_root if not supplied) from config using collection name.
         from indexserver.config import ALL_ROOTS
         for root in ALL_ROOTS.values():
             if root.collection == coll_name:
                 src_root = root.local_path
-                if not host_root:
-                    host_root = root.external_path
                 root_exts = root.extensions
                 break
         if src_root is None:
-            src_root = _SRC_ROOT_NATIVE
-    src_root = _to_native_path(src_root)
+            src_root = to_native_path(SRC_ROOT)
+    src_root = to_native_path(src_root)
     exts = root_exts if root_exts is not None else INCLUDE_EXTENSIONS
     client = get_client()
     ensure_collection(client, resethard=resethard, collection=coll_name)
@@ -679,7 +655,6 @@ def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, coll
         client, _tracked_files(), coll_name,
         batch_size=batch_size, verbose=verbose,
         on_progress=_rate_report,
-        host_root=host_root,
     )
 
     elapsed = time.time() - t0
@@ -702,8 +677,6 @@ if __name__ == "__main__":
                     help="Root directory to index (default: derived from --collection via config)")
     ap.add_argument("--collection", default=None,
                     help="Collection name (default: from config)")
-    ap.add_argument("--host-root", default="",
-                    help="Windows-side path prefix stored in indexed filenames (overrides config lookup)")
     ap.add_argument("--status", action="store_true",
                     help="Show index stats and exit")
     ap.add_argument("--verbose", action="store_true")
@@ -720,4 +693,4 @@ if __name__ == "__main__":
             print(f"Cannot retrieve index stats: {e}")
     else:
         run_index(src_root=args.src, resethard=args.resethard, verbose=args.verbose,
-                  collection=coll, host_root=args.host_root)
+                  collection=coll)

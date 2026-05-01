@@ -112,9 +112,24 @@ class Root:
     """All configuration for one indexed source tree."""
     name: str             # logical root name (the key in config.json "roots")
     local_path: str       # server-side path (WSL: /mnt/c/…, Docker: /source/…)
-    external_path: str    # Windows-side path (C:/…), empty string if not configured
+    external_path: str    # Windows-side path (C:/…) returned to clients; empty string if not configured
     collection: str       # Typesense collection name, e.g. "codesearch_default"
     extensions: frozenset # file extensions to index; defaults to INCLUDE_EXTENSIONS
+
+    def to_local(self, rel: str) -> str:
+        """Convert a stored relative path to a locally openable absolute path."""
+        r = rel.replace("\\", "/").lstrip("/")
+        return self.local_path.rstrip("/") + "/" + r
+
+    def to_external(self, rel: str) -> str:
+        """Convert a stored relative path to the external absolute path for clients.
+
+        Returns the full Windows-style path (e.g. C:/repos/src/Foo.cs) when
+        external_path is configured, or the local absolute path otherwise.
+        """
+        r = rel.replace("\\", "/").lstrip("/")
+        base = self.external_path if self.external_path else self.local_path
+        return base.rstrip("/") + "/" + r
 
 
 # ── Roots ─────────────────────────────────────────────────────────────────────
@@ -124,7 +139,7 @@ def _parse_roots(raw: dict) -> "dict[str, Root]":
 
     Each entry should have:
       local_path    — path as seen by this process (WSL: /mnt/c/…, Docker: /source/…)
-      external_path — original Windows path (C:/…), stored as relative_path prefix in indexed docs
+      external_path — original Windows path (C:/…), returned to clients via Root.to_external()
 
     If only external_path is provided, local_path is auto-derived:
       - In WSL: C:/foo/bar  →  /mnt/c/foo/bar

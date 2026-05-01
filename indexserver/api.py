@@ -86,7 +86,7 @@ _watcher_lock  = threading.Lock()
 # Both POST /index/start and POST /verify/start feed this queue.
 _sync_thread:  threading.Thread | None = None
 _sync_lock     = threading.Lock()
-_sync_pending: list = []   # jobs: [{root_name,src_root,collection,resethard,host_root}]
+_sync_pending: list = []   # jobs: [{root_name,src_root,collection,resethard,extensions}]
 _sync_stop:    threading.Event | None = None   # stop event for the running job
 
 # Schema validation results cached at startup by verify_all_schemas().
@@ -178,11 +178,7 @@ def _drain_sync_queue() -> None:
         src_root   = job["src_root"]
         collection = job["collection"]
         resethard  = job["resethard"]
-        host_root  = job["host_root"]
         extensions = job.get("extensions")
-
-        if host_root:
-            _index_queue.register_host_root(collection, host_root)
 
         stop = threading.Event()
         _sync_stop = stop
@@ -344,16 +340,18 @@ def _resolve_query_paths(raw_files: list) -> list[Path]:
     allowed_roots = [Path(os.path.realpath(r.local_path)) for r in ALL_ROOTS.values() if r.local_path]
     safe: list[Path] = []
     for file_path in raw_files:
-        resolved = file_path.replace("\\", "/")
+        p = file_path.replace("\\", "/")
+        local = to_native_path(p)  # default: platform-level conversion only
         for root in ALL_ROOTS.values():
-            if not root.external_path:
-                continue
-            hr = root.external_path.rstrip("/")
-            if resolved.lower().startswith(hr.lower() + "/") or resolved.lower() == hr.lower():
-                rel = resolved[len(hr):]  # includes leading /
-                resolved = root.local_path.rstrip("/") + rel
-                break
-        native = Path(os.path.realpath(to_native_path(resolved))).resolve()
+            if root.external_path:
+                ep = root.external_path.rstrip("/")
+                if p.lower().startswith(ep.lower() + "/"):
+                    local = root.to_local(p[len(ep) + 1:])
+                    break
+                if p.lower() == ep.lower():
+                    local = root.local_path
+                    break
+        native = Path(os.path.realpath(local)).resolve()
         # Guard: resolved path must be relative to a known configured root.
         for r in allowed_roots:
             if native.is_relative_to(r):
@@ -558,7 +556,7 @@ class _Handler(BaseHTTPRequestHandler):
             with _sync_lock:
                 job = {"root_name": root.name, "src_root": root.local_path,
                        "collection": root.collection, "resethard": resethard,
-                       "host_root": root.external_path, "extensions": root.extensions}
+                       "extensions": root.extensions}
                 _sync_pending.append(job)
                 queued_pos = len(_sync_pending)
                 if not (_sync_thread and _sync_thread.is_alive()):
@@ -617,10 +615,6 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": str(e)})
                 return
             collection = root.collection
-            src_root   = root.local_path
-            # Windows path prefix stored in Typesense relative_path (e.g. "C:/repos/src").
-            # Must be stripped before prepending the server-local src_root.
-            host_root_prefix = root.external_path.rstrip("/")
 
             # Import search lazily from scripts/search.py (not a package, use importlib)
             import importlib.util as _ilu
@@ -674,19 +668,10 @@ class _Handler(BaseHTTPRequestHandler):
             # Resolve absolute paths for AST-eligible files
             file_list: list[Path] = []
             hit_by_path: dict[str, dict] = {}
-            native_src_root = Path(to_native_path(src_root)).resolve()
+            native_src_root = Path(root.local_path).resolve()
             for hit in ast_hits:
-                rel = hit["document"].get("relative_path", "").replace("\\", "/")
-                # Strip the Windows host_root prefix (e.g. "C:/repos/src/Foo.cs" →
-                # "Foo.cs") so prepending the server-local src_root produces a valid path.
-                # Without this, Docker produces "/source/default/C:/repos/src/Foo.cs".
-                if host_root_prefix and rel.lower().startswith(host_root_prefix.lower() + "/"):
-                    rel = rel[len(host_root_prefix) + 1:]
-                rel_path = Path(rel)
-                # Reject absolute / drive-qualified paths from indexed metadata.
-                if rel_path.is_absolute() or rel_path.drive:
-                    continue
-                abs_path = (native_src_root / rel_path).resolve()
+                rel = hit["document"].get("relative_path", "")
+                abs_path = Path(root.to_local(rel)).resolve()
                 # Ensure the resolved path is actually under src_root (prevents traversal).
                 try:
                     abs_path.relative_to(native_src_root)
@@ -700,6 +685,8 @@ class _Handler(BaseHTTPRequestHandler):
             ast_results = _run_query(ast_mode, pattern, file_list, include_body=include_body, symbol_kind=symbol_kind, uses_kind=uses_kind)
 
             # Build response: AST-expanded files (only those with matches)
+            # relative_path in the index is stored as a relative path; convert to
+            # external (Windows) form so clients always receive absolute paths.
             response_hits = []
             for ast_item in ast_results:
                 file_path = ast_item["file"]
@@ -710,7 +697,7 @@ class _Handler(BaseHTTPRequestHandler):
                 response_hits.append({
                     "document": {
                         "id":            doc.get("id", ""),
-                        "relative_path": doc.get("relative_path", ""),
+                        "relative_path": root.to_external(doc.get("relative_path", "")),
                         "subsystem":     doc.get("subsystem", ""),
                         "filename":      doc.get("filename", ""),
                     },
@@ -724,7 +711,7 @@ class _Handler(BaseHTTPRequestHandler):
                 response_hits.append({
                     "document": {
                         "id":            doc.get("id", ""),
-                        "relative_path": doc.get("relative_path", ""),
+                        "relative_path": root.to_external(doc.get("relative_path", "")),
                         "subsystem":     doc.get("subsystem", ""),
                         "filename":      doc.get("filename", ""),
                     },
@@ -833,7 +820,6 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
                 "src_root":   root.local_path,
                 "collection": root.collection,
                 "resethard":  False,
-                "host_root":  root.external_path,
                 "extensions": root.extensions,
             })
         if _sync_pending:

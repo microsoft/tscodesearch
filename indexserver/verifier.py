@@ -38,10 +38,10 @@ if _base not in sys.path:
     sys.path.insert(0, _base)
 
 from indexserver.config import (
-    COLLECTION, SRC_ROOT, API_KEY, PORT, HOST,
+    COLLECTION, SRC_ROOT, API_KEY, PORT, HOST, to_native_path,
 )
 from indexserver.indexer import (
-    walk_source_files, file_id, _to_native_path,
+    walk_source_files, file_id,
     get_client, ensure_collection, index_file_list,
 )
 
@@ -129,7 +129,7 @@ def check_ready(src_root: str | None = None,
           "error":      str,    # set if poll_ok is False
         }
     """
-    src  = _to_native_path(src_root or SRC_ROOT)
+    src  = to_native_path(src_root or SRC_ROOT)
     coll = collection or COLLECTION
 
     t0        = time.time()
@@ -220,7 +220,7 @@ def run_verify(src_root: str | None = None,
                         With queue: fires via fence (async).
                         Without queue: called directly before returning.
     """
-    src_root  = _to_native_path(src_root or SRC_ROOT)
+    src_root  = to_native_path(src_root or SRC_ROOT)
     coll_name = collection or COLLECTION
 
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
