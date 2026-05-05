@@ -7,7 +7,7 @@
  * Commands:
  *   start                  Start the server (Docker: create/start container; WSL: start services)
  *   stop                   Stop the server
- *   restart                Stop then start
+ *   restart                Restart the management daemon only (Typesense keeps running)
  *   status                 Show service health and index statistics
  *   index [--resethard]    Run indexer (--resethard: wipe and reindex from scratch)
  *         [--root NAME]
@@ -112,6 +112,31 @@ function apiPost(urlPath, body, timeoutMs = 10000) {
         req.write(data);
         req.end();
     });
+}
+
+/** Read the last Typesense log entry for queued_writes progress during startup. */
+function tsLoadingProgress() {
+    try {
+        let logPath;
+        if (MODE === 'wsl') {
+            // Read via WSL — the log lives inside the WSL filesystem
+            const r = spawnSync('wsl.exe', ['bash', '-lc',
+                "grep -o 'queued_writes: [0-9]*' ~/.local/typesense/typesense.log | tail -1"
+            ], { encoding: 'utf-8', stdio: 'pipe' });
+            const m = r.stdout?.trim().match(/queued_writes: (\d+)/);
+            if (m) return `replaying raft log, queued_writes=${m[1]}`;
+        } else {
+            // Docker: check container log
+            const r = dockerCapture(['logs', '--tail', '50', CONTAINER]);
+            const lines = (r.stdout || '') + (r.stderr || '');
+            const m = lines.match(/queued_writes: (\d+)/g);
+            if (m) {
+                const last = m[m.length - 1].match(/queued_writes: (\d+)/);
+                if (last) return `replaying raft log, queued_writes=${last[1]}`;
+            }
+        }
+    } catch {}
+    return null;
 }
 
 // ── Docker helpers ────────────────────────────────────────────────────────────
@@ -371,8 +396,8 @@ function printDockerStatus(apiBody) {
             badge  = '[!!]';
             detail = `schema outdated (${fmtNum(ndocs)} docs) — run: ts index --root ${rootName} --resethard`;
         } else if (isCurrent && (syncerRunning || isQueued)) {
-            const total = qEnqueued > 0 ? qEnqueued : (prog.total_to_update ?? 0);
-            const done  = qUpserted;
+            const total = prog.total_to_update ?? 0;
+            const done  = total > 0 ? Math.max(0, total - qDepth) : qUpserted;
             const pct   = total > 0 ? ` ${Math.floor(done * 100 / total)}%` : '';
             badge  = '[>>]';
             detail = `${fmtNum(ndocs)} docs  indexing  ${fmtNum(done)}/${fmtNum(total)}${pct}`;
@@ -396,8 +421,9 @@ function printDockerStatus(apiBody) {
         const missing   = prog.missing  ?? 0;
         const stale     = prog.stale    ?? 0;
         const orphaned  = prog.orphaned ?? 0;
-        const total     = qEnqueued > 0 ? qEnqueued : (prog.total_to_update ?? 0);
-        const done      = qUpserted;
+        const total     = prog.total_to_update ?? 0;
+        // done = files flushed from this sync job (total queued minus still in queue)
+        const done      = total > 0 ? Math.max(0, total - qDepth) : qUpserted;
         const deleted   = qDeleted + (prog.deleted ?? 0);
         const errors    = qErrors;
         const startedAt  = prog.started_at ?? '';
@@ -443,8 +469,10 @@ function printDockerStatus(apiBody) {
     // ── Typesense health ─────────────────────────────────────────────────────
     const tsOk      = apiBody?.typesense_ok;
     const tsLoading = apiBody?.typesense_loading;
-    if (tsLoading)           console.log(`  Typesense: [..] loading`);
-    else if (tsOk === false) console.log(`  Typesense: [!!] unhealthy`);
+    if (tsLoading) {
+        const progress = tsLoadingProgress();
+        console.log(`  Typesense: [..] loading${progress ? `  (${progress})` : ''}`);
+    } else if (tsOk === false) console.log(`  Typesense: [!!] unhealthy`);
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -506,8 +534,12 @@ async function cmdStop() {
 }
 
 async function cmdRestart() {
-    await cmdStop();
-    await cmdStart();
+    // Restart only the management daemon — Typesense keeps running.
+    await shutdownDaemon();
+    startTsqueryDaemon();
+    log(`Waiting for management API on port ${API_PORT}...`);
+    await pollHealth(API_PORT, 30_000, 'management API');
+    log('Daemon restarted. Typesense was not restarted.');
 }
 
 async function cmdStatus() {

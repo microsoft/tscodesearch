@@ -422,12 +422,12 @@ def _enqueue_file_events(events: list) -> dict:
         if ext not in root_exts:
             continue
 
-        rel   = native_path[len(native_root) + 1:]
+        rel   = raw_path[len(native_root) + 1:]
         parts = rel.split("/")
         if any(p in _cfg.exclude_dirs or p.startswith(".") for p in parts[:-1]):
             continue
 
-        if _index_queue.enqueue(native_path, rel, coll, action, reason="event"):
+        if _index_queue.enqueue(raw_path, rel, coll, action, reason="event"):
             n_new += 1
         else:
             n_dedup += 1
