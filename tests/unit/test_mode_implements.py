@@ -1,0 +1,157 @@
+"""
+Unit tests for implements mode.
+
+Typesense field: base_types
+search_code query_by: base_types,class_names,filename
+mode: --implements TYPE (q_implements)
+
+Gaps tested:
+  - Only type declarations in ':BaseList' populate base_types.
+  - Param types and field types must NOT contaminate base_types.
+  - Generic base types are stored as their bare name (IRepository, not IRepository<T>).
+  - Fully qualified base types are unqualified (Synth.IDataStore → IDataStore).
+  - q_implements is distinct from q_uses: only types that INHERIT/IMPLEMENT match.
+
+Integration tests (require Typesense) are in tests/integration/test_mode_implements.py.
+"""
+from __future__ import annotations
+
+import unittest
+
+from tests.base import _parse
+from tests.fixtures import (
+    IMPLEMENTS_IDATASTORE, USES_IDATASTORE_PARAM, DECLARES_FIELD_IDATASTORE,
+    COMMENT_ONLY_IDATASTORE,
+)
+from indexserver.indexer import extract_metadata
+from query.cs import q_implements
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Metadata — base_types field
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBaseTypesField(unittest.TestCase):
+
+    def test_interface_in_base_types(self):
+        meta = extract_metadata(IMPLEMENTS_IDATASTORE.encode(), ".cs")
+        assert "IDataStore" in meta["base_types"], \
+            f"base_types: {meta['base_types']}"
+
+    def test_all_bases_present(self):
+        meta = extract_metadata(IMPLEMENTS_IDATASTORE.encode(), ".cs")
+        assert "IDataStore"  in meta["base_types"]
+        assert "IDisposable" in meta["base_types"]
+
+    def test_param_type_not_in_base_types(self):
+        meta = extract_metadata(USES_IDATASTORE_PARAM.encode(), ".cs")
+        assert "IDataStore" not in meta["base_types"], \
+            f"Param type must not be in base_types: {meta['base_types']}"
+
+    def test_param_type_in_type_refs_not_base_types(self):
+        meta = extract_metadata(USES_IDATASTORE_PARAM.encode(), ".cs")
+        assert "IDataStore" in  meta["type_refs"]
+        assert "IDataStore" not in meta["base_types"]
+
+    def test_field_type_not_in_base_types(self):
+        meta = extract_metadata(DECLARES_FIELD_IDATASTORE.encode(), ".cs")
+        assert "IDataStore" not in meta["base_types"]
+
+    def test_comment_not_in_base_types(self):
+        meta = extract_metadata(COMMENT_ONLY_IDATASTORE.encode(), ".cs")
+        assert "IDataStore" not in meta["base_types"]
+
+    def test_class_names_populated(self):
+        meta = extract_metadata(IMPLEMENTS_IDATASTORE.encode(), ".cs")
+        assert "SqlDataStore" in meta["class_names"]
+
+    def test_generic_base_type_unqualified(self):
+        src = """\
+namespace Synth {
+    public class WidgetRepo : IRepository<Widget> {
+        public Widget Get(int id) { return null; }
+    }
+}
+"""
+        meta = extract_metadata(src.encode(), ".cs")
+        assert "IRepository" in meta["base_types"], \
+            f"Generic base type must be stored unqualified: {meta['base_types']}"
+
+    def test_namespace_qualified_base_stripped(self):
+        src = """\
+namespace Synth {
+    public class QualifiedImpl : Synth.IDataStore {
+        public void Write(string k, byte[] d) { }
+        public byte[] Read(string k) { return null; }
+    }
+}
+"""
+        meta = extract_metadata(src.encode(), ".cs")
+        assert any("IDataStore" in b for b in meta["base_types"]), \
+            f"Qualified base must be stored as unqualified: {meta['base_types']}"
+
+    def test_struct_implementing_interface(self):
+        src = """\
+namespace Synth {
+    public struct FastStore : IDataStore {
+        public void Write(string k, byte[] d) { }
+        public byte[] Read(string k) { return null; }
+    }
+}
+"""
+        meta = extract_metadata(src.encode(), ".cs")
+        assert "IDataStore" in meta["base_types"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# q_implements AST function
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestQImplements(unittest.TestCase):
+
+    def _impl(self, src, type_name):
+        return q_implements(*_parse(src), type_name=type_name)
+
+    def test_finds_implementing_class(self):
+        r = self._impl(IMPLEMENTS_IDATASTORE, "IDataStore")
+        assert r, "SqlDataStore must be found"
+        texts = [t for _, t in r]
+        assert any("SqlDataStore" in t for t in texts)
+
+    def test_does_not_find_param_only_usage(self):
+        r = self._impl(USES_IDATASTORE_PARAM, "IDataStore")
+        assert r == [], \
+            "DataTransfer uses IDataStore as param but must not appear in implements"
+
+    def test_does_not_find_field_only_usage(self):
+        r = self._impl(DECLARES_FIELD_IDATASTORE, "IDataStore")
+        assert r == []
+
+    def test_does_not_find_comment_mention(self):
+        r = self._impl(COMMENT_ONLY_IDATASTORE, "IDataStore")
+        assert r == []
+
+    def test_output_includes_base_list(self):
+        r = self._impl(IMPLEMENTS_IDATASTORE, "IDataStore")
+        texts = [t for _, t in r]
+        assert any("IDataStore" in t for t in texts), \
+            "Output should mention the interface being implemented"
+
+    def test_generic_base_match(self):
+        src = """\
+namespace Synth {
+    public class Repo : IRepository<Widget> {
+        public Widget Get(int id) { return null; }
+    }
+}
+"""
+        r = self._impl(src, "IRepository")
+        assert r, "Generic base type must be found by q_implements"
+
+    def test_unrelated_type_not_found(self):
+        r = self._impl(IMPLEMENTS_IDATASTORE, "IUnrelated")
+        assert r == []
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -45,7 +45,7 @@ Replicates bugs discovered in Rounds 8 and 9 of guided testing:
       the same pattern already used in `q_accesses_on` (Round 4).
 
 Run (no Typesense needed):
-    pytest tests/test_cs_using_statement_locals.py -v
+    pytest query/tests/test_cs_using_statement_locals.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

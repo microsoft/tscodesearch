@@ -29,7 +29,13 @@ import urllib.error
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _root)
 
-from indexserver.config import SRC_ROOT, HOST, PORT, API_KEY, COLLECTION, to_native_path
+from indexserver.config import load_config as _load_config, to_native_path
+_cfg = _load_config()
+SRC_ROOT   = _cfg.src_root
+HOST       = _cfg.host
+PORT       = _cfg.port
+API_KEY    = _cfg.api_key
+COLLECTION = _cfg.collection
 from indexserver.indexer import build_document, file_id
 
 

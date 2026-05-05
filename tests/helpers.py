@@ -15,7 +15,11 @@ _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from indexserver.config import HOST, PORT, API_KEY
+from indexserver.config import load_config as _load_config
+_cfg = _load_config()
+HOST    = _cfg.host
+PORT    = _cfg.port
+API_KEY = _cfg.api_key
 
 
 def _server_ok() -> bool:
@@ -27,13 +31,14 @@ def _server_ok() -> bool:
 
 
 def _assert_server_ok() -> None:
-    """Raise RuntimeError if Typesense is not running. Call from setUpClass."""
+    """Skip the test class if Typesense is not running. Call from setUpClass."""
     import time
+    import unittest
     for _ in range(5):
         if _server_ok():
             return
         time.sleep(1)
-    raise RuntimeError("Typesense is not running — start with: ts start")
+    raise unittest.SkipTest("Typesense is not running — start with: ts start")
 
 
 def _search(collection: str, q: str,

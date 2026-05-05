@@ -18,7 +18,7 @@ Replicates bug discovered in Round 15 of guided testing:
       child's first identifier is emitted as a member access.
 
 Run (no Typesense needed):
-    pytest tests/test_cs_with_expression_accesses.py -v
+    pytest query/tests/test_cs_with_expression_accesses.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

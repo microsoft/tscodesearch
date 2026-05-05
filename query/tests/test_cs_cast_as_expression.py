@@ -16,7 +16,7 @@ Replicates bug discovered in Round 13 of guided testing:
       as the cast target type.
 
 Run (no Typesense needed):
-    pytest tests/test_cs_cast_as_expression.py -v
+    pytest query/tests/test_cs_cast_as_expression.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

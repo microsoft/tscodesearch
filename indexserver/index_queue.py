@@ -19,10 +19,10 @@ MTIME_DELETE (None) as a sentinel — mtime is irrelevant for deletions.
 from __future__ import annotations
 
 import os
+import time
 import threading
 from collections import OrderedDict
 
-from indexserver.config import MAX_FILE_BYTES
 from indexserver.indexer import build_document, file_id as _file_id
 
 # Sentinel mtime value stored in queue items for delete actions.
@@ -39,8 +39,9 @@ class _Fence:
 class IndexQueue:
     """Thread-safe, deduplicating batching queue for Typesense index writes."""
 
-    def __init__(self, batch_size: int = 50):
+    def __init__(self, batch_size: int = 20, max_file_bytes: int = 3 * 1024 * 1024):
         self._batch_size = batch_size
+        self._max_file_bytes = max_file_bytes
         self._cond  = threading.Condition()
         # Ordered so the worker drains FIFO.  Duplicate keys update in-place,
         # preserving the original insertion position (FIFO order is kept for
@@ -57,6 +58,8 @@ class IndexQueue:
         self._n_deleted   = 0
         self._n_skipped   = 0
         self._n_errors    = 0
+        self._n_by_reason: dict[str, int] = {}
+        self._throttle_s: float = 0.0   # inter-batch pause; grows on errors, shrinks on success
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -86,12 +89,16 @@ class IndexQueue:
         collection: str,
         action: str = "upsert",
         mtime: int | None = None,
+        reason: str = "",
     ) -> bool:
         """Add a file event.
 
         For upsert actions, mtime is the file's modification time (seconds).
         If mtime is not provided the file is stat'd automatically.
         For delete actions, pass mtime=MTIME_DELETE (None) — it is unused.
+
+        reason is an optional label used for stats reporting (e.g. "new",
+        "modified", "created", "deleted", "event"). It does not affect behaviour.
 
         Returns True if this is a new entry, False if it updated an existing
         pending entry (deduplicated — the action and mtime are overwritten with
@@ -109,6 +116,8 @@ class IndexQueue:
             self._items[key] = (full_path, rel, collection, action, mtime)
             if is_new:
                 self._n_enqueued += 1
+                if reason:
+                    self._n_by_reason[reason] = self._n_by_reason.get(reason, 0) + 1
                 self._cond.notify()
             else:
                 self._n_deduped += 1
@@ -116,20 +125,19 @@ class IndexQueue:
 
     def enqueue_bulk(
         self,
-        file_pairs,              # Iterable[tuple[str, str]]  (full_path, rel)
+        file_pairs,              # Iterable[SourceFile]
         collection: str,
         stop_event: threading.Event | None = None,
     ) -> tuple[int, int]:
-        """Stream (full_path, rel) pairs into the queue without a long lock hold.
+        """Stream SourceFile objects into the queue without a long lock hold.
 
         Returns (new_entries, deduped_entries).
-        mtime is stat'd automatically inside enqueue() for each file.
         """
         n_new = n_dedup = 0
-        for full_path, rel in file_pairs:
+        for sf in file_pairs:
             if stop_event and stop_event.is_set():
                 break
-            if self.enqueue(full_path, rel, collection):
+            if self.enqueue(sf.full_path, sf.rel, collection, mtime=sf.mtime):
                 n_new += 1
             else:
                 n_dedup += 1
@@ -156,15 +164,19 @@ class IndexQueue:
     def stats(self) -> dict:
         """Snapshot of queue counters."""
         with self._cond:
-            return {
-                "depth":    len(self._items),
-                "enqueued": self._n_enqueued,
-                "deduped":  self._n_deduped,
-                "upserted": self._n_upserted,
-                "deleted":  self._n_deleted,
-                "skipped":  self._n_skipped,
-                "errors":   self._n_errors,
+            result = {
+                "depth":      len(self._items),
+                "enqueued":   self._n_enqueued,
+                "deduped":    self._n_deduped,
+                "upserted":   self._n_upserted,
+                "deleted":    self._n_deleted,
+                "skipped":    self._n_skipped,
+                "errors":     self._n_errors,
+                "throttle_s": self._throttle_s,
             }
+            if self._n_by_reason:
+                result["by_reason"] = dict(self._n_by_reason)
+            return result
 
     # ── worker ────────────────────────────────────────────────────────────────
 
@@ -185,7 +197,13 @@ class IndexQueue:
                     else:
                         regular.append(item)
                 if regular:
-                    self._flush(regular)
+                    ok = self._flush(regular)
+                    if ok:
+                        self._throttle_s = max(self._throttle_s - 0.5, 0.0)
+                    else:
+                        self._throttle_s = min(self._throttle_s + 2.0, 10.0)
+                    if self._throttle_s > 0:
+                        time.sleep(self._throttle_s)
             else:
                 with self._cond:
                     if not self._items and not self._stop.is_set():
@@ -200,8 +218,8 @@ class IndexQueue:
                 batch.append(item)
             return batch
 
-    def _flush(self, batch: list) -> None:
-        """Build documents and write to Typesense."""
+    def _flush(self, batch: list) -> bool:
+        """Build documents and write to Typesense. Returns True if all writes succeeded."""
         upserts: dict[str, list] = {}
         deletes: dict[str, list] = {}
         n_skipped = 0
@@ -213,7 +231,7 @@ class IndexQueue:
             else:
                 try:
                     stat = os.stat(full_path)
-                    if stat.st_size > MAX_FILE_BYTES:
+                    if stat.st_size > self._max_file_bytes:
                         continue
                     current_mtime = int(stat.st_mtime)
 
@@ -237,16 +255,20 @@ class IndexQueue:
             with self._cond:
                 self._n_skipped += n_skipped
 
+        had_errors = False
         for coll, docs in upserts.items():
-            try:
-                self._client.collections[coll].documents.import_(docs, {"action": "upsert"})
-                with self._cond:
-                    self._n_upserted += len(docs)
-                print(f"[index-queue] +{len(docs)} → {coll}", flush=True)
-            except Exception as e:
-                with self._cond:
-                    self._n_errors += len(docs)
-                print(f"[index-queue] upsert error ({coll}): {e}", flush=True)
+            while not self._stop.is_set():
+                try:
+                    self._client.collections[coll].documents.import_(docs, {"action": "upsert"})
+                    with self._cond:
+                        self._n_upserted += len(docs)
+                    print(f"[index-queue] +{len(docs)} → {coll}", flush=True)
+                    break
+                except Exception as e:
+                    had_errors = True
+                    delay = max(self._throttle_s, 1.0)
+                    print(f"[index-queue] upsert error ({coll}), retrying in {delay:.1f}s: {e}", flush=True)
+                    time.sleep(delay)
 
         for coll, ids in deletes.items():
             n = 0
@@ -260,3 +282,5 @@ class IndexQueue:
                 with self._cond:
                     self._n_deleted += n
                 print(f"[index-queue] -{n} from {coll}", flush=True)
+
+        return not had_errors

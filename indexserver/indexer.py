@@ -13,6 +13,7 @@ import sys
 import time
 import hashlib
 import argparse
+from dataclasses import dataclass
 
 # Allow running as a standalone script: add claudeskills/ to path
 _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,12 +22,19 @@ if _base not in sys.path:
 
 import typesense
 
-from indexserver.config import (
-    TYPESENSE_CLIENT_CONFIG, COLLECTION, SRC_ROOT,
-    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES,
-    collection_for_root, to_native_path,
-)
 from query.dispatch import describe_file
+
+
+# ---------------------------------------------------------------------------
+# Walk result
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SourceFile:
+    """A single file yielded by walk_source_files."""
+    full_path: str
+    rel: str
+    mtime: int
 
 
 # ---------------------------------------------------------------------------
@@ -74,9 +82,6 @@ def build_schema(collection_name: str) -> dict:
         # Requires ts index --resethard to recreate the collection with the new schema.
         "token_separators": ["(", ")", "<", ">", "[", "]", ",", ".",",","+","-","/","*","?"],
     }
-
-
-SCHEMA = build_schema(COLLECTION)
 
 
 # ---------------------------------------------------------------------------
@@ -249,8 +254,8 @@ def _file_language(ext: str) -> str:
     return _LANGUAGE.get(ext, "")
 
 
-def should_skip_dir(dirname: str) -> bool:
-    return dirname in EXCLUDE_DIRS or dirname.startswith(".")
+def should_skip_dir(dirname: str, exclude_dirs) -> bool:
+    return dirname in exclude_dirs or dirname.startswith(".")
 
 
 
@@ -300,8 +305,8 @@ def build_document(full_path: str, relative_path: str) -> dict:
 # Collection management
 # ---------------------------------------------------------------------------
 
-def get_client():
-    return typesense.Client(TYPESENSE_CLIENT_CONFIG)
+def get_client(cfg):
+    return typesense.Client(cfg.typesense_client_config)
 
 
 # ---------------------------------------------------------------------------
@@ -363,15 +368,14 @@ def verify_schema(client, collection: str) -> tuple[bool, list[str]]:
     return True, warnings
 
 
-def verify_all_schemas(client) -> dict:
+def verify_all_schemas(client, cfg) -> dict:
     """Verify schema for every configured root; print results to stdout.
 
     Returns a dict keyed by root name:
         {"ok": bool, "warnings": [str, ...], "collection": str}
     """
-    from indexserver.config import ALL_ROOTS
     results = {}
-    for root in ALL_ROOTS.values():
+    for root in cfg.roots.values():
         exists, warnings = verify_schema(client, root.collection)
         results[root.name] = {
             "ok":                 exists and not warnings,
@@ -389,8 +393,8 @@ def verify_all_schemas(client) -> dict:
     return results
 
 
-def ensure_collection(client, resethard=False, collection=None):
-    coll_name = collection or COLLECTION
+def ensure_collection(client, collection: str, resethard: bool = False):
+    coll_name = collection
     schema = build_schema(coll_name)
 
     # Typesense can return 503 "Not Ready" briefly after startup even after
@@ -433,66 +437,80 @@ def ensure_collection(client, resethard=False, collection=None):
 # Full index walk
 # ---------------------------------------------------------------------------
 
-def walk_source_files(src_root: str, extensions=None):
-    """Yield (full_path, relative_path) for all source files, respecting .gitignore.
+def walk_source_files(src_root: str, cfg, extensions=None):
+    """Yield SourceFile for all source files under src_root, respecting .gitignore.
 
+    Uses os.scandir for traversal so that mtime and size come from the DirEntry
+    stat cache rather than a separate os.stat() call per file.
     extensions: set of lowercase extensions to include (e.g. {".cs", ".py"}).
-                When None, the global INCLUDE_EXTENSIONS set is used.
+                When None, cfg.include_extensions is used.
     """
+    from indexserver.config import to_native_path
     import pathspec
 
-    exts = extensions if extensions is not None else INCLUDE_EXTENSIONS
+    exts = extensions if extensions is not None else cfg.include_extensions
     src_root = to_native_path(src_root)
 
-    # Cache: abs_dir -> PathSpec | None
-    _spec_cache: dict = {}
+    # Per-directory accumulated gitignore specs: {dirpath: [(base_dir, PathSpec), ...]}.
+    # Parent directories are always processed before their children (stack order
+    # guarantees this), so inherited specs are always present when needed.
+    _dir_specs: dict = {}
 
-    def _load_spec(dirpath: str):
-        if dirpath in _spec_cache:
-            return _spec_cache[dirpath]
-        gi = os.path.join(dirpath, ".gitignore")
-        spec = None
-        if os.path.isfile(gi):
-            try:
-                with open(gi, "r", encoding="utf-8", errors="replace") as f:
-                    spec = pathspec.PathSpec.from_lines("gitwildmatch", f)
-            except OSError:
-                pass
-        _spec_cache[dirpath] = spec
-        return spec
+    def _get_specs(dirpath: str, entries: list) -> list:
+        parent = os.path.dirname(dirpath)
+        inherited = _dir_specs.get(parent, [])
+        # Detect .gitignore from the already-scanned entries — no extra stat call.
+        for e in entries:
+            if e.name == ".gitignore":
+                try:
+                    if e.is_file(follow_symlinks=False):
+                        with open(e.path, "r", encoding="utf-8", errors="replace") as f:
+                            spec = pathspec.PathSpec.from_lines("gitwildmatch", f)
+                        result = inherited + [(dirpath, spec)]
+                        _dir_specs[dirpath] = result
+                        return result
+                except OSError:
+                    pass  # .gitignore is unreadable — skip it, no patterns applied
+                break
+        _dir_specs[dirpath] = inherited
+        return inherited
 
-    def _is_ignored(full_path: str) -> bool:
-        """Check all ancestor .gitignore files from src_root down to the item's parent."""
-        rel_parts = os.path.relpath(full_path, src_root).replace("\\", "/").split("/")
-        check_dir = src_root
-        for i, part in enumerate(rel_parts):
-            spec = _load_spec(check_dir)
-            if spec and spec.match_file("/".join(rel_parts[i:])):
+    def _is_ignored(path: str, specs: list) -> bool:
+        for base_dir, spec in specs:
+            rel = os.path.relpath(path, base_dir).replace("\\", "/")
+            if spec.match_file(rel):
                 return True
-            if i < len(rel_parts) - 1:
-                check_dir = os.path.join(check_dir, part)
         return False
 
-    for dirpath, dirs, files in os.walk(src_root, topdown=True):
-        dirs[:] = [
-            d for d in dirs
-            if not should_skip_dir(d)
-            and not _is_ignored(os.path.join(dirpath, d))
-        ]
-        for filename in files:
-            full_path = os.path.join(dirpath, filename)
-            ext = os.path.splitext(filename)[1].lower()
-            if ext not in exts:
-                continue
-            try:
-                if os.path.getsize(full_path) > MAX_FILE_BYTES:
+    stack = [src_root]
+    while stack:
+        dirpath = stack.pop()
+        try:
+            entries = list(os.scandir(dirpath))
+        except OSError:
+            continue
+
+        specs = _get_specs(dirpath, entries)
+
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                if not should_skip_dir(entry.name, cfg.exclude_dirs) and not _is_ignored(entry.path, specs):
+                    stack.append(entry.path)
+            elif entry.is_file(follow_symlinks=False):
+                ext = os.path.splitext(entry.name)[1].lower()
+                if ext not in exts:
                     continue
-            except OSError:
-                continue
-            if _is_ignored(full_path):
-                continue
-            rel = os.path.relpath(full_path, src_root).replace("\\", "/")
-            yield full_path, rel
+                if _is_ignored(entry.path, specs):
+                    continue
+                try:
+                    st = entry.stat(follow_symlinks=False)
+                    if st.st_size > cfg.max_file_bytes:
+                        continue
+                    mtime = int(st.st_mtime)
+                except OSError:
+                    continue
+                rel = os.path.relpath(entry.path, src_root).replace("\\", "/")
+                yield SourceFile(entry.path, rel, mtime)
 
 
 def _fmt_time(seconds: float) -> str:
@@ -503,8 +521,8 @@ def _fmt_time(seconds: float) -> str:
     return f"{m}m{s:02d}s"
 
 
-def _flush(client, docs, verbose, collection=None):
-    coll_name = collection or COLLECTION
+def _flush(client, docs, verbose, collection: str):
+    coll_name = collection
     try:
         results = client.collections[coll_name].documents.import_(
             docs, {"action": "upsert"}
@@ -577,6 +595,7 @@ def walk_and_enqueue(
     src_root: str,
     collection: str,
     queue,
+    cfg,
     resethard: bool = False,
     stop_event=None,
     extensions=None,
@@ -586,32 +605,33 @@ def walk_and_enqueue(
     Calls ensure_collection() first (dropping the collection when resethard=True).
     Returns (new_entries, deduped_entries).
     """
+    from indexserver.config import to_native_path
     src_root = to_native_path(src_root)
-    client = get_client()
-    ensure_collection(client, resethard=resethard, collection=collection)
+    client = get_client(cfg)
+    ensure_collection(client, collection, resethard=resethard)
     return queue.enqueue_bulk(
-        walk_source_files(src_root, extensions=extensions),
+        walk_source_files(src_root, cfg, extensions=extensions),
         collection=collection,
         stop_event=stop_event,
     )
 
 
-def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, collection=None):
-    coll_name = collection or COLLECTION
+def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False, collection=None):
+    from indexserver.config import to_native_path
+    coll_name = collection or cfg.collection
     root_exts = None
     if src_root is None:
-        from indexserver.config import ALL_ROOTS
-        for root in ALL_ROOTS.values():
+        for root in cfg.roots.values():
             if root.collection == coll_name:
-                src_root = root.local_path
+                src_root = root.native_path
                 root_exts = root.extensions
                 break
         if src_root is None:
-            src_root = to_native_path(SRC_ROOT)
+            src_root = to_native_path(cfg.src_root)
     src_root = to_native_path(src_root)
-    exts = root_exts if root_exts is not None else INCLUDE_EXTENSIONS
-    client = get_client()
-    ensure_collection(client, resethard=resethard, collection=coll_name)
+    exts = root_exts if root_exts is not None else cfg.include_extensions
+    client = get_client(cfg)
+    ensure_collection(client, coll_name, resethard=resethard)
 
     t0 = time.time()
     last_report_t = t0
@@ -627,14 +647,14 @@ def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, coll
     def _tracked_files():
         """Yield (full_path, rel) from walk_source_files with subsystem logging."""
         nonlocal current_sub
-        for full_path, rel in walk_source_files(src_root, extensions=exts):
-            sub = subsystem_from_path(rel)
+        for sf in walk_source_files(src_root, cfg, extensions=exts):
+            sub = subsystem_from_path(sf.rel)
             if sub != current_sub:
                 current_sub = sub
                 elapsed = time.time() - t0
                 print(f"  [{_fmt_time(elapsed)}] subsystem: {sub}  "
                       f"(total so far: {total_indexed})")
-            yield full_path, rel
+            yield sf.full_path, sf.rel
 
     def _rate_report(n: int, errs: int) -> None:
         nonlocal last_report_t, last_report_n, total_indexed, total_errors
@@ -670,6 +690,8 @@ def run_index(src_root=None, resethard=False, batch_size=50, verbose=False, coll
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    from indexserver.config import load_config
+    _cfg = load_config()
     ap = argparse.ArgumentParser(description="Index source files into Typesense")
     ap.add_argument("--resethard", action="store_true",
                     help="Drop and recreate the collection first")
@@ -682,9 +704,9 @@ if __name__ == "__main__":
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    coll = args.collection or COLLECTION
+    coll = args.collection or _cfg.collection
     if args.status:
-        client = get_client()
+        client = get_client(_cfg)
         try:
             info = client.collections[coll].retrieve()
             n = info.get("num_documents", "?")
@@ -692,5 +714,5 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Cannot retrieve index stats: {e}")
     else:
-        run_index(src_root=args.src, resethard=args.resethard, verbose=args.verbose,
+        run_index(_cfg, src_root=args.src, resethard=args.resethard, verbose=args.verbose,
                   collection=coll)

@@ -18,7 +18,7 @@ Replicates behavior discovered in Round 5 of guided testing:
       foreach_statement loop added in Round 4.
 
 Run (no Typesense needed):
-    pytest tests/test_cs_pattern_match_accesses.py -v
+    pytest query/tests/test_cs_pattern_match_accesses.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

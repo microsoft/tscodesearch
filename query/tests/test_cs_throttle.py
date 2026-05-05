@@ -18,7 +18,7 @@ pattern from absblobstore (without any real SPO code):
       no inner variable_declaration) — known gap, marked xfail
 
 Run (no Typesense needed):
-    pytest tests/test_cs_throttle.py -v
+    pytest query/tests/test_cs_throttle.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

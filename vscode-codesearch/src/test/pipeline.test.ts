@@ -92,12 +92,11 @@ before(async () => {
     // config.json was loaded as a fallback) — skip rather than assert against
     // production files.
     const sampleEntry = cfg.roots['sample'] as
-        { external_path?: string; local_path?: string } | undefined;
+        { path?: string } | undefined;
     if (!sampleEntry) { return; }
 
     rootName = 'sample';
-    rootPath = (sampleEntry.external_path ?? sampleEntry.local_path ?? '')
-        .replace(/\\/g, '/');
+    rootPath = (sampleEntry.path ?? '').replace(/\\/g, '/');
     const port = cfg.port ?? 8108;
     serverAvailable = await queryApiIsUp(port);
 });

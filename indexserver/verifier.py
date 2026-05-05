@@ -9,13 +9,11 @@ Two-phase design so it shares the batch-upsert pipeline with the full indexer:
         - Missing   : file on disk but not in index
         - Stale     : file in index but mtime has changed
         - Orphaned  : entry in index but file no longer exists on disk
-      Writes diff stats to  $TYPESENSE_DATA/verifier_progress.json.
 
   Phase 2 — batch-upsert  (via indexer.index_file_list)
       Feeds only the changed/missing files into the shared pipeline that the
-      full indexer also uses.  Progress is emitted to the shared indexer log
-      ($TYPESENSE_DATA/indexer.log) and PID file so that the existing
-      `ts status` and `service_status` MCP tool show it without any changes.
+      full indexer also uses.  Progress is reported via the on_progress callback
+      so callers can track it in memory.
 
   Orphan deletion runs after Phase 2.
 
@@ -31,48 +29,28 @@ import os
 import sys
 import time
 import urllib.request
-from pathlib import Path
 
 _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-from indexserver.config import (
-    COLLECTION, SRC_ROOT, API_KEY, PORT, HOST, to_native_path,
-)
+from indexserver.config import to_native_path
 from indexserver.indexer import (
     walk_source_files, file_id,
     get_client, ensure_collection, index_file_list,
 )
 
-# ── runtime paths ──────────────────────────────────────────────────────────────
-_RUN_DIR       = Path(os.environ.get("TYPESENSE_DATA", Path.home() / ".local" / "typesense"))
-# Shared with the full indexer so `ts status` / service_status shows our progress.
-_INDEXER_PID   = _RUN_DIR / "indexer.pid"
-# Separate progress file for diff-specific stats (missing/stale counts).
-_PROGRESS_FILE = _RUN_DIR / "verifier_progress.json"
-
 BATCH_SIZE = 50
 
 
-# ── helpers ────────────────────────────────────────────────────────────────────
-
-def _write_progress(progress: dict) -> None:
-    try:
-        _PROGRESS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _PROGRESS_FILE.write_text(json.dumps(progress), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _export_index(collection: str) -> dict[str, int]:
+def _export_index(collection: str, cfg) -> dict[str, int]:
     """Bulk-export the collection and return {doc_id: mtime_int}.
 
     Uses the Typesense streaming export endpoint so large collections are not
     buffered entirely in memory.
     """
-    url = f"http://{HOST}:{PORT}/collections/{collection}/documents/export"
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": API_KEY})
+    url = f"http://{cfg.host}:{cfg.port}/collections/{collection}/documents/export"
+    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": cfg.api_key})
     id_mtime: dict[str, int] = {}
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
@@ -101,7 +79,7 @@ def _fmt_time(seconds: float) -> str:
 
 # ── ready check ───────────────────────────────────────────────────────────────
 
-def check_ready(src_root: str | None = None,
+def check_ready(cfg, src_root: str | None = None,
                 collection: str | None = None,
                 extensions=None) -> dict:
     """Poll the filesystem and confirm the index is fully up to date.
@@ -129,15 +107,15 @@ def check_ready(src_root: str | None = None,
           "error":      str,    # set if poll_ok is False
         }
     """
-    src  = to_native_path(src_root or SRC_ROOT)
-    coll = collection or COLLECTION
+    src  = to_native_path(src_root or cfg.src_root)
+    coll = collection or cfg.collection
 
     t0        = time.time()
     poll_ok   = True
     error_msg = ""
 
     try:
-        index_map = _export_index(coll)
+        index_map = _export_index(coll, cfg)
     except Exception as e:
         return {
             "ready": False, "poll_ok": False, "index_ok": False,
@@ -156,18 +134,14 @@ def check_ready(src_root: str | None = None,
     stale     = 0
 
     try:
-        for full_path, rel in walk_source_files(src, extensions=extensions):
+        for sf in walk_source_files(src, cfg, extensions=extensions):
             fs_files += 1
-            try:
-                mtime = int(os.stat(full_path).st_mtime)
-            except OSError:
-                continue
-            doc_id = file_id(rel)
+            doc_id = file_id(sf.rel)
             remaining.discard(doc_id)
             idx_mtime = index_map.get(doc_id)
             if idx_mtime is None:
                 missing += 1
-            elif mtime != idx_mtime:
+            elif sf.mtime != idx_mtime:
                 stale += 1
     except Exception as e:
         poll_ok   = False
@@ -191,13 +165,14 @@ def check_ready(src_root: str | None = None,
 
 # ── main ───────────────────────────────────────────────────────────────────────
 
-def run_verify(src_root: str | None = None,
+def run_verify(cfg, src_root: str | None = None,
                collection: str | None = None,
                queue=None,
                delete_orphans: bool = True,
                resethard: bool = False,
                stop_event=None,
                on_complete=None,
+               on_progress=None,
                extensions=None) -> None:
     """Scan the file system, diff against the index, and repair any gaps.
 
@@ -220,13 +195,11 @@ def run_verify(src_root: str | None = None,
                         With queue: fires via fence (async).
                         Without queue: called directly before returning.
     """
-    src_root  = to_native_path(src_root or SRC_ROOT)
-    coll_name = collection or COLLECTION
+    src_root  = to_native_path(src_root or cfg.src_root)
+    coll_name = collection or cfg.collection
 
-    _RUN_DIR.mkdir(parents=True, exist_ok=True)
-
-    client = get_client()
-    ensure_collection(client, resethard=resethard, collection=coll_name)
+    client = get_client(cfg)
+    ensure_collection(client, coll_name, resethard=resethard)
 
     progress: dict = {
         "status":          "running",
@@ -245,7 +218,7 @@ def run_verify(src_root: str | None = None,
         "deleted":         0,
         "errors":          0,
     }
-    _write_progress(progress)
+    if on_progress: on_progress(progress)
 
     print(f"[verifier] collection : {coll_name}", flush=True)
     print(f"[verifier] source root: {src_root}", flush=True)
@@ -257,9 +230,9 @@ def run_verify(src_root: str | None = None,
     print("[verifier] Phase 1/2: collecting changes…", flush=True)
     print("[verifier]   exporting current index…", flush=True)
     progress["phase"] = "collecting: exporting index"
-    _write_progress(progress)
+    if on_progress: on_progress(progress)
 
-    index_map = _export_index(coll_name)
+    index_map = _export_index(coll_name, cfg)
     progress["index_docs"] = len(index_map)
     print(f"[verifier]   {len(index_map):,} documents in index", flush=True)
 
@@ -267,7 +240,7 @@ def run_verify(src_root: str | None = None,
     # Keeps memory bounded to O(index_size) rather than O(fs_files).
     print("[verifier]   scanning file system…", flush=True)
     progress["phase"] = "collecting: scanning filesystem"
-    _write_progress(progress)
+    if on_progress: on_progress(progress)
 
     # Start with all index IDs; discard each FS file as we walk.
     # What remains at the end is the orphaned set.
@@ -280,33 +253,32 @@ def run_verify(src_root: str | None = None,
     n_fs = 0
     last_scan_print = time.time()
 
-    for full_path, rel in walk_source_files(src_root, extensions=extensions):
+    for sf in walk_source_files(src_root, cfg, extensions=extensions):
         if stop_event and stop_event.is_set():
             break
-        try:
-            mtime = int(os.stat(full_path).st_mtime)
-        except OSError:
-            continue
         n_fs += 1
-        doc_id = file_id(rel)
+        doc_id = file_id(sf.rel)
         remaining.discard(doc_id)
         idx_mtime = index_map.get(doc_id)
         if idx_mtime is None:
             progress["missing"] += 1
             needs_update = True
-        elif mtime != idx_mtime:
+            reason = "new"
+        elif sf.mtime != idx_mtime:
             progress["stale"] += 1
             needs_update = True
+            reason = "modified"
         else:
             needs_update = False
+            reason = ""
 
         if needs_update:
             if queue is not None:
-                queue.enqueue(full_path, rel, coll_name, mtime=mtime)
+                queue.enqueue(sf.full_path, sf.rel, coll_name, mtime=sf.mtime, reason=reason)
                 n_enqueued += 1
                 progress["total_to_update"] = n_enqueued
             else:
-                to_update.append((full_path, rel))
+                to_update.append((sf.full_path, sf.rel))
 
         now = time.time()
         if now - last_scan_print >= 15:
@@ -315,7 +287,7 @@ def run_verify(src_root: str | None = None,
                 progress["phase"] = f"scanning filesystem ({n_fs:,} files, {n_enqueued:,} queued)"
             else:
                 progress["phase"] = f"collecting: scanning filesystem ({n_fs:,} files)"
-            _write_progress(progress)
+            if on_progress: on_progress(progress)
             print(
                 f"[verifier]   [{_fmt_time(now - t0)}] scanned {n_fs:,} files  "
                 f"missing={progress['missing']}  stale={progress['stale']}",
@@ -340,7 +312,7 @@ def run_verify(src_root: str | None = None,
         progress["status"]      = "cancelled"
         progress["phase"]       = "cancelled"
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        _write_progress(progress)
+        if on_progress: on_progress(progress)
         print("[verifier] Cancelled.", flush=True)
         return
 
@@ -350,7 +322,7 @@ def run_verify(src_root: str | None = None,
         progress["status"]  = "complete"
         progress["phase"]   = "done (index already up to date)"
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        _write_progress(progress)
+        if on_progress: on_progress(progress)
         print("[verifier] Index is already up to date.", flush=True)
         return
 
@@ -361,7 +333,7 @@ def run_verify(src_root: str | None = None,
         if delete_orphans and orphaned_ids:
             print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries…", flush=True)
             progress["phase"] = "removing orphans"
-            _write_progress(progress)
+            if on_progress: on_progress(progress)
             for doc_id in orphaned_ids:
                 try:
                     client.collections[coll_name].documents[doc_id].delete()
@@ -372,7 +344,7 @@ def run_verify(src_root: str | None = None,
         progress["status"]      = "queued"
         progress["phase"]       = f"queued ({n_enqueued:,} files in index queue)"
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        _write_progress(progress)
+        if on_progress: on_progress(progress)
         print(
             f"[verifier] Enqueued {n_enqueued:,} files. "
             f"deleted={progress['deleted']}  "
@@ -385,7 +357,7 @@ def run_verify(src_root: str | None = None,
                 prog["status"]      = "complete"
                 prog["phase"]       = "done"
                 prog["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                _write_progress(prog)
+                if on_progress: on_progress(prog)
                 print(
                     f"[verifier] Done in {_fmt_time(time.time() - t)}. "
                     f"enqueued={n}  deleted={d}",
@@ -403,7 +375,7 @@ def run_verify(src_root: str | None = None,
             progress["updated"]     = n_indexed
             progress["errors"]      = n_errors
             progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-            _write_progress(progress)
+            if on_progress: on_progress(progress)
             nonlocal last_print
             now = time.time()
             if now - last_print >= 15:
@@ -429,14 +401,14 @@ def run_verify(src_root: str | None = None,
             progress["status"]      = "cancelled"
             progress["phase"]       = "cancelled"
             progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-            _write_progress(progress)
+            if on_progress: on_progress(progress)
             print("[verifier] Cancelled during upsert.", flush=True)
             return
 
         if delete_orphans and orphaned_ids:
             print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries…", flush=True)
             progress["phase"] = "removing orphans"
-            _write_progress(progress)
+            if on_progress: on_progress(progress)
             for doc_id in orphaned_ids:
                 try:
                     client.collections[coll_name].documents[doc_id].delete()
@@ -448,7 +420,7 @@ def run_verify(src_root: str | None = None,
         progress["status"]      = "complete"
         progress["phase"]       = "done"
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        _write_progress(progress)
+        if on_progress: on_progress(progress)
         print(
             f"[verifier] Done in {elapsed}. "
             f"updated={total_indexed}  deleted={progress['deleted']}  "
@@ -462,6 +434,8 @@ def run_verify(src_root: str | None = None,
 # ── entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    from indexserver.config import load_config as _load_config
+    _cfg = _load_config()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--src",               default=None, help="Source root directory")
@@ -474,10 +448,11 @@ if __name__ == "__main__":
 
     if args.check_ready:
         import json as _json
-        result = check_ready(src_root=args.src, collection=args.collection)
+        result = check_ready(_cfg, src_root=args.src, collection=args.collection)
         print(_json.dumps(result))
     else:
         run_verify(
+            _cfg,
             src_root       = args.src,
             collection     = args.collection,
             delete_orphans = not args.no_delete_orphans,

@@ -67,7 +67,7 @@ The extension reads `codesearch/config.json` — the same file used by the MCP a
 {
   "api_key": "codesearch-local",
   "port": 8108,
-  "roots": { "default": { "external_path": "C:/myproject/src" } }
+  "roots": { "default": { "path": "C:/myproject/src" } }
 }
 ```
 
@@ -138,21 +138,6 @@ The integration test creates a fresh `codesearch_tstest_{timestamp}` collection 
 | Host → Webview | `results` | `hits`, `found`, `elapsed`, `query`, `mode` |
 | Host → Webview | `error` | `message` |
 | Host → Webview | `configError` | `message` |
-
-## File watcher
-
-The Windows file system watcher lives in `src/watcher.ts` (`FileWatcher` class). It uses VS Code's native `createFileSystemWatcher` (backed by `ReadDirectoryChangesW`) to detect changes under Windows-path roots, then forwards batched events to the indexserver API at `POST /file-events`.
-
-On startup it:
-1. Calls `POST /watcher/pause` to stop the WSL `PollingObserver` (so changes aren't double-processed)
-2. Calls `POST /verify/start` for each root to catch up on changes while VS Code was closed
-3. Creates a `vscode.FileSystemWatcher` per root and logs `[watcher] Windows watcher activated for root "…" (…)` to the output channel
-
-All startup logging (including errors) goes to the TsCodeSearch output channel. The `_start()` method is `async` and wraps its body in try/catch so errors are visible rather than silently swallowed.
-
-On disposal it calls `POST /watcher/resume` so the WSL `PollingObserver` takes over again.
-
-Only roots whose path matches `WIN_PATH_RE` (`/^[A-Za-z]:[/\\]/`) are watched by this class; Linux/WSL paths are left to the indexserver's polling.
 
 ## Key gotchas
 
