@@ -45,7 +45,9 @@ class LiveTestBase(unittest.TestCase):
     def _ts_search(self, query: str, query_by: str, per_page: int = 10,
                    num_typos: int = 0) -> set[str]:
         """Run a Typesense search and return the set of matched filenames."""
-        from indexserver.config import HOST, PORT, API_KEY
+        from indexserver.config import load_config as _load_config
+        _cfg = _load_config()
+        HOST, PORT, API_KEY = _cfg.host, _cfg.port, _cfg.api_key
         params = urllib.parse.urlencode({
             "q":         query,
             "query_by":  query_by,

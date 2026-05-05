@@ -15,7 +15,11 @@ _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from indexserver.config import HOST, PORT, API_KEY
+from indexserver.config import load_config as _load_config
+_cfg = _load_config()
+HOST    = _cfg.host
+PORT    = _cfg.port
+API_KEY = _cfg.api_key
 
 
 def _server_ok() -> bool:

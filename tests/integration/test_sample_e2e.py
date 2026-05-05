@@ -45,7 +45,9 @@ _CONFIG_PATH = os.path.join(_root, "config.json")
 # ── Connection config ─────────────────────────────────────────────────────────
 
 try:
-    from indexserver.config import HOST as _HOST, PORT as _PORT, API_KEY as _KEY
+    from indexserver.config import load_config as _load_config
+    _e2e_cfg = _load_config()
+    _HOST, _PORT, _KEY = _e2e_cfg.host, _e2e_cfg.port, _e2e_cfg.api_key
 except Exception:
     _HOST, _PORT, _KEY = "localhost", 8108, "codesearch-local"
 
@@ -106,7 +108,7 @@ def _delete_collection(collection: str) -> None:
 def _count_sample_files(src_root: str) -> int:
     """Count indexable files in a sample directory using the same logic as the indexer."""
     from indexserver.indexer import walk_source_files
-    return sum(1 for _ in walk_source_files(src_root))
+    return sum(1 for _ in walk_source_files(src_root, _e2e_cfg))
 
 
 # ── TestSampleRoot1E2E ────────────────────────────────────────────────────────
@@ -121,7 +123,7 @@ class TestSampleRoot1E2E(unittest.TestCase):
         _require_server()
         from indexserver.indexer import run_index
         cls.coll = f"test_e2e_r1_{int(time.time())}"
-        run_index(src_root=SAMPLE_ROOT1, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_e2e_cfg, src_root=SAMPLE_ROOT1, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod
@@ -302,7 +304,7 @@ class TestSampleRoot2E2E(unittest.TestCase):
         _require_server()
         from indexserver.indexer import run_index
         cls.coll = f"test_e2e_r2_{int(time.time())}"
-        run_index(src_root=SAMPLE_ROOT2, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_e2e_cfg, src_root=SAMPLE_ROOT2, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod
@@ -464,7 +466,7 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
         _require_server()
         from indexserver.indexer import run_index
         cls.coll = f"test_e2e_langs_{int(time.time())}"
-        run_index(src_root=SAMPLE_ROOT1, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_e2e_cfg, src_root=SAMPLE_ROOT1, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod
@@ -643,8 +645,8 @@ class TestSampleMultiRootE2E(unittest.TestCase):
         stamp = int(time.time())
         cls.coll_r1 = f"test_e2e_mr1_{stamp}"
         cls.coll_r2 = f"test_e2e_mr2_{stamp}"
-        run_index(src_root=SAMPLE_ROOT1, collection=cls.coll_r1, resethard=True, verbose=False)
-        run_index(src_root=SAMPLE_ROOT2, collection=cls.coll_r2, resethard=True, verbose=False)
+        run_index(_e2e_cfg, src_root=SAMPLE_ROOT1, collection=cls.coll_r1, resethard=True, verbose=False)
+        run_index(_e2e_cfg, src_root=SAMPLE_ROOT2, collection=cls.coll_r2, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod
@@ -788,7 +790,8 @@ def _require_api_server() -> None:
     """Raise AssertionError if the management API (tsquery_server.py) is not reachable."""
     import unittest
     try:
-        from indexserver.config import API_PORT as _API_PORT
+        from indexserver.config import load_config as _load_config
+        _API_PORT = _load_config().api_port
         url = f"http://{_HOST}:{_API_PORT}/health"
         with urllib.request.urlopen(url, timeout=5) as r:
             if json.loads(r.read()).get("ok"):
@@ -800,8 +803,7 @@ def _require_api_server() -> None:
 
 def _api_query(files: list, mode: str, pattern: str = "") -> list:
     """POST to tsquery_server /query and return the results list."""
-    from indexserver.config import API_PORT as _API_PORT
-    url = f"http://{_HOST}:{_API_PORT}/query"
+    url = f"http://{_HOST}:{_e2e_cfg.api_port}/query"
     body = json.dumps({"mode": mode, "pattern": pattern, "files": files}).encode()
     req = urllib.request.Request(
         url, data=body, method="POST",

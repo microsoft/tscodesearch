@@ -4,34 +4,7 @@ import json
 import os
 import re as _re
 import sys as _sys
-from dataclasses import dataclass
-
-HOST = "localhost"
-
-# config.json lives one level up (codesearch/config.json)
-_CONFIG_FILE = (
-    os.environ.get("CODESEARCH_CONFIG")
-    or os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json"
-    )
-)
-
-
-def _read_config() -> dict:
-    try:
-        with open(_CONFIG_FILE) as _f:
-            return json.load(_f)
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-_CONFIG = _read_config()
-
-if "port" not in _CONFIG:
-    raise RuntimeError(f"'port' is required in {_CONFIG_FILE}")
-PORT: int = int(_CONFIG["port"])
-API_PORT: int = PORT + 1   # management API (tsquery_server.py)
-API_KEY: str = _CONFIG.get("api_key", "codesearch-local")
+from dataclasses import dataclass, field
 
 
 # ── Platform helpers ──────────────────────────────────────────────────────────
@@ -72,10 +45,9 @@ def to_native_path(path: str) -> str:
     return path
 
 
-# ── Extension and exclusion sets ─────────────────────────────────────────────
-# Defined before Root so the global set can be stored directly in Root.extensions.
+# ── Extension and exclusion defaults ─────────────────────────────────────────
 
-INCLUDE_EXTENSIONS = frozenset({
+INCLUDE_EXTENSIONS: frozenset = frozenset({
     ".cs",
     ".cpp", ".c", ".cc", ".cxx", ".h", ".hpp", ".hxx", ".idl",
     ".dsc", ".inc", ".props", ".targets", ".csproj",
@@ -87,12 +59,14 @@ INCLUDE_EXTENSIONS = frozenset({
     ".sql",
 })
 
-EXCLUDE_DIRS = {
+EXCLUDE_DIRS: frozenset = frozenset({
     "Target", "Build", "Import", "nugetcache",
     ".git", "obj", "bin", "node_modules", ".venv",
     "target", "debug", "ship", "x64", "x86",
     "__pycache__", ".vs",
-}
+})
+
+TYPESENSE_VERSION = "27.1"
 
 
 # ── Collection naming ─────────────────────────────────────────────────────────
@@ -131,7 +105,57 @@ class Root:
         return self.path.rstrip("/") + "/" + r
 
 
-# ── Roots ─────────────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Config:
+    """All configuration for one codesearch instance.
+
+    Construct via ``load_config()`` rather than directly.
+    The ``roots`` dict is semantically immutable even though Python dicts are mutable.
+    """
+    port: int
+    api_key: str
+    roots: dict   # dict[str, Root]
+    host: str = "localhost"
+    include_extensions: frozenset = field(default_factory=lambda: INCLUDE_EXTENSIONS)
+    exclude_dirs: frozenset = field(default_factory=lambda: EXCLUDE_DIRS)
+    max_file_bytes: int = 3 * 1024 * 1024
+    max_content_chars: int = 30000
+    typesense_version: str = TYPESENSE_VERSION
+
+    @property
+    def api_port(self) -> int:
+        return self.port + 1
+
+    @property
+    def typesense_client_config(self) -> dict:
+        return {
+            "nodes": [{"host": self.host, "port": str(self.port), "protocol": "http"}],
+            "api_key": self.api_key,
+            "connection_timeout_seconds": 5,
+        }
+
+    @property
+    def src_root(self) -> str:
+        root = self.roots.get("default") or next(iter(self.roots.values()), None)
+        return root.native_path if root else ""
+
+    @property
+    def collection(self) -> str:
+        name = "default" if "default" in self.roots else next(iter(self.roots), "default")
+        return collection_for_root(name)
+
+    def get_root(self, name: str = "") -> Root:
+        """Resolve root name → Root. Empty name resolves to 'default' or the first root."""
+        if not name:
+            name = "default" if "default" in self.roots else next(iter(self.roots))
+        if name not in self.roots:
+            raise ValueError(f"Unknown root {name!r}. Available: {sorted(self.roots)}")
+        return self.roots[name]
+
+
+# ── Roots parsing ─────────────────────────────────────────────────────────────
 
 def _parse_roots(raw: dict) -> "dict[str, Root]":
     """Parse the 'roots' section of config.json into Root objects.
@@ -167,33 +191,32 @@ def _parse_roots(raw: dict) -> "dict[str, Root]":
     return result
 
 
-ALL_ROOTS: dict[str, Root] = _parse_roots(_CONFIG.get("roots", {}))
+# ── load_config ───────────────────────────────────────────────────────────────
 
-SRC_ROOT: str = (
-    ALL_ROOTS["default"].native_path if "default" in ALL_ROOTS
-    else next((r.native_path for r in ALL_ROOTS.values()), "")
-)
+def load_config(config_file: str | None = None) -> Config:
+    """Read config.json and return a Config instance.
 
-_default_root_name = "default" if "default" in ALL_ROOTS else next(iter(ALL_ROOTS), "default")
-COLLECTION: str = collection_for_root(_default_root_name)
+    config_file: explicit path; if None, uses CODESEARCH_CONFIG env var or
+                 the default config.json next to the repo root.
+    Raises RuntimeError if 'port' is missing from the config file.
+    """
+    path = config_file or (
+        os.environ.get("CODESEARCH_CONFIG")
+        or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json"
+        )
+    )
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        raw = {}
 
+    if "port" not in raw:
+        raise RuntimeError(f"'port' is required in {path}")
 
-def get_root(name: str = "") -> Root:
-    """Resolve root name → Root.  Empty name resolves to 'default' or the first root."""
-    if not name:
-        name = "default" if "default" in ALL_ROOTS else next(iter(ALL_ROOTS))
-    if name not in ALL_ROOTS:
-        raise ValueError(f"Unknown root {name!r}. Available: {sorted(ALL_ROOTS)}")
-    return ALL_ROOTS[name]
-
-
-TYPESENSE_VERSION = "27.1"
-
-MAX_FILE_BYTES = 3 * 1024 * 1024
-MAX_CONTENT_CHARS = 30000
-
-TYPESENSE_CLIENT_CONFIG = {
-    "nodes": [{"host": HOST, "port": str(PORT), "protocol": "http"}],
-    "api_key": API_KEY,
-    "connection_timeout_seconds": 5,
-}
+    return Config(
+        port=int(raw["port"]),
+        api_key=raw.get("api_key", "codesearch-local"),
+        roots=_parse_roots(raw.get("roots", {})),
+    )

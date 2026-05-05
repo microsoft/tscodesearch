@@ -43,6 +43,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -52,14 +53,15 @@ _REPO = Path(__file__).parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from indexserver.config import (
-    API_KEY, API_PORT, PORT, HOST, ALL_ROOTS, get_root,
-    EXCLUDE_DIRS,
-)
+from indexserver.config import load_config as _load_config
 from indexserver.index_queue import IndexQueue
 from indexserver.indexer import get_client, verify_all_schemas
 from indexserver.verifier import check_ready, run_verify
 from indexserver.watcher import run_watcher
+
+_cfg = _load_config()
+# Module-level aliases used throughout this file and patchable by tests
+ALL_ROOTS = _cfg.roots
 
 # ── runtime paths ──────────────────────────────────────────────────────────────
 _HOME        = Path.home()
@@ -105,7 +107,7 @@ _ts_last_checked: float = 0.0
 _ts_initializing: bool  = True
 _hb_stop: threading.Event = threading.Event()
 
-_index_queue = IndexQueue()
+_index_queue = IndexQueue(max_file_bytes=_cfg.max_file_bytes)
 
 _server: HTTPServer | None = None
 _shutdown_event = threading.Event()
@@ -267,9 +269,13 @@ def _collections_status() -> dict:
 def _ts_health() -> bool:
     try:
         with urllib.request.urlopen(
-            f"http://{HOST}:{PORT}/health", timeout=5
+            f"http://{_cfg.host}:{_cfg.port}/health", timeout=5
         ) as r:
             return json.loads(r.read()).get("ok", False)
+    except urllib.error.HTTPError:
+        # 503 "Not Ready or Lagging" — Typesense is alive but under write load.
+        # Treat as healthy so the heartbeat does not restart it.
+        return True
     except Exception:
         return False
 
@@ -310,6 +316,7 @@ def _start_watcher() -> None:
         _watcher_stop = threading.Event()
         _watcher_thread = threading.Thread(
             target=run_watcher,
+            args=(_cfg,),
             kwargs={"stop_event": _watcher_stop, "queue": _index_queue},
             name="watcher",
             daemon=True,
@@ -369,6 +376,7 @@ def _drain_sync_queue() -> None:
         _INDEXER_PID.write_text(str(os.getpid()))
         try:
             run_verify(
+                _cfg,
                 src_root=src_root,
                 collection=collection,
                 queue=_index_queue,
@@ -416,7 +424,7 @@ def _enqueue_file_events(events: list) -> dict:
 
         rel   = native_path[len(native_root) + 1:]
         parts = rel.split("/")
-        if any(p in EXCLUDE_DIRS or p.startswith(".") for p in parts[:-1]):
+        if any(p in _cfg.exclude_dirs or p.startswith(".") for p in parts[:-1]):
             continue
 
         if _index_queue.enqueue(native_path, rel, coll, action, reason="event"):
@@ -446,7 +454,7 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
     print("[tsquery_server] Waiting for Typesense API to become ready…", flush=True)
     while not stop_event.is_set():
         try:
-            get_client().collections.retrieve()
+            get_client(_cfg).collections.retrieve()
             break
         except Exception:
             stop_event.wait(2)
@@ -456,9 +464,9 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
 
     print("[tsquery_server] Typesense ready — finishing initialization.", flush=True)
 
-    _ts_client = get_client()
+    _ts_client = get_client(_cfg)
     _index_queue.start(_ts_client)
-    _schema_status = verify_all_schemas(_ts_client)
+    _schema_status = verify_all_schemas(_ts_client, _cfg)
 
     with _sync_lock:
         for root in ALL_ROOTS.values():
@@ -492,7 +500,7 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     def _auth(self) -> bool:
-        return self.headers.get("X-TYPESENSE-API-KEY") == API_KEY
+        return self.headers.get("X-TYPESENSE-API-KEY") == _cfg.api_key
 
     def _send_json(self, code: int, data: dict) -> None:
         body = json.dumps(data).encode()
@@ -549,11 +557,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             body = self._read_body()
             try:
-                root = get_root(body.get("root", ""))
+                root = _cfg.get_root(body.get("root", ""))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
-            result = check_ready(src_root=root.path, collection=root.collection,
+            result = check_ready(_cfg, src_root=root.path, collection=root.collection,
                                  extensions=root.extensions)
             self._send_json(200, result)
             return
@@ -587,7 +595,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             body = self._read_body()
             try:
-                root = get_root(body.get("root", ""))
+                root = _cfg.get_root(body.get("root", ""))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
@@ -648,7 +656,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
 
             try:
-                root = get_root(body.get("root", ""))
+                root = _cfg.get_root(body.get("root", ""))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
@@ -805,16 +813,16 @@ def start_daemon() -> bool:
     _sync_progress.clear()
 
     try:
-        _server = _ThreadedHTTPServer(("127.0.0.1", API_PORT), _Handler)
+        _server = _ThreadedHTTPServer(("127.0.0.1", _cfg.api_port), _Handler)
     except OSError:
         return False   # already bound by another instance
 
     _DAEMON_PID.write_text(str(os.getpid()))
-    print(f"[tsquery_server] === STARTED pid={os.getpid()} port={API_PORT} ===", flush=True)
+    print(f"[tsquery_server] === STARTED pid={os.getpid()} port={_cfg.api_port} ===", flush=True)
 
     srv_thread = threading.Thread(target=_server.serve_forever, name="http", daemon=True)
     srv_thread.start()
-    print(f"[tsquery_server] Listening on http://127.0.0.1:{API_PORT}", flush=True)
+    print(f"[tsquery_server] Listening on http://127.0.0.1:{_cfg.api_port}", flush=True)
 
     _init_stop = threading.Event()
     _init_thread = threading.Thread(

@@ -19,8 +19,11 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from tests.helpers import _FOO_CS, _BAR_CS
+from indexserver.config import load_config as _load_config
 from indexserver.indexer import file_id
 from indexserver.verifier import _export_index, run_verify
+
+_cfg = _load_config()
 
 
 # ── TestExportIndex ───────────────────────────────────────────────────────────
@@ -45,7 +48,7 @@ class TestExportIndex(unittest.TestCase):
     def test_returns_id_mtime_dict(self):
         docs = [{"id": "abc", "mtime": 1700000000}]
         with self._patch_urlopen(docs):
-            result = _export_index("test_coll")
+            result = _export_index("test_coll", _cfg)
         self.assertEqual(result, {"abc": 1700000000})
 
     def test_multiple_docs(self):
@@ -55,31 +58,31 @@ class TestExportIndex(unittest.TestCase):
             {"id": "c", "mtime": 300},
         ]
         with self._patch_urlopen(docs):
-            result = _export_index("test_coll")
+            result = _export_index("test_coll", _cfg)
         self.assertEqual(len(result), 3)
         self.assertEqual(result["b"], 200)
 
     def test_missing_mtime_defaults_to_zero(self):
         docs = [{"id": "no_mtime"}]
         with self._patch_urlopen(docs):
-            result = _export_index("test_coll")
+            result = _export_index("test_coll", _cfg)
         self.assertEqual(result["no_mtime"], 0)
 
     def test_doc_without_id_skipped(self):
         docs = [{"content": "no id here"}, {"id": "valid", "mtime": 42}]
         with self._patch_urlopen(docs):
-            result = _export_index("test_coll")
+            result = _export_index("test_coll", _cfg)
         self.assertEqual(list(result.keys()), ["valid"])
 
     def test_empty_response_returns_empty_dict(self):
         with self._patch_urlopen([]):
-            result = _export_index("test_coll")
+            result = _export_index("test_coll", _cfg)
         self.assertEqual(result, {})
 
     def test_network_error_returns_empty_dict(self):
         with patch("indexserver.verifier.urllib.request.urlopen",
                    side_effect=OSError("connection refused")):
-            result = _export_index("test_coll")
+            result = _export_index("test_coll", _cfg)
         self.assertEqual(result, {})
 
 
@@ -133,7 +136,7 @@ class TestRunVerifyUnit(unittest.TestCase):
                     )
                 )
             )
-            run_verify(src_root=self.tmpdir, collection="test_coll",
+            run_verify(_cfg, src_root=self.tmpdir, collection="test_coll",
                        delete_orphans=delete_orphans)
 
         return indexed, deleted

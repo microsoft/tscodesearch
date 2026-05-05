@@ -16,7 +16,10 @@ from tests.fixtures import (
     LISTING_TARGET, CALLS_IBLOBSERVICE, CONTENT_ONLY_BLOBSTORE,
 )
 from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
+from indexserver.config import load_config as _load_config
 from indexserver.indexer import run_index
+
+_cfg = _load_config()
 
 
 class TestSigSearchLive(LiveTestBase):
@@ -36,7 +39,7 @@ class TestSigSearchLive(LiveTestBase):
             "synth/ListingTarget.cs":     LISTING_TARGET,
             "synth/StaticCallOnly.cs":    CONTENT_ONLY_BLOBSTORE,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

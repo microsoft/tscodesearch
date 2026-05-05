@@ -32,9 +32,14 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-from indexserver.config import (
-    API_KEY, PORT, API_PORT, HOST, ALL_ROOTS,
-)
+from indexserver.config import load_config as _load_config
+
+_cfg = _load_config()
+HOST    = _cfg.host
+PORT    = _cfg.port
+API_PORT = _cfg.api_port
+API_KEY = _cfg.api_key
+ALL_ROOTS = _cfg.roots
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 _HOME         = Path.home()

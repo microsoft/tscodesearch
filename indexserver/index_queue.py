@@ -23,7 +23,6 @@ import time
 import threading
 from collections import OrderedDict
 
-from indexserver.config import MAX_FILE_BYTES
 from indexserver.indexer import build_document, file_id as _file_id, SourceFile
 
 # Sentinel mtime value stored in queue items for delete actions.
@@ -40,8 +39,9 @@ class _Fence:
 class IndexQueue:
     """Thread-safe, deduplicating batching queue for Typesense index writes."""
 
-    def __init__(self, batch_size: int = 20):
+    def __init__(self, batch_size: int = 20, max_file_bytes: int = 3 * 1024 * 1024):
         self._batch_size = batch_size
+        self._max_file_bytes = max_file_bytes
         self._cond  = threading.Condition()
         # Ordered so the worker drains FIFO.  Duplicate keys update in-place,
         # preserving the original insertion position (FIFO order is kept for
@@ -231,7 +231,7 @@ class IndexQueue:
             else:
                 try:
                     stat = os.stat(full_path)
-                    if stat.st_size > MAX_FILE_BYTES:
+                    if stat.st_size > self._max_file_bytes:
                         continue
                     current_mtime = int(stat.st_mtime)
 

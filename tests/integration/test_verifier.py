@@ -14,8 +14,11 @@ from tests.helpers import (
     _assert_server_ok, _search, _delete_collection, _make_git_repo,
     _FOO_CS, _BAR_CS,
 )
+from indexserver.config import load_config as _load_config
 from indexserver.indexer import run_index
 from indexserver.verifier import run_verify
+
+_cfg = _load_config()
 
 
 class TestVerifier(unittest.TestCase):
@@ -31,7 +34,7 @@ class TestVerifier(unittest.TestCase):
             "src/bar.cs": _BAR_CS,
         })
         # Initial index
-        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod
@@ -50,7 +53,7 @@ class TestVerifier(unittest.TestCase):
         """Verifying a fresh index should touch zero files."""
         # The index was just built; run verify and confirm nothing changes.
         # We measure by checking that foo.cs is still searchable after verify.
-        run_verify(src_root=self.tmpdir, collection=self.coll)
+        run_verify(_cfg, src_root=self.tmpdir, collection=self.coll)
         time.sleep(0.2)
         foo = self._get("foo.cs")
         self.assertIsNotNone(foo)
@@ -63,7 +66,7 @@ class TestVerifier(unittest.TestCase):
         try:
             with open(new_file, "w", encoding="utf-8") as f:
                 f.write("namespace Test { public class NewWidget {} }\n")
-            run_verify(src_root=self.tmpdir, collection=self.coll)
+            run_verify(_cfg, src_root=self.tmpdir, collection=self.coll)
             time.sleep(0.5)
             hit = self._get("new_widget.cs")
             self.assertIsNotNone(hit, "new_widget.cs should be in index after verify")
@@ -71,7 +74,7 @@ class TestVerifier(unittest.TestCase):
             if os.path.exists(new_file):
                 os.unlink(new_file)
             # Clean up orphan from index
-            run_verify(src_root=self.tmpdir, collection=self.coll, delete_orphans=True)
+            run_verify(_cfg, src_root=self.tmpdir, collection=self.coll, delete_orphans=True)
             time.sleep(0.3)
 
     # ── stale file reindexed ───────────────────────────────────────────────────
@@ -84,7 +87,7 @@ class TestVerifier(unittest.TestCase):
         with open(foo_path, "w", encoding="utf-8") as f:
             f.write(new_content)
 
-        run_verify(src_root=self.tmpdir, collection=self.coll)
+        run_verify(_cfg, src_root=self.tmpdir, collection=self.coll)
         time.sleep(0.5)
 
         hits = _search(self.coll, "FooModified",
@@ -105,7 +108,7 @@ class TestVerifier(unittest.TestCase):
             f.write("namespace Test { public class Orphan {} }\n")
 
         # Index the orphan file first
-        run_index(src_root=self.tmpdir, collection=self.coll, resethard=False, verbose=False)
+        run_index(_cfg, src_root=self.tmpdir, collection=self.coll, resethard=False, verbose=False)
         time.sleep(0.3)
 
         # Confirm it's in the index
@@ -114,7 +117,7 @@ class TestVerifier(unittest.TestCase):
 
         # Delete the file and verify
         os.unlink(orphan_path)
-        run_verify(src_root=self.tmpdir, collection=self.coll, delete_orphans=True)
+        run_verify(_cfg, src_root=self.tmpdir, collection=self.coll, delete_orphans=True)
         time.sleep(0.5)
 
         hit_after = self._get("orphan.cs")
@@ -126,14 +129,14 @@ class TestVerifier(unittest.TestCase):
         with open(orphan_path, "w", encoding="utf-8") as f:
             f.write("namespace Test { public class KeptOrphan {} }\n")
 
-        run_index(src_root=self.tmpdir, collection=self.coll, resethard=False, verbose=False)
+        run_index(_cfg, src_root=self.tmpdir, collection=self.coll, resethard=False, verbose=False)
         time.sleep(0.3)
 
         hit_before = self._get("kept_orphan.cs")
         self.assertIsNotNone(hit_before, "kept_orphan.cs should be indexed before deletion")
 
         os.unlink(orphan_path)
-        run_verify(src_root=self.tmpdir, collection=self.coll, delete_orphans=False)
+        run_verify(_cfg, src_root=self.tmpdir, collection=self.coll, delete_orphans=False)
         time.sleep(0.3)
 
         hit_after = self._get("kept_orphan.cs")
@@ -141,7 +144,7 @@ class TestVerifier(unittest.TestCase):
                              "kept_orphan.cs should still be in index when delete_orphans=False")
 
         # Clean up: remove the orphan properly
-        run_verify(src_root=self.tmpdir, collection=self.coll, delete_orphans=True)
+        run_verify(_cfg, src_root=self.tmpdir, collection=self.coll, delete_orphans=True)
         time.sleep(0.3)
 
     # ── on_progress callback ───────────────────────────────────────────────────
@@ -149,7 +152,7 @@ class TestVerifier(unittest.TestCase):
     def test_on_progress_callback_on_verify(self):
         """run_verify should call on_progress with status=complete when done."""
         last = {}
-        run_verify(src_root=self.tmpdir, collection=self.coll,
+        run_verify(_cfg, src_root=self.tmpdir, collection=self.coll,
                    on_progress=lambda p: last.update(p))
         self.assertEqual(last.get("status"), "complete")
         self.assertEqual(last.get("collection"), self.coll)

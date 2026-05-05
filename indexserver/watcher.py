@@ -26,23 +26,22 @@ else:
     from watchdog.observers.polling import PollingObserver as _WatchdogObserver
 from watchdog.events import FileSystemEventHandler
 
-from indexserver.config import (
-    INCLUDE_EXTENSIONS, EXCLUDE_DIRS, ALL_ROOTS, to_native_path,
-)
+from indexserver.config import to_native_path
 
 DEBOUNCE_SECONDS = 2.0
 
 
-class CsChangeHandler(FileSystemEventHandler):
-    def __init__(self, queue, src_root: str, collection: str, extensions=None):
+class SourceChangeHandler(FileSystemEventHandler):
+    def __init__(self, queue, src_root: str, collection: str, cfg, extensions=None):
         super().__init__()
-        self._queue      = queue
-        self.src_root    = src_root
-        self._collection = collection
-        self._extensions = extensions if extensions is not None else INCLUDE_EXTENSIONS
-        self._pending    = {}
-        self._lock       = threading.Lock()
-        self._timer      = None
+        self._queue        = queue
+        self.src_root      = src_root
+        self._collection   = collection
+        self._extensions   = extensions if extensions is not None else cfg.include_extensions
+        self._exclude_dirs = cfg.exclude_dirs
+        self._pending      = {}
+        self._lock         = threading.Lock()
+        self._timer        = None
 
     def _schedule_flush(self):
         if self._timer:
@@ -56,7 +55,7 @@ class CsChangeHandler(FileSystemEventHandler):
 
     def _is_excluded(self, path):
         parts = path.replace("\\", "/").split("/")
-        return any(p in EXCLUDE_DIRS or p.startswith(".") for p in parts)
+        return any(p in self._exclude_dirs or p.startswith(".") for p in parts)
 
     def on_created(self, event):
         if not event.is_directory and self._is_indexed(event.src_path):
@@ -110,12 +109,12 @@ class CsChangeHandler(FileSystemEventHandler):
             print(f"[watcher] queued {n_new} file(s){dedup_note}", flush=True)
 
 
-def run_watcher(src_root=None, collection=None, stop_event=None, queue=None):
+def run_watcher(cfg, src_root=None, collection=None, stop_event=None, queue=None):
     """Watch one or all configured roots for file changes.
 
     Changes are enqueued into *queue* (an IndexQueue) for async processing.
     If both src_root and collection are given, watches only that root.
-    Otherwise watches every root in ROOTS config.
+    Otherwise watches every root in cfg.roots.
     Windows-style paths (C:/...) are automatically converted to WSL paths.
     """
     if queue is None:
@@ -127,12 +126,12 @@ def run_watcher(src_root=None, collection=None, stop_event=None, queue=None):
     else:
         roots_map = {
             r.native_path: (r.collection, r.extensions)
-            for r in ALL_ROOTS.values()
+            for r in cfg.roots.values()
         }
 
     observers = []
     for src_native, (coll_name, exts) in roots_map.items():
-        handler = CsChangeHandler(queue, src_native, collection=coll_name, extensions=exts)
+        handler = SourceChangeHandler(queue, src_native, coll_name, cfg, extensions=exts)
         obs = _WatchdogObserver()
         obs.schedule(handler, src_native, recursive=True)
         obs.start()
@@ -158,9 +157,10 @@ if __name__ == "__main__":
     args = ap.parse_args()
     # Standalone mode: create a minimal queue backed by a direct Typesense client
     import typesense
-    from indexserver.config import TYPESENSE_CLIENT_CONFIG
+    from indexserver.config import load_config as _load_config
     from indexserver.index_queue import IndexQueue
-    q = IndexQueue()
-    q.start(typesense.Client(TYPESENSE_CLIENT_CONFIG))
-    run_watcher(src_root=args.src, collection=args.collection, queue=q)
+    _cfg = _load_config()
+    q = IndexQueue(max_file_bytes=_cfg.max_file_bytes)
+    q.start(typesense.Client(_cfg.typesense_client_config))
+    run_watcher(_cfg, src_root=args.src, collection=args.collection, queue=q)
     q.stop()

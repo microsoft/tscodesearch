@@ -17,7 +17,10 @@ from tests.fixtures import (
     LOCAL_VAR_IDATASTORE, STATIC_RECEIVER_IDATASTORE,
 )
 from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
+from indexserver.config import load_config as _load_config
 from indexserver.indexer import run_index
+
+_cfg = _load_config()
 
 
 class TestUsesModeLive(LiveTestBase):
@@ -36,7 +39,7 @@ class TestUsesModeLive(LiveTestBase):
             "synth/LocalVarUser.cs":  LOCAL_VAR_IDATASTORE,
             "synth/StaticUser.cs":    STATIC_RECEIVER_IDATASTORE,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

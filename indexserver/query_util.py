@@ -117,10 +117,11 @@ def print_file_matches(matches, disp, show_path, count_only, context, mode, path
 # ── Typesense file resolver ───────────────────────────────────────────────────
 
 def _ts_search(collection: str, params: dict) -> dict:
-    from indexserver.config import HOST, PORT, API_KEY
+    from indexserver.config import load_config as _load_config
+    _cfg = _load_config()
     qs = urllib.parse.urlencode({k: str(v) for k, v in params.items()})
-    url = f"http://{HOST}:{PORT}/collections/{collection}/documents/search?{qs}"
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": API_KEY})
+    url = f"http://{_cfg.host}:{_cfg.port}/collections/{collection}/documents/search?{qs}"
+    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": _cfg.api_key})
     with urllib.request.urlopen(req, timeout=10) as r:
         return _json.loads(r.read())
 
@@ -128,9 +129,10 @@ def _ts_search(collection: str, params: dict) -> dict:
 def files_from_search(query, sub=None, ext="cs", limit=50,
                       collection=None, src_root=None, query_by=None):
     """Run a Typesense search and return the local file paths of matching documents."""
-    from indexserver.config import COLLECTION, SRC_ROOT, to_native_path
-    coll_name = collection or COLLECTION
-    root = src_root or SRC_ROOT
+    from indexserver.config import load_config as _load_config, to_native_path
+    _cfg = _load_config()
+    coll_name = collection or _cfg.collection
+    root = src_root or _cfg.src_root
     src_root_native = to_native_path(root)
 
     filter_parts = [f"extension:={ext.lstrip('.')}"] if ext else []

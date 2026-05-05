@@ -19,8 +19,10 @@ from tests.helpers import (
     _assert_server_ok, _search, _collection_info, _delete_collection, _make_git_repo,
     _FOO_CS, _BAR_CS, _BLOBSTORE_CS,
 )
+from indexserver.config import load_config as _load_config
 from indexserver.indexer import run_index
 
+_cfg = _load_config()
 
 # ── TestIndexer ───────────────────────────────────────────────────────────────
 
@@ -39,7 +41,7 @@ class TestIndexer(unittest.TestCase):
             "scripts/deploy.py":     "# deployment script\ndef run(): pass\n",
             "README.md":             "# My project\n",
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod
@@ -95,7 +97,7 @@ class TestIndexer(unittest.TestCase):
         """resethard=True drops and recreates the collection."""
         old_info = _collection_info(self.coll)
         time.sleep(1.1)
-        run_index(src_root=self.tmpdir, collection=self.coll, resethard=True, verbose=False)
+        run_index(_cfg, src_root=self.tmpdir, collection=self.coll, resethard=True, verbose=False)
         time.sleep(0.3)
         new_info = _collection_info(self.coll)
         self.assertIsNotNone(new_info)
@@ -117,7 +119,7 @@ class TestSemanticFields(unittest.TestCase):
             "core/Foo.cs": _FOO_CS,
             "core/Bar.cs": _BAR_CS,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod
@@ -215,8 +217,8 @@ class TestMultiRoot(unittest.TestCase):
             "Foo.cs": _FOO_CS,
             "Bar.cs": _BAR_CS,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll_a, resethard=True, verbose=False)
-        run_index(src_root=cls.tmpdir, collection=cls.coll_b, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll_a, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll_b, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod
@@ -260,7 +262,7 @@ class TestSearchFieldModes(unittest.TestCase):
             "core/Foo.cs": _FOO_CS,
             "core/Bar.cs": _BAR_CS,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod

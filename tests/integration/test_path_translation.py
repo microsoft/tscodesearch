@@ -13,11 +13,12 @@ if _root not in sys.path:
 
 def _api_ok() -> bool:
     import urllib.request
-    from indexserver.config import HOST, API_PORT
+    from indexserver.config import load_config as _load_config
+    _cfg = _load_config()
     try:
         req = urllib.request.Request(
-            f"http://{HOST}:{API_PORT}/health",
-            headers={"X-TYPESENSE-API-KEY": __import__("indexserver.config", fromlist=["API_KEY"]).API_KEY},
+            f"http://{_cfg.host}:{_cfg.api_port}/health",
+            headers={"X-TYPESENSE-API-KEY": _cfg.api_key},
         )
         with urllib.request.urlopen(req, timeout=2) as r:
             return __import__("json").loads(r.read()).get("ok", False)
@@ -42,11 +43,12 @@ class TestPathIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _assert_api_ok()
-        from indexserver.config import HOST, API_PORT, API_KEY, ALL_ROOTS
-        cls.host      = HOST
-        cls.api_port  = API_PORT
-        cls.api_key   = API_KEY
-        cls.all_roots = ALL_ROOTS
+        from indexserver.config import load_config as _load_config
+        _cfg = _load_config()
+        cls.host      = _cfg.host
+        cls.api_port  = _cfg.api_port
+        cls.api_key   = _cfg.api_key
+        cls.all_roots = _cfg.roots
 
     def _post(self, endpoint: str, body: dict) -> dict:
         import json, urllib.request

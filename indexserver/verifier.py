@@ -34,9 +34,7 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-from indexserver.config import (
-    COLLECTION, SRC_ROOT, API_KEY, PORT, HOST, to_native_path,
-)
+from indexserver.config import to_native_path
 from indexserver.indexer import (
     walk_source_files, file_id,
     get_client, ensure_collection, index_file_list,
@@ -45,14 +43,14 @@ from indexserver.indexer import (
 BATCH_SIZE = 50
 
 
-def _export_index(collection: str) -> dict[str, int]:
+def _export_index(collection: str, cfg) -> dict[str, int]:
     """Bulk-export the collection and return {doc_id: mtime_int}.
 
     Uses the Typesense streaming export endpoint so large collections are not
     buffered entirely in memory.
     """
-    url = f"http://{HOST}:{PORT}/collections/{collection}/documents/export"
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": API_KEY})
+    url = f"http://{cfg.host}:{cfg.port}/collections/{collection}/documents/export"
+    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": cfg.api_key})
     id_mtime: dict[str, int] = {}
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
@@ -81,7 +79,7 @@ def _fmt_time(seconds: float) -> str:
 
 # ── ready check ───────────────────────────────────────────────────────────────
 
-def check_ready(src_root: str | None = None,
+def check_ready(cfg, src_root: str | None = None,
                 collection: str | None = None,
                 extensions=None) -> dict:
     """Poll the filesystem and confirm the index is fully up to date.
@@ -109,15 +107,15 @@ def check_ready(src_root: str | None = None,
           "error":      str,    # set if poll_ok is False
         }
     """
-    src  = to_native_path(src_root or SRC_ROOT)
-    coll = collection or COLLECTION
+    src  = to_native_path(src_root or cfg.src_root)
+    coll = collection or cfg.collection
 
     t0        = time.time()
     poll_ok   = True
     error_msg = ""
 
     try:
-        index_map = _export_index(coll)
+        index_map = _export_index(coll, cfg)
     except Exception as e:
         return {
             "ready": False, "poll_ok": False, "index_ok": False,
@@ -136,7 +134,7 @@ def check_ready(src_root: str | None = None,
     stale     = 0
 
     try:
-        for sf in walk_source_files(src, extensions=extensions):
+        for sf in walk_source_files(src, cfg, extensions=extensions):
             fs_files += 1
             doc_id = file_id(sf.rel)
             remaining.discard(doc_id)
@@ -167,7 +165,7 @@ def check_ready(src_root: str | None = None,
 
 # ── main ───────────────────────────────────────────────────────────────────────
 
-def run_verify(src_root: str | None = None,
+def run_verify(cfg, src_root: str | None = None,
                collection: str | None = None,
                queue=None,
                delete_orphans: bool = True,
@@ -197,11 +195,11 @@ def run_verify(src_root: str | None = None,
                         With queue: fires via fence (async).
                         Without queue: called directly before returning.
     """
-    src_root  = to_native_path(src_root or SRC_ROOT)
-    coll_name = collection or COLLECTION
+    src_root  = to_native_path(src_root or cfg.src_root)
+    coll_name = collection or cfg.collection
 
-    client = get_client()
-    ensure_collection(client, resethard=resethard, collection=coll_name)
+    client = get_client(cfg)
+    ensure_collection(client, coll_name, resethard=resethard)
 
     progress: dict = {
         "status":          "running",
@@ -234,7 +232,7 @@ def run_verify(src_root: str | None = None,
     progress["phase"] = "collecting: exporting index"
     if on_progress: on_progress(progress)
 
-    index_map = _export_index(coll_name)
+    index_map = _export_index(coll_name, cfg)
     progress["index_docs"] = len(index_map)
     print(f"[verifier]   {len(index_map):,} documents in index", flush=True)
 
@@ -255,7 +253,7 @@ def run_verify(src_root: str | None = None,
     n_fs = 0
     last_scan_print = time.time()
 
-    for sf in walk_source_files(src_root, extensions=extensions):
+    for sf in walk_source_files(src_root, cfg, extensions=extensions):
         if stop_event and stop_event.is_set():
             break
         n_fs += 1
@@ -436,6 +434,8 @@ def run_verify(src_root: str | None = None,
 # ── entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    from indexserver.config import load_config as _load_config
+    _cfg = _load_config()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--src",               default=None, help="Source root directory")
@@ -448,10 +448,11 @@ if __name__ == "__main__":
 
     if args.check_ready:
         import json as _json
-        result = check_ready(src_root=args.src, collection=args.collection)
+        result = check_ready(_cfg, src_root=args.src, collection=args.collection)
         print(_json.dumps(result))
     else:
         run_verify(
+            _cfg,
             src_root       = args.src,
             collection     = args.collection,
             delete_orphans = not args.no_delete_orphans,

@@ -1,7 +1,7 @@
 """
-Unit tests for the file watcher: CsChangeHandler event routing and flush logic.
+Unit tests for the file watcher: SourceChangeHandler event routing and flush logic.
 
-TestCsChangeHandlerUnit — no server needed; uses a lightweight mock queue.
+TestSourceChangeHandlerUnit — no server needed; uses a lightweight mock queue.
 
 Integration tests (require Typesense) are in tests/integration/test_watcher.py.
 
@@ -15,6 +15,9 @@ import tempfile
 import unittest
 
 from tests.helpers import _FakeEvent
+from indexserver.config import load_config as _load_config
+
+_cfg = _load_config()
 
 
 # ── lightweight mock queue ────────────────────────────────────────────────────
@@ -30,10 +33,10 @@ class _MockQueue:
         return True
 
 
-# ── TestCsChangeHandlerUnit ───────────────────────────────────────────────────
+# ── TestSourceChangeHandlerUnit ───────────────────────────────────────────────
 
-class TestCsChangeHandlerUnit(unittest.TestCase):
-    """Unit tests for CsChangeHandler event routing and flush → queue forwarding.
+class TestSourceChangeHandlerUnit(unittest.TestCase):
+    """Unit tests for SourceChangeHandler event routing and flush → queue forwarding.
 
     Uses _MockQueue — no running server, no IndexQueue worker thread.
     """
@@ -41,10 +44,10 @@ class TestCsChangeHandlerUnit(unittest.TestCase):
     COLL = "test_coll"
 
     def setUp(self):
-        from indexserver.watcher import CsChangeHandler
+        from indexserver.watcher import SourceChangeHandler
         self.tmpdir = tempfile.mkdtemp(prefix="ts_handler_test_")
         self.queue = _MockQueue()
-        self.handler = CsChangeHandler(self.queue, self.tmpdir, collection=self.COLL)
+        self.handler = SourceChangeHandler(self.queue, self.tmpdir, self.COLL, _cfg)
 
     def tearDown(self):
         if self.handler._timer:

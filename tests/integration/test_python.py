@@ -14,7 +14,10 @@ from tests.helpers import (
     _assert_server_ok, _search, _delete_collection, _make_git_repo,
     _FOO_PY, _BAR_PY,
 )
+from indexserver.config import load_config as _load_config
 from indexserver.indexer import run_index
+
+_cfg = _load_config()
 
 
 class TestPySemanticFields(unittest.TestCase):
@@ -29,7 +32,7 @@ class TestPySemanticFields(unittest.TestCase):
             "myapp/foo.py": _FOO_PY,
             "myapp/bar.py": _BAR_PY,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
 
     @classmethod

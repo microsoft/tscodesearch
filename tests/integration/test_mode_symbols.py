@@ -15,7 +15,10 @@ from tests.fixtures import (
     CLASS_NAMED_INVENTORYMANAGER, METHOD_NAMED_PROCESSINVENTORY, LITERAL_ONLY,
 )
 from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
+from indexserver.config import load_config as _load_config
 from indexserver.indexer import run_index
+
+_cfg = _load_config()
 
 
 class TestSymbolsAndTextModeLive(LiveTestBase):
@@ -31,7 +34,7 @@ class TestSymbolsAndTextModeLive(LiveTestBase):
             "synth/WarehouseService.cs": METHOD_NAMED_PROCESSINVENTORY,
             "synth/Config.cs":           LITERAL_ONLY,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

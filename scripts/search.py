@@ -38,7 +38,11 @@ import urllib.parse
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _root)
 
-from indexserver.config import HOST, PORT, API_KEY
+from indexserver.config import load_config as _load_config
+_cfg = _load_config()
+HOST    = _cfg.host
+PORT    = _cfg.port
+API_KEY = _cfg.api_key
 from query.cs import symbol_kind_query_by
 
 
@@ -66,8 +70,7 @@ def search(query, ext=None, sub=None, limit=10,
            symbols_only=False, implements=False, calls=False,
            uses=False, attrs=False, casts=False, accesses_of=False, collection=None,
            symbol_kind=None, uses_kind=""):
-    from indexserver.config import COLLECTION as _DEFAULT_COLLECTION
-    coll_name = collection or _DEFAULT_COLLECTION
+    coll_name = collection or _cfg.collection
 
     # Determine query_by based on mode
     if implements:

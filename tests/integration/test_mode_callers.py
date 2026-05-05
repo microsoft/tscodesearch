@@ -15,7 +15,10 @@ from tests.fixtures import (
     CALLS_FETCHWIDGET, DEFINES_FETCHWIDGET, CALLS_IBLOBSERVICE,
 )
 from tests.helpers import _assert_server_ok, _make_git_repo, _delete_collection
+from indexserver.config import load_config as _load_config
 from indexserver.indexer import run_index
+
+_cfg = _load_config()
 
 
 class TestCallersModeLive(LiveTestBase):
@@ -31,7 +34,7 @@ class TestCallersModeLive(LiveTestBase):
             "synth/WidgetService.cs": DEFINES_FETCHWIDGET,
             "synth/Reporter.cs":      CALLS_IBLOBSERVICE,
         })
-        run_index(src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
+        run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
     @classmethod

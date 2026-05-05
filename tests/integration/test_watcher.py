@@ -1,7 +1,7 @@
 """
 Integration tests for the file watcher.
 
-TestCsChangeHandlerIntegration — requires Typesense; uses a real IndexQueue.
+TestSourceChangeHandlerIntegration — requires Typesense; uses a real IndexQueue.
 """
 from __future__ import annotations
 import os, sys, shutil, time, unittest, subprocess, tempfile
@@ -15,21 +15,22 @@ from indexserver.index_queue import IndexQueue
 from indexserver.indexer import build_schema
 
 
-class TestCsChangeHandlerIntegration(unittest.TestCase):
-    """Integration tests: CsChangeHandler → IndexQueue → real Typesense collection."""
+class TestSourceChangeHandlerIntegration(unittest.TestCase):
+    """Integration tests: SourceChangeHandler → IndexQueue → real Typesense collection."""
 
     @classmethod
     def setUpClass(cls):
         _assert_server_ok()
         import typesense as _ts
-        from indexserver.config import TYPESENSE_CLIENT_CONFIG
+        from indexserver.config import load_config as _load_config
+        _cfg = _load_config()
         stamp = int(time.time())
         cls.coll = f"test_watcher_{stamp}"
-        cls.client = _ts.Client(TYPESENSE_CLIENT_CONFIG)
+        cls.client = _ts.Client(_cfg.typesense_client_config)
         cls.client.collections.create(build_schema(cls.coll))
         cls.tmpdir = tempfile.mkdtemp(prefix="ts_wint_test_")
         subprocess.run(["git", "-C", cls.tmpdir, "init", "-q"], check=True)
-        cls.queue = IndexQueue()
+        cls.queue = IndexQueue(max_file_bytes=_cfg.max_file_bytes)
         cls.queue.start(cls.client)
 
     @classmethod
@@ -39,8 +40,9 @@ class TestCsChangeHandlerIntegration(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _make_handler(self):
-        from indexserver.watcher import CsChangeHandler
-        return CsChangeHandler(self.queue, self.tmpdir, collection=self.coll)
+        from indexserver.watcher import SourceChangeHandler
+        from indexserver.config import load_config as _load_config
+        return SourceChangeHandler(self.queue, self.tmpdir, self.coll, _load_config())
 
     def _write(self, name: str, content: str) -> str:
         path = os.path.join(self.tmpdir, name)
