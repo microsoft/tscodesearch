@@ -1,10 +1,10 @@
 """
-Typesense service manager for code search.
+Typesense service manager for code search (WSL/Linux side).
 
 Commands:
     status    - Show server health, document count, watcher/verifier state
-    start     - Start Typesense server + indexserver (watcher + heartbeat built-in)
-    stop      - Stop indexserver and Typesense server
+    start     - Start Typesense server (management API runs on Windows via tsquery_server.py)
+    stop      - Stop Typesense server
     restart   - stop then start
     index     - Run indexer in background (add --resethard to wipe data and reindex)
     verify    - Scan the file system and repair stale/missing index entries
@@ -55,9 +55,6 @@ _INDEXER_LOG  = str(_RUN_DIR / "indexer.log")
 _SERVER_PID   = str(_RUN_DIR / "typesense.pid")
 _SERVER_LOG   = str(_RUN_DIR / "typesense.log")
 _SERVER_ERR   = str(_RUN_DIR / "typesense-error.log")
-_API_PID      = str(_RUN_DIR / "api.pid")
-_INDEXER_PID  = str(_RUN_DIR / "indexer.pid")
-_WATCHER_STATS = str(_RUN_DIR / "watcher_stats.json")
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -192,8 +189,8 @@ def cmd_status(args) -> None:
     else:
         print(f"  Server  : [--] not running")
 
-    api_alive, api_pid = _pid_alive(_API_PID)
-    api_info = _api_status() if api_alive else None
+    api_info = _api_status()
+    api_alive = api_info is not None
 
     missing_collections = []
     api_collections = (api_info or {}).get("collections", {})
@@ -240,7 +237,7 @@ def cmd_status(args) -> None:
             print(f"  [{root_name}] Index : (server unavailable)")
 
     if api_alive:
-        print(f"  API     : [OK]  running  (PID {api_pid}, port={API_PORT})")
+        print(f"  API     : [OK]  running  (port={API_PORT})")
     else:
         print(f"  API     : [--] not running")
 
@@ -379,18 +376,6 @@ def _check_typesense_locks() -> bool:
 
 
 def cmd_start(args) -> None:
-    if not API_KEY or not API_KEY.strip():
-        print("ERROR: api_key is missing or blank in config.json.")
-        print("       Delete config.json and re-run setup.cmd to regenerate it.")
-        sys.exit(1)
-
-    for root in ALL_ROOTS.values():
-        native = _to_native_path(root.local_path)
-        if not os.path.isdir(native):
-            print(f"ERROR: Source directory for root '{root.name}' does not exist: {native}")
-            print(f"       Check 'roots.{root.name}' in config.json, then run: ts restart")
-            sys.exit(1)
-
     if not _check_typesense_locks():
         sys.exit(1)
 
@@ -399,26 +384,9 @@ def cmd_start(args) -> None:
         print("ERROR: startup failed — check logs with: ts log")
         sys.exit(1)
 
-    cmd_status(args)
-
 
 def cmd_stop(args) -> None:
     print("Stopping services...")
-
-    # Stop standalone indexer subprocess if running (from ts index)
-    indexer_alive, indexer_pid = _pid_alive(_INDEXER_PID)
-    if indexer_alive:
-        try:
-            os.kill(int(indexer_pid), signal.SIGTERM)
-            print(f"  Stopped indexer (PID {indexer_pid})")
-        except OSError:
-            pass
-    if os.path.exists(_INDEXER_PID):
-        os.remove(_INDEXER_PID)
-
-    # Stop indexserver (watcher + heartbeat + verifier thread all stop via SIGTERM)
-    _kill_pid(_API_PID, "indexserver")
-
     print("  Stopping Typesense server...")
     try:
         subprocess.run([_VENV_PY, _SERVER_PY, "--stop"], timeout=20)
@@ -437,30 +405,10 @@ def cmd_restart(args) -> None:
 def cmd_index(args) -> None:
     import shutil
 
-    indexer_alive, indexer_pid = _pid_alive(_INDEXER_PID)
-    if indexer_alive:
-        print(f"Indexer already running (PID {indexer_pid}). Stop it first with: ts stop")
-        sys.exit(1)
-
     if args.resethard:
-        print("Hard reset: stopping all services...")
-
-        # Stop any standalone indexer subprocess
-        indexer_alive2, indexer_pid2 = _pid_alive(_INDEXER_PID)
-        if indexer_alive2:
-            try:
-                os.kill(int(indexer_pid2), signal.SIGTERM)
-                print(f"  Stopped indexer (PID {indexer_pid2})")
-            except OSError:
-                pass
-        if os.path.exists(_INDEXER_PID):
-            os.remove(_INDEXER_PID)
-
-        # Stop indexserver (watcher + heartbeat + in-process indexer thread)
-        _kill_pid(_API_PID, "indexserver")
+        print("Hard reset: stopping Typesense...")
 
         # Stop Typesense
-        print("  Stopping Typesense server...")
         try:
             subprocess.run([_VENV_PY, _SERVER_PY, "--stop"], timeout=20)
         except subprocess.TimeoutExpired:
@@ -481,8 +429,8 @@ def cmd_index(args) -> None:
             print("ERROR: failed to reinstall Typesense binary")
             sys.exit(1)
 
-        # Start Typesense, run initial index, start indexserver
-        print("Starting services and reindexing...")
+        # Start Typesense only (management daemon already running on Windows)
+        print("Starting Typesense and reindexing...")
         result = subprocess.run(["bash", _ENTRYPOINT, "--background", "--disown"], env=_entrypoint_env())
         if result.returncode != 0:
             print("ERROR: startup failed after resethard — check logs with: ts log")
@@ -493,9 +441,8 @@ def cmd_index(args) -> None:
         print("ERROR: Typesense server is not running. Start it first with: ts start")
         sys.exit(1)
 
-    api_alive, _ = _pid_alive(_API_PID)
-    if not api_alive:
-        print("ERROR: indexserver is not running. Start it with: ts start")
+    if _api_status() is None:
+        print("ERROR: management API is not running. Start it with: ts start")
         sys.exit(1)
 
     root_name = getattr(args, "root", None) or (
@@ -508,7 +455,7 @@ def cmd_index(args) -> None:
     root = ALL_ROOTS[root_name]
     print(f"Starting indexer for root '{root_name}' {'(--resethard) ' if args.resethard else ''}...")
     print(f"  Collection : {root.collection}")
-    print(f"  Source     : {root.local_path}")
+    print(f"  Source     : {root.native_path}")
 
     code, result = _api_post("/index/start", {
         "root":      root_name,
@@ -526,9 +473,8 @@ def cmd_index(args) -> None:
 
 
 def cmd_verify(args) -> None:
-    api_alive, _ = _pid_alive(_API_PID)
-    if not api_alive:
-        print("ERROR: indexserver is not running. Start it with: ts start")
+    if _api_status() is None:
+        print("ERROR: management API is not running. Start it with: ts start")
         sys.exit(1)
 
     root_name = getattr(args, "root", None) or (
@@ -554,7 +500,7 @@ def cmd_verify(args) -> None:
         sys.exit(1)
 
     print(f"Verification scan started.")
-    print(f"  Root       : '{root_name}' → {root.local_path}")
+    print(f"  Root       : '{root_name}' → {root.native_path}")
     print(f"  Collection : {result.get('collection', '?')}")
     print(f"  Monitor with: ts status")
 
@@ -598,9 +544,9 @@ def main():
     sub = ap.add_subparsers(dest="command", metavar="command")
 
     sub.add_parser("status",  help="Show service status")
-    sub.add_parser("start",   help="Start server + indexserver (watcher + heartbeat)")
-    sub.add_parser("stop",    help="Stop indexserver + server")
-    sub.add_parser("restart", help="Restart server + indexserver")
+    sub.add_parser("start",   help="Start Typesense server")
+    sub.add_parser("stop",    help="Stop Typesense server")
+    sub.add_parser("restart", help="Restart Typesense server")
 
     p_idx = sub.add_parser("index", help="Run indexer in background")
     p_idx.add_argument("--resethard", action="store_true",

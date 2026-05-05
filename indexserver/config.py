@@ -30,7 +30,7 @@ _CONFIG = _read_config()
 if "port" not in _CONFIG:
     raise RuntimeError(f"'port' is required in {_CONFIG_FILE}")
 PORT: int = int(_CONFIG["port"])
-API_PORT: int = PORT + 1   # management API (indexserver/api.py)
+API_PORT: int = PORT + 1   # management API (tsquery_server.py)
 API_KEY: str = _CONFIG.get("api_key", "codesearch-local")
 
 
@@ -111,25 +111,24 @@ def collection_for_root(name: str = "default") -> str:
 class Root:
     """All configuration for one indexed source tree."""
     name: str             # logical root name (the key in config.json "roots")
-    local_path: str       # server-side path (WSL: /mnt/c/…, Docker: /source/…)
-    external_path: str    # Windows-side path (C:/…) returned to clients; empty string if not configured
+    path: str             # canonical path as stored in config.json (e.g. C:/repos/src)
     collection: str       # Typesense collection name, e.g. "codesearch_default"
     extensions: frozenset # file extensions to index; defaults to INCLUDE_EXTENSIONS
 
+    @property
+    def native_path(self) -> str:
+        """Platform-native path for file I/O: converts C:/... to /mnt/... in WSL."""
+        return to_native_path(self.path)
+
     def to_local(self, rel: str) -> str:
-        """Convert a stored relative path to a locally openable absolute path."""
+        """Convert a relative path to a locally openable absolute path (uses native_path)."""
         r = rel.replace("\\", "/").lstrip("/")
-        return self.local_path.rstrip("/") + "/" + r
+        return self.native_path.rstrip("/") + "/" + r
 
     def to_external(self, rel: str) -> str:
-        """Convert a stored relative path to the external absolute path for clients.
-
-        Returns the full Windows-style path (e.g. C:/repos/src/Foo.cs) when
-        external_path is configured, or the local absolute path otherwise.
-        """
+        """Convert a relative path to the canonical absolute path for clients (uses path)."""
         r = rel.replace("\\", "/").lstrip("/")
-        base = self.external_path if self.external_path else self.local_path
-        return base.rstrip("/") + "/" + r
+        return self.path.rstrip("/") + "/" + r
 
 
 # ── Roots ─────────────────────────────────────────────────────────────────────
@@ -137,31 +136,22 @@ class Root:
 def _parse_roots(raw: dict) -> "dict[str, Root]":
     """Parse the 'roots' section of config.json into Root objects.
 
-    Each entry should have:
-      local_path    — path as seen by this process (WSL: /mnt/c/…, Docker: /source/…)
-      external_path — original Windows path (C:/…), returned to clients via Root.to_external()
-
-    If only external_path is provided, local_path is auto-derived:
-      - In WSL: C:/foo/bar  →  /mnt/c/foo/bar
-      - In Docker/native Linux: falls back to external_path (add local_path explicitly for
-        non-standard mount points)
+    Each entry is either a bare string path or an object with a ``path`` key:
+      ``"default": "C:/repos/src"``
+      ``"default": {"path": "C:/repos/src"}``
+      ``"default": {"path": "C:/repos/src", "extensions": [".cs", ".py"]}``
 
     Optional per-root field:
       extensions — list of file extensions (e.g. [".cs", ".py"]); defaults to INCLUDE_EXTENSIONS.
     """
     result: dict[str, Root] = {}
     for name, val in raw.items():
-        lp = val.get("local_path", "").replace("\\", "/").rstrip("/")
-        wp = val.get("external_path", "").replace("\\", "/").rstrip("/")
-        if not lp and wp:
-            # Auto-derive local_path from external_path when not explicitly set.
-            # In WSL, convert the Windows drive path to /mnt/<drive>/... form.
-            m = _re.match(r"^([a-zA-Z]):(.*)", wp)
-            if m and _sys.platform == "linux" and _is_wsl():
-                lp = f"/mnt/{m.group(1).lower()}{m.group(2)}"
-            else:
-                lp = wp  # Docker/native: no conversion; add local_path explicitly
-        exts_raw = val.get("extensions")
+        if isinstance(val, str):
+            p = val.replace("\\", "/").rstrip("/")
+            exts_raw = None
+        else:
+            p = val.get("path", "").replace("\\", "/").rstrip("/")
+            exts_raw = val.get("extensions")
         if exts_raw:
             exts: frozenset = frozenset(
                 e.lower() if e.startswith(".") else f".{e.lower()}" for e in exts_raw
@@ -170,8 +160,7 @@ def _parse_roots(raw: dict) -> "dict[str, Root]":
             exts = INCLUDE_EXTENSIONS
         result[name] = Root(
             name=name,
-            local_path=lp,
-            external_path=wp,
+            path=p,
             collection=collection_for_root(name),
             extensions=exts,
         )
@@ -181,8 +170,8 @@ def _parse_roots(raw: dict) -> "dict[str, Root]":
 ALL_ROOTS: dict[str, Root] = _parse_roots(_CONFIG.get("roots", {}))
 
 SRC_ROOT: str = (
-    ALL_ROOTS["default"].local_path if "default" in ALL_ROOTS
-    else next((r.local_path for r in ALL_ROOTS.values()), "")
+    ALL_ROOTS["default"].native_path if "default" in ALL_ROOTS
+    else next((r.native_path for r in ALL_ROOTS.values()), "")
 )
 
 _default_root_name = "default" if "default" in ALL_ROOTS else next(iter(ALL_ROOTS), "default")

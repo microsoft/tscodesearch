@@ -27,13 +27,14 @@ def _server_ok() -> bool:
 
 
 def _assert_server_ok() -> None:
-    """Raise RuntimeError if Typesense is not running. Call from setUpClass."""
+    """Skip the test class if Typesense is not running. Call from setUpClass."""
     import time
+    import unittest
     for _ in range(5):
         if _server_ok():
             return
         time.sleep(1)
-    raise RuntimeError("Typesense is not running — start with: ts start")
+    raise unittest.SkipTest("Typesense is not running — start with: ts start")
 
 
 def _search(collection: str, q: str,

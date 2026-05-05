@@ -24,7 +24,7 @@ Replicates bug discovered in Round 16 of guided testing:
       queries like `Widget.Value`).
 
 Run (no Typesense needed):
-    pytest tests/test_cs_accesses_of_initializers.py -v
+    pytest query/tests/test_cs_accesses_of_initializers.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

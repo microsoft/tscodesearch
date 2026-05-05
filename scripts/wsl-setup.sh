@@ -4,7 +4,7 @@
 # - Creates the Python venv at ~/.local/indexserver-venv/ if absent
 # - Installs/updates required packages in the venv
 # - Downloads the Typesense binary to ~/.local/typesense/ if absent
-# - With --reset: kills any running Typesense/api.py, wipes TYPESENSE_DATA
+# - With --reset: kills any running Typesense process, wipes TYPESENSE_DATA
 #
 # Environment variables (all optional):
 #   TYPESENSE_VERSION  default: 27.1
@@ -71,9 +71,8 @@ fi
 # ── Reset: kill existing processes, wipe data dir ─────────────────────────────
 
 if [ "${RESET}" = "1" ]; then
-    echo "[wsl-setup] Killing existing Typesense and api.py processes..."
+    echo "[wsl-setup] Killing existing Typesense process..."
     pkill -9 -f "typesense-server" 2>/dev/null || true
-    pkill -9 -f "indexserver/api.py" 2>/dev/null || true
     sleep 2
 
     echo "[wsl-setup] Wiping ${TYPESENSE_DATA}..."

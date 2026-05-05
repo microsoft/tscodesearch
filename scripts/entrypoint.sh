@@ -1,14 +1,17 @@
 #!/bin/bash
-# Universal startup for codesearch indexserver.
+# Universal startup for codesearch indexserver (Typesense only).
 #
 # Docker mode (default, no flags):
-#   Runs in foreground; process supervisor keeps container alive.
+#   Runs Typesense in foreground; process supervisor keeps container alive.
 #   Config is read from CONFIG_FILE (mounted) or generated from env vars.
 #
 # WSL background mode (--background):
-#   Called by service.py; starts daemons and exits.
+#   Called by service.py; starts Typesense as a daemon and exits.
 #   Config must already exist at CONFIG_FILE.
-#   Skips starting processes that are already running.
+#   Skips starting Typesense if it is already running.
+#
+# Note: the management API (PORT+1) is owned by tsquery_server.py running on
+# Windows.  This script only starts Typesense.
 
 set -e
 
@@ -18,8 +21,8 @@ BACKGROUND=0
 DISOWN=0
 for arg in "$@"; do
     case "$arg" in
-        --background)  BACKGROUND=1 ;;
-        --disown)      DISOWN=1 ;;
+        --background)   BACKGROUND=1 ;;
+        --disown)       DISOWN=1 ;;
     esac
 done
 
@@ -29,7 +32,6 @@ done
 CODESEARCH_PORT="${CODESEARCH_PORT:-8108}"
 CODESEARCH_ROOT_NAME="${CODESEARCH_ROOT_NAME:-default}"
 CODESEARCH_API_KEY="${CODESEARCH_API_KEY:-}"
-CODESEARCH_API_HOST="${CODESEARCH_API_HOST:-127.0.0.1}"
 
 TYPESENSE_DATA="${TYPESENSE_DATA:-/typesensedata}"
 TYPESENSE_DIR="${TYPESENSE_DIR:-}"         # Docker: /opt/typesense (set by Dockerfile ENV); WSL: empty
@@ -40,7 +42,6 @@ PYTHON3="${PYTHON3:-python3}"              # WSL callers set to ~/.local/indexse
 
 TYPESENSE_LOG="${TYPESENSE_DATA}/typesense.log"
 TYPESENSE_PID_FILE="${TYPESENSE_DATA}/typesense.pid"
-API_PID_FILE="${TYPESENSE_DATA}/api.pid"
 
 # ── Binary detection ──────────────────────────────────────────────────────────
 
@@ -103,8 +104,6 @@ EOF
     cat "$CONFIG_FILE"
 fi
 
-API_PORT=$((CODESEARCH_PORT + 1))
-
 # ── Start Typesense ───────────────────────────────────────────────────────────
 
 if [ "$BACKGROUND" = "1" ] && _check_running "$TYPESENSE_PID_FILE"; then
@@ -128,35 +127,14 @@ else
     echo "[entrypoint] Typesense started (pid=$TYPESENSE_PID)"
 fi
 
-# ── Start management API (api.py — watcher + heartbeat + verifier threads) ───
-# api.py starts immediately and waits for Typesense internally (async init).
+# ── Wait for Typesense health ─────────────────────────────────────────────────
 
-if [ "$BACKGROUND" = "1" ] && _check_running "$API_PID_FILE"; then
-    echo "[entrypoint] Management API already running (pid=$(cat "$API_PID_FILE"))"
-else
-    echo "[entrypoint] Starting management API on ${CODESEARCH_API_HOST}:${API_PORT}..."
-    cd "$APP_ROOT"
-    nohup "$PYTHON3" "${APP_ROOT}/indexserver/api.py" \
-        --host "$CODESEARCH_API_HOST" --port "$API_PORT" \
-        > "${TYPESENSE_DATA}/api.log" 2>&1 &
-
-    API_PID=$!
-    [ "$BACKGROUND" = "1" ] && [ "$DISOWN" = "1" ] && disown "$API_PID"
-    echo "$API_PID" > "$API_PID_FILE"
-    echo "[entrypoint] Management API started (pid=$API_PID)"
-fi
-
-echo "[entrypoint] Management API on port $API_PORT"
-
-# ── Wait for management API health ───────────────────────────────────────────
-
-echo -n "[entrypoint] Waiting for management API"
-API_HEALTH_URL="http://127.0.0.1:${API_PORT}/health"
-MAX_WAIT=30
+echo -n "[entrypoint] Waiting for Typesense"
+TS_HEALTH_URL="http://127.0.0.1:${CODESEARCH_PORT}/health"
+MAX_WAIT=60
 WAITED=0
-
 while [ $WAITED -lt $MAX_WAIT ]; do
-    if "$PYTHON3" "${APP_ROOT}/scripts/http_ok.py" "$API_HEALTH_URL" 2>/dev/null; then
+    if "$PYTHON3" "${APP_ROOT}/scripts/http_ok.py" "$TS_HEALTH_URL" 2>/dev/null; then
         echo " ready"
         break
     fi
@@ -164,43 +142,26 @@ while [ $WAITED -lt $MAX_WAIT ]; do
     sleep 1
     WAITED=$((WAITED + 1))
 done
-
 if [ $WAITED -ge $MAX_WAIT ]; then
     echo ""
-    echo "[entrypoint] ERROR: Management API did not become healthy within ${MAX_WAIT}s"
-    echo "[entrypoint] Log output:"
-    cat "${TYPESENSE_DATA}/api.log"
+    echo "[entrypoint] ERROR: Typesense did not become healthy within ${MAX_WAIT}s"
     exit 1
 fi
-
 
 # ── Foreground mode: handle signals and keep alive (Docker) ───────────────────
 
 if [ "$BACKGROUND" = "0" ]; then
     cleanup() {
-        echo ""
-        echo "[entrypoint] Shutting down..."
-
-        if [ -f "$API_PID_FILE" ]; then
-            kill "$(cat "$API_PID_FILE")" 2>/dev/null || true
-            rm -f "$API_PID_FILE"
-            echo "[entrypoint] Stopped management API"
-        fi
-
         if [ -f "$TYPESENSE_PID_FILE" ]; then
             kill "$(cat "$TYPESENSE_PID_FILE")" 2>/dev/null || true
             rm -f "$TYPESENSE_PID_FILE"
-            echo "[entrypoint] Stopped Typesense"
         fi
-
-        echo "[entrypoint] Shutdown complete"
+        echo "[entrypoint] Stopped Typesense"
         exit 0
     }
-
     trap cleanup SIGTERM SIGINT
-
-    echo "[entrypoint] Ready for connections"
-    wait "$API_PID"
+    echo "[entrypoint] Typesense ready"
+    wait "$TYPESENSE_PID"
 else
     echo "[entrypoint] Ready (background mode)"
 fi

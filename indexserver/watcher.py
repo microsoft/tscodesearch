@@ -1,10 +1,9 @@
 """
 File watcher: monitors source roots for changes and enqueues them for indexing.
 
-Runs natively in WSL. Windows paths from config (e.g. C:/myproject/src) are
-automatically converted to WSL mount paths (/mnt/c/myproject/src).
-Uses PollingObserver because inotify does not propagate from Windows-backed
-/mnt/ filesystems in WSL.
+On Windows (MCP daemon): uses watchdog Observer backed by ReadDirectoryChangesW.
+On Linux/WSL (indexserver): uses PollingObserver because inotify does not fire
+for changes made on the Windows side of a /mnt/ path.
 
 Usage:
     python watcher.py
@@ -21,15 +20,17 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-from watchdog.observers.polling import PollingObserver
+if sys.platform == "win32":
+    from watchdog.observers import Observer as _WatchdogObserver
+else:
+    from watchdog.observers.polling import PollingObserver as _WatchdogObserver
 from watchdog.events import FileSystemEventHandler
 
 from indexserver.config import (
     INCLUDE_EXTENSIONS, EXCLUDE_DIRS, ALL_ROOTS, to_native_path,
 )
 
-DEBOUNCE_SECONDS  = 2.0
-POLL_INTERVAL_SEC = 10   # polling interval for PollingObserver on /mnt/ paths
+DEBOUNCE_SECONDS = 2.0
 
 
 class CsChangeHandler(FileSystemEventHandler):
@@ -61,30 +62,33 @@ class CsChangeHandler(FileSystemEventHandler):
         if not event.is_directory and self._is_indexed(event.src_path):
             if not self._is_excluded(event.src_path):
                 with self._lock:
-                    self._pending[event.src_path] = "upsert"
+                    self._pending[event.src_path] = "created"
                 self._schedule_flush()
 
     def on_modified(self, event):
         if not event.is_directory and self._is_indexed(event.src_path):
             if not self._is_excluded(event.src_path):
                 with self._lock:
-                    self._pending[event.src_path] = "upsert"
+                    # Preserve "created" if we haven't flushed yet — a
+                    # modify right after a create is still a new file.
+                    if self._pending.get(event.src_path) != "created":
+                        self._pending[event.src_path] = "modified"
                 self._schedule_flush()
 
     def on_deleted(self, event):
         if not event.is_directory and self._is_indexed(event.src_path):
             with self._lock:
-                self._pending[event.src_path] = "delete"
+                self._pending[event.src_path] = "deleted"
             self._schedule_flush()
 
     def on_moved(self, event):
         if not event.is_directory:
             if self._is_indexed(event.src_path):
                 with self._lock:
-                    self._pending[event.src_path] = "delete"
+                    self._pending[event.src_path] = "deleted"
             if self._is_indexed(event.dest_path) and not self._is_excluded(event.dest_path):
                 with self._lock:
-                    self._pending[event.dest_path] = "upsert"
+                    self._pending[event.dest_path] = "created"
             self._schedule_flush()
 
     def _flush(self):
@@ -93,9 +97,10 @@ class CsChangeHandler(FileSystemEventHandler):
             self._pending.clear()
 
         n_new = n_dedup = 0
-        for path, action in pending.items():
-            rel = os.path.relpath(path, self.src_root).replace("\\", "/")
-            if self._queue.enqueue(path, rel, self._collection, action):
+        for path, reason in pending.items():
+            rel    = os.path.relpath(path, self.src_root).replace("\\", "/")
+            action = "delete" if reason == "deleted" else "upsert"
+            if self._queue.enqueue(path, rel, self._collection, action, reason=reason):
                 n_new += 1
             else:
                 n_dedup += 1
@@ -121,14 +126,14 @@ def run_watcher(src_root=None, collection=None, stop_event=None, queue=None):
         roots_map = {wsl_path: (collection, None)}
     else:
         roots_map = {
-            to_native_path(r.local_path): (r.collection, r.extensions)
+            r.native_path: (r.collection, r.extensions)
             for r in ALL_ROOTS.values()
         }
 
     observers = []
     for src_native, (coll_name, exts) in roots_map.items():
         handler = CsChangeHandler(queue, src_native, collection=coll_name, extensions=exts)
-        obs = PollingObserver(timeout=POLL_INTERVAL_SEC)
+        obs = _WatchdogObserver()
         obs.schedule(handler, src_native, recursive=True)
         obs.start()
         observers.append(obs)

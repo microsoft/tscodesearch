@@ -20,7 +20,7 @@ Replicates behavior discovered in Round 4 of guided testing:
       cannot be determined without type inference.
 
 Run (no Typesense needed):
-    pytest tests/test_cs_foreach_accesses.py -v
+    pytest query/tests/test_cs_foreach_accesses.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

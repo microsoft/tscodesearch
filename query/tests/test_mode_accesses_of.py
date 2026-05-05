@@ -15,7 +15,7 @@ Gaps tested:
   - Accesses in comments and string literals are NOT returned.
 
 Run (no Typesense):
-    pytest tests/test_mode_accesses_of.py -v
+    pytest query/tests/test_mode_accesses_of.py -v
 """
 from __future__ import annotations
 

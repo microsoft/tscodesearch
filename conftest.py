@@ -24,7 +24,7 @@ def _write_default_config() -> None:
     data = {
         "port": 8108,
         "api_key": "codesearch-local",
-        "roots": {"default": {"local_path": tempfile.gettempdir()}},
+        "roots": {"default": {"path": tempfile.gettempdir()}},
     }
     with open(_CONFIG_PATH, "w") as f:
         json.dump(data, f, indent=2)

@@ -1,128 +1,26 @@
 /**
- * Windows filesystem watcher for codesearch.
+ * HTTP helper class for the codesearch management API.
  *
- * Uses VS Code's native file system watcher (backed by ReadDirectoryChangesW on
- * Windows) to detect changes under Windows-path source roots, then forwards
- * batched file-change events to the indexserver management API (POST /file-events).
- *
- * On startup the watcher:
- *   1. Pauses the WSL PollingObserver so changes are not double-processed.
- *   2. Triggers a background verify pass to catch up on any changes that
- *      accumulated while VS Code was closed.
- *   3. Begins watching for new changes and flushing them in 2-second batches.
- *
- * On disposal (VS Code closed / extension deactivated) the watcher resumes the
- * WSL PollingObserver so the indexserver continues to receive updates.
- *
- * Only roots with Windows-style drive paths (e.g. C:/) are watched here.
- * Native Linux / WSL paths are left to the indexserver's PollingObserver.
+ * The Windows filesystem watcher has been moved to tsquery_server.py (the
+ * management server daemon), which uses watchdog's ReadDirectoryChangesW
+ * observer directly.  This class now only provides the apiPost/apiGet
+ * helpers used by StatusBarManager and the reindex command.
  */
 
-import * as vscode from 'vscode';
 import * as http from 'http';
-import { CodesearchConfig, getRoots } from './client';
-
-const WIN_PATH_RE = /^[A-Za-z]:[/\\]/;
-
-// Mirror EXCLUDE_DIRS from indexserver/config.py — skip events from these dirs
-const EXCLUDED_PATH_RE = /(^|[/\\])(\.git|obj|bin|node_modules|\.venv|__pycache__|\.vs|Target|Build|Import|nugetcache|target|debug|ship|x64|x86)([/\\]|$)/i;
-
-const DEBOUNCE_MS = 2000;
+import { CodesearchConfig } from './client';
 
 export class FileWatcher {
-    private _fsWatchers: vscode.FileSystemWatcher[] = [];
-    private _disposed   = false;
-    private _pending    = new Map<string, 'upsert' | 'delete'>();
-    private _flushTimer: ReturnType<typeof setTimeout> | null = null;
-    private _inFlight   = false;
-
     readonly apiPort: number;
     readonly apiKey:  string;
-    private readonly _roots: Array<[string, string]>; // [rootName, winPath]
-    private readonly _out:   vscode.OutputChannel;
 
-    constructor(config: CodesearchConfig, out: vscode.OutputChannel) {
+    /** Always false — file watching is now handled by the daemon. */
+    get isActive(): boolean { return false; }
+
+    constructor(config: CodesearchConfig, _out: unknown) {
         this.apiPort = (config.port ?? 8108) + 1;
         this.apiKey  = config.api_key;
-        this._out    = out;
-        const allRoots = getRoots(config);
-        this._roots = Object.entries(allRoots).filter(([, p]) => WIN_PATH_RE.test(p));
-        if (this._roots.length > 0) {
-            void this._start();
-        }
     }
-
-    /** True when this watcher owns file-change delivery (VS Code native watchers are active). */
-    get isActive(): boolean { return this._roots.length > 0 && !this._disposed; }
-
-    // ── Startup ────────────────────────────────────────────────────────────────
-
-    private async _start(): Promise<void> {
-        this._out.appendLine(`[watcher] Starting Windows watcher for ${this._roots.length} root(s): ${this._roots.map(([n]) => n).join(', ')}`);
-        try {
-            // Pause the WSL PollingObserver — we handle events natively from here.
-            await this.apiPost('/watcher/pause');
-
-            // Trigger a background verify for each root to catch up on changes that
-            // occurred while VS Code was closed (git pulls, builds, branch switches, etc.).
-            for (const [name] of this._roots) {
-                await this.apiPost('/verify/start', { root: name, delete_orphans: true });
-            }
-
-            if (this._disposed) { return; }
-
-            for (const [name, root] of this._roots) {
-                if (this._disposed) { break; }
-                const pattern = new vscode.RelativePattern(vscode.Uri.file(root), '**/*');
-                const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-                watcher.onDidCreate(uri => this._queue(uri.fsPath, 'upsert'));
-                watcher.onDidChange(uri => this._queue(uri.fsPath, 'upsert'));
-                watcher.onDidDelete(uri => this._queue(uri.fsPath, 'delete'));
-                this._fsWatchers.push(watcher);
-                this._out.appendLine(`[watcher] Windows watcher activated for root "${name}" (${root})`);
-            }
-        } catch (e) {
-            this._out.appendLine(`[watcher] _start error: ${e}`);
-        }
-    }
-
-    // ── Event queue + debounced flush ──────────────────────────────────────────
-
-    private _queue(rawPath: string, action: 'upsert' | 'delete'): void {
-        if (this._disposed) { return; }
-        if (EXCLUDED_PATH_RE.test(rawPath)) { return; }
-        this._pending.set(rawPath.replace(/\\/g, '/'), action);
-        this._scheduleFlush();
-    }
-
-    private _scheduleFlush(): void {
-        if (this._inFlight) { return; } // completion handler will drain
-        if (this._flushTimer) { clearTimeout(this._flushTimer); }
-        this._flushTimer = setTimeout(() => { void this._flush(); }, DEBOUNCE_MS);
-    }
-
-    private async _flush(): Promise<void> {
-        if (this._inFlight || this._pending.size === 0 || this._disposed) { return; }
-        this._inFlight  = true;
-        this._flushTimer = null;
-
-        const events = Array.from(this._pending.entries()).map(([path, action]) => ({ path, action }));
-        this._pending.clear();
-
-        try {
-            const result = await this.apiPost('/file-events', { events });
-            this._out.appendLine(`[watcher] sent ${events.length} event(s): queued=${result?.['queued'] ?? '?'} deduped=${result?.['deduped'] ?? '?'}`);
-        } catch (e) {
-            this._out.appendLine(`[watcher] flush error: ${e}`);
-            // Re-queue so nothing is lost on a transient network error
-            for (const ev of events) { this._pending.set(ev.path, ev.action); }
-        }
-
-        this._inFlight = false;
-        if (this._pending.size > 0) { await this._flush(); }
-    }
-
-    // ── HTTP helper (shared with status.ts via the public overload) ────────────
 
     apiPost(path: string, body?: unknown): Promise<Record<string, unknown> | null> {
         return new Promise((resolve) => {
@@ -146,12 +44,12 @@ export class FileWatcher {
                     res.on('data', (chunk: Buffer) => { data += chunk; });
                     res.on('end', () => {
                         try { resolve(JSON.parse(data) as Record<string, unknown>); }
-                        catch { this._out.appendLine(`[watcher] POST ${path} — unexpected non-JSON response (${res.statusCode}): ${data.slice(0, 200)}`); resolve(null); }
+                        catch { resolve(null); }
                     });
                 },
             );
             req.setTimeout(5000, () => { req.destroy(); resolve(null); });
-            req.on('error', (e) => { this._out.appendLine(`[watcher] POST ${path} error: ${e}`); resolve(null); });
+            req.on('error', () => resolve(null));
             if (body) { req.write(bodyStr); }
             req.end();
         });
@@ -172,24 +70,15 @@ export class FileWatcher {
                     res.on('data', (chunk: Buffer) => { data += chunk; });
                     res.on('end', () => {
                         try { resolve(JSON.parse(data) as Record<string, unknown>); }
-                        catch { this._out.appendLine(`[watcher] GET ${path} — unexpected non-JSON response (${res.statusCode}): ${data.slice(0, 200)}`); resolve(null); }
+                        catch { resolve(null); }
                     });
                 },
             );
             req.setTimeout(5000, () => { req.destroy(); resolve(null); });
-            req.on('error', (e) => { this._out.appendLine(`[watcher] GET ${path} error: ${e}`); resolve(null); });
+            req.on('error', () => resolve(null));
             req.end();
         });
     }
 
-    // ── Disposal ───────────────────────────────────────────────────────────────
-
-    dispose(): void {
-        this._disposed = true;
-        if (this._flushTimer) { clearTimeout(this._flushTimer); }
-        for (const w of this._fsWatchers) { w.dispose(); }
-        this._fsWatchers = [];
-        // Resume the WSL PollingObserver — it handles changes while VS Code is closed
-        void this.apiPost('/watcher/resume');
-    }
+    dispose(): void { /* nothing to clean up */ }
 }

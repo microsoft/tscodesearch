@@ -19,7 +19,7 @@ Replicates behavior observed in Round 3 of guided testing:
       _base_type_names unchanged for matching and indexing.
 
 Run (no Typesense needed):
-    pytest tests/test_cs_attrs_and_implements.py -v
+    pytest query/tests/test_cs_attrs_and_implements.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

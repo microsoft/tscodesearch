@@ -16,7 +16,7 @@ Round 17 — uses_kind=locals and accesses_on missed bindings from property
     `_collect_typed_var_names`).
 
 Run (no Typesense needed):
-    pytest tests/test_cs_recursive_pattern.py -v
+    pytest query/tests/test_cs_recursive_pattern.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

@@ -21,7 +21,7 @@ Replicates behavior discovered in Round 6 of guided testing:
       and cannot be resolved without type inference.
 
 Run (no Typesense needed):
-    pytest tests/test_cs_out_var_accesses.py -v
+    pytest query/tests/test_cs_out_var_accesses.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

@@ -156,18 +156,14 @@ def check_ready(src_root: str | None = None,
     stale     = 0
 
     try:
-        for full_path, rel in walk_source_files(src, extensions=extensions):
+        for sf in walk_source_files(src, extensions=extensions):
             fs_files += 1
-            try:
-                mtime = int(os.stat(full_path).st_mtime)
-            except OSError:
-                continue
-            doc_id = file_id(rel)
+            doc_id = file_id(sf.rel)
             remaining.discard(doc_id)
             idx_mtime = index_map.get(doc_id)
             if idx_mtime is None:
                 missing += 1
-            elif mtime != idx_mtime:
+            elif sf.mtime != idx_mtime:
                 stale += 1
     except Exception as e:
         poll_ok   = False
@@ -280,33 +276,32 @@ def run_verify(src_root: str | None = None,
     n_fs = 0
     last_scan_print = time.time()
 
-    for full_path, rel in walk_source_files(src_root, extensions=extensions):
+    for sf in walk_source_files(src_root, extensions=extensions):
         if stop_event and stop_event.is_set():
             break
-        try:
-            mtime = int(os.stat(full_path).st_mtime)
-        except OSError:
-            continue
         n_fs += 1
-        doc_id = file_id(rel)
+        doc_id = file_id(sf.rel)
         remaining.discard(doc_id)
         idx_mtime = index_map.get(doc_id)
         if idx_mtime is None:
             progress["missing"] += 1
             needs_update = True
-        elif mtime != idx_mtime:
+            reason = "new"
+        elif sf.mtime != idx_mtime:
             progress["stale"] += 1
             needs_update = True
+            reason = "modified"
         else:
             needs_update = False
+            reason = ""
 
         if needs_update:
             if queue is not None:
-                queue.enqueue(full_path, rel, coll_name, mtime=mtime)
+                queue.enqueue(sf.full_path, sf.rel, coll_name, mtime=sf.mtime, reason=reason)
                 n_enqueued += 1
                 progress["total_to_update"] = n_enqueued
             else:
-                to_update.append((full_path, rel))
+                to_update.append((sf.full_path, sf.rel))
 
         now = time.time()
         if now - last_scan_print >= 15:

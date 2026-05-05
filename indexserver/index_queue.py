@@ -23,7 +23,7 @@ import threading
 from collections import OrderedDict
 
 from indexserver.config import MAX_FILE_BYTES
-from indexserver.indexer import build_document, file_id as _file_id
+from indexserver.indexer import build_document, file_id as _file_id, SourceFile
 
 # Sentinel mtime value stored in queue items for delete actions.
 MTIME_DELETE = None
@@ -57,6 +57,7 @@ class IndexQueue:
         self._n_deleted   = 0
         self._n_skipped   = 0
         self._n_errors    = 0
+        self._n_by_reason: dict[str, int] = {}
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -86,12 +87,16 @@ class IndexQueue:
         collection: str,
         action: str = "upsert",
         mtime: int | None = None,
+        reason: str = "",
     ) -> bool:
         """Add a file event.
 
         For upsert actions, mtime is the file's modification time (seconds).
         If mtime is not provided the file is stat'd automatically.
         For delete actions, pass mtime=MTIME_DELETE (None) — it is unused.
+
+        reason is an optional label used for stats reporting (e.g. "new",
+        "modified", "created", "deleted", "event"). It does not affect behaviour.
 
         Returns True if this is a new entry, False if it updated an existing
         pending entry (deduplicated — the action and mtime are overwritten with
@@ -109,6 +114,8 @@ class IndexQueue:
             self._items[key] = (full_path, rel, collection, action, mtime)
             if is_new:
                 self._n_enqueued += 1
+                if reason:
+                    self._n_by_reason[reason] = self._n_by_reason.get(reason, 0) + 1
                 self._cond.notify()
             else:
                 self._n_deduped += 1
@@ -116,20 +123,19 @@ class IndexQueue:
 
     def enqueue_bulk(
         self,
-        file_pairs,              # Iterable[tuple[str, str]]  (full_path, rel)
+        file_pairs,              # Iterable[SourceFile]
         collection: str,
         stop_event: threading.Event | None = None,
     ) -> tuple[int, int]:
-        """Stream (full_path, rel) pairs into the queue without a long lock hold.
+        """Stream SourceFile objects into the queue without a long lock hold.
 
         Returns (new_entries, deduped_entries).
-        mtime is stat'd automatically inside enqueue() for each file.
         """
         n_new = n_dedup = 0
-        for full_path, rel in file_pairs:
+        for sf in file_pairs:
             if stop_event and stop_event.is_set():
                 break
-            if self.enqueue(full_path, rel, collection):
+            if self.enqueue(sf.full_path, sf.rel, collection, mtime=sf.mtime):
                 n_new += 1
             else:
                 n_dedup += 1
@@ -156,15 +162,18 @@ class IndexQueue:
     def stats(self) -> dict:
         """Snapshot of queue counters."""
         with self._cond:
-            return {
-                "depth":    len(self._items),
-                "enqueued": self._n_enqueued,
-                "deduped":  self._n_deduped,
-                "upserted": self._n_upserted,
-                "deleted":  self._n_deleted,
-                "skipped":  self._n_skipped,
-                "errors":   self._n_errors,
+            result = {
+                "depth":     len(self._items),
+                "enqueued":  self._n_enqueued,
+                "deduped":   self._n_deduped,
+                "upserted":  self._n_upserted,
+                "deleted":   self._n_deleted,
+                "skipped":   self._n_skipped,
+                "errors":    self._n_errors,
             }
+            if self._n_by_reason:
+                result["by_reason"] = dict(self._n_by_reason)
+            return result
 
     # ── worker ────────────────────────────────────────────────────────────────
 

@@ -10,8 +10,7 @@ import * as http from 'http';
 // ---------------------------------------------------------------------------
 
 export interface RootEntry {
-    external_path: string;
-    local_path?: string;
+    path: string;
 }
 
 export interface CodesearchConfig {
@@ -139,7 +138,7 @@ export function loadConfig(configPath: string): CodesearchConfig {
 
 export function getRoots(config: CodesearchConfig): Record<string, string> {
     return Object.fromEntries(
-        Object.entries(config.roots).map(([k, v]) => [k, v.external_path])
+        Object.entries(config.roots).map(([k, v]) => [k, v.path])
     );
 }
 

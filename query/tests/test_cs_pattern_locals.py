@@ -17,7 +17,7 @@ Replicates bug discovered in Round 12 of guided testing:
       `accesses_on` (Round 5/6).
 
 Run (no Typesense needed):
-    pytest tests/test_cs_pattern_locals.py -v
+    pytest query/tests/test_cs_pattern_locals.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

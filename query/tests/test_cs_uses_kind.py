@@ -13,7 +13,7 @@ Replicates behavior observed in Round 2 of guided testing:
                       absent from the node list.  Both gaps are now fixed.
 
 Run (no Typesense needed):
-    pytest tests/test_cs_uses_kind.py -v
+    pytest query/tests/test_cs_uses_kind.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

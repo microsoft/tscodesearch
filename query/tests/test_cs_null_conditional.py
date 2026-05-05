@@ -22,7 +22,7 @@ Replicates behavior discovered in Round 7 of guided testing:
   Results for q_accesses_on and q_accesses_of are now sorted by line number.
 
 Run (no Typesense needed):
-    pytest tests/test_cs_null_conditional.py -v
+    pytest query/tests/test_cs_null_conditional.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

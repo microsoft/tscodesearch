@@ -89,14 +89,14 @@ def _get_root(name: str) -> tuple[str, str]:
         available = ", ".join(sorted(_ROOTS))
         raise ValueError(f"Unknown root '{name}'. Available: {available}")
     entry = _ROOTS[effective]
-    ext_path = entry["external_path"] if isinstance(entry, dict) else entry
+    ext_path = entry.get("path", "") if isinstance(entry, dict) else entry
     return _collection_for_root(effective), ext_path
 
 def _to_windows_path(file_path: str) -> str:
     default_entry  = _ROOTS.get("default") or (next(iter(_ROOTS.values()), None))
     default_root   = ""
     if default_entry:
-        ep = default_entry["external_path"] if isinstance(default_entry, dict) else default_entry
+        ep = default_entry.get("path", "") if isinstance(default_entry, dict) else default_entry
         default_root = ep.replace("\\", "/").rstrip("/")
 
     p = file_path.replace("\\", "/")
@@ -617,4 +617,20 @@ Args:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    if "--daemon" in sys.argv:
+        from tsquery_server import start_daemon, run_until_shutdown
+        if not start_daemon():
+            # Another instance already owns the port — nothing to do.
+            sys.exit(0)
+        run_until_shutdown()
+        sys.exit(0)
+
+    # Normal MCP mode: try to start the management server in-process.
+    # If the port is already bound (daemon running separately), this is a no-op.
+    try:
+        from tsquery_server import start_daemon as _start_daemon
+        _start_daemon()   # returns False silently if already running
+    except Exception:
+        pass   # never let a daemon startup error kill the MCP server
+
     mcp.run()

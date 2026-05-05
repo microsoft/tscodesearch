@@ -21,7 +21,7 @@ Replicates bug discovered in Round 14 of guided testing:
       same line are all reported.
 
 Run (no Typesense needed):
-    pytest tests/test_cs_object_initializer_accesses.py -v
+    pytest query/tests/test_cs_object_initializer_accesses.py -v
 """
 from __future__ import annotations
 from .conftest import SAMPLE_ROOT1

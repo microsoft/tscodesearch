@@ -84,7 +84,7 @@ after(() => new Promise<void>((resolve) => mockServer.close(() => resolve())));
 
 // doQueryCodebase uses config.port + 1, so set port = mockPort - 1
 function makeCfg(): CodesearchConfig {
-    return { api_key: 'test-key', port: mockPort - 1, mode: 'wsl', roots: { default: { external_path: 'C:/src' } } };
+    return { api_key: 'test-key', port: mockPort - 1, mode: 'wsl', roots: { default: { path: 'C:/src' } } };
 }
 
 beforeEach(() => {
@@ -100,18 +100,18 @@ beforeEach(() => {
 
 describe('loadConfig', () => {
     it('reads config', () => {
-        const p = writeTempConfig({ api_key: 'mk', port: 8108, mode: 'wsl', roots: { default: { external_path: 'C:/src' } } });
+        const p = writeTempConfig({ api_key: 'mk', port: 8108, mode: 'wsl', roots: { default: { path: 'C:/src' } } });
         const cfg = loadConfig(p);
         assert.equal(cfg.api_key, 'mk');
         assert.equal(cfg.port, 8108);
         assert.equal(cfg.mode, 'wsl');
-        assert.deepEqual(cfg.roots, { default: { external_path: 'C:/src' } });
+        assert.deepEqual(cfg.roots, { default: { path: 'C:/src' } });
     });
 
     it('reads multiple roots', () => {
-        const p = writeTempConfig({ api_key: 'mk', port: 8108, mode: 'docker', roots: { default: { external_path: 'C:/src' }, other: { external_path: 'C:/other' } } });
+        const p = writeTempConfig({ api_key: 'mk', port: 8108, mode: 'docker', roots: { default: { path: 'C:/src' }, other: { path: 'C:/other' } } });
         const cfg = loadConfig(p);
-        assert.deepEqual(cfg.roots, { default: { external_path: 'C:/src' }, other: { external_path: 'C:/other' } });
+        assert.deepEqual(cfg.roots, { default: { path: 'C:/src' }, other: { path: 'C:/other' } });
     });
 
     it('throws on missing file', () => {
@@ -132,7 +132,7 @@ describe('loadConfig', () => {
 
 describe('getRoots', () => {
     it('returns the roots map', () => {
-        const cfg: CodesearchConfig = { api_key: 'x', port: 8108, mode: 'wsl', roots: { default: { external_path: 'C:/src' }, foo: { external_path: 'C:/foo' } } };
+        const cfg: CodesearchConfig = { api_key: 'x', port: 8108, mode: 'wsl', roots: { default: { path: 'C:/src' }, foo: { path: 'C:/foo' } } };
         assert.deepEqual(getRoots(cfg), { default: 'C:/src', foo: 'C:/foo' });
     });
 
@@ -398,7 +398,7 @@ describe('doQueryCodebase', () => {
     });
 
     it('rejects when server is unreachable', async () => {
-        const cfg: CodesearchConfig = { api_key: 'k', port: 1, mode: 'wsl', roots: { default: { external_path: 'C:/src' } } };
+        const cfg: CodesearchConfig = { api_key: 'k', port: 1, mode: 'wsl', roots: { default: { path: 'C:/src' } } };
         await assert.rejects(() => doQueryCodebase(cfg, 'x', 'uses', '', '', '', 10));
     });
 });
@@ -672,7 +672,7 @@ describe('doQuerySingleFile', () => {
     });
 
     it('rejects when server is unreachable', async () => {
-        const cfg: CodesearchConfig = { api_key: 'k', port: 1, mode: 'wsl', roots: { default: { external_path: 'C:/src' } } };
+        const cfg: CodesearchConfig = { api_key: 'k', port: 1, mode: 'wsl', roots: { default: { path: 'C:/src' } } };
         await assert.rejects(() => doQuerySingleFile(cfg, 'calls', 'Foo', 'C:/src/foo.cs'));
     });
 
