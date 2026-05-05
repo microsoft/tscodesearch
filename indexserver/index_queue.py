@@ -257,7 +257,7 @@ class IndexQueue:
 
         had_errors = False
         for coll, docs in upserts.items():
-            while True:
+            while not self._stop.is_set():
                 try:
                     self._client.collections[coll].documents.import_(docs, {"action": "upsert"})
                     with self._cond:
