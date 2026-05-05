@@ -117,7 +117,6 @@ function apiPost(urlPath, body, timeoutMs = 10000) {
 /** Read the last Typesense log entry for queued_writes progress during startup. */
 function tsLoadingProgress() {
     try {
-        let logPath;
         if (MODE === 'wsl') {
             // Read via WSL — the log lives inside the WSL filesystem
             const r = spawnSync('wsl.exe', ['bash', '-lc',
@@ -323,7 +322,6 @@ async function shutdownDaemon() {
     await waitForPortClosed(API_PORT, 5_000);
 
     // If still alive, force-kill
-    const pidFile2 = pidFile; // reuse
     const stillUp = await new Promise(resolve => {
         const req = http.request(
             { host: 'localhost', port: API_PORT, path: '/health', method: 'GET' },

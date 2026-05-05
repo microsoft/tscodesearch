@@ -4,7 +4,7 @@ Integration tests for the verifier against a live Typesense instance.
 TestVerifier — requires Typesense to be running.
 """
 from __future__ import annotations
-import json, os, sys, shutil, time, unittest
+import os, sys, shutil, time, unittest
 
 _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _root not in sys.path:

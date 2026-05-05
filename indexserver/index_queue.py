@@ -23,7 +23,7 @@ import time
 import threading
 from collections import OrderedDict
 
-from indexserver.indexer import build_document, file_id as _file_id, SourceFile
+from indexserver.indexer import build_document, file_id as _file_id
 
 # Sentinel mtime value stored in queue items for delete actions.
 MTIME_DELETE = None

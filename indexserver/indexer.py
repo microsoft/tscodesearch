@@ -470,7 +470,7 @@ def walk_source_files(src_root: str, cfg, extensions=None):
                         _dir_specs[dirpath] = result
                         return result
                 except OSError:
-                    pass
+                    pass  # .gitignore is unreadable — skip it, no patterns applied
                 break
         _dir_specs[dirpath] = inherited
         return inherited

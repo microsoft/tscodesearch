@@ -54,7 +54,6 @@ except Exception:
 
 def _require_server() -> None:
     """Skip the test class if Typesense is not reachable."""
-    import unittest
     try:
         url = f"http://{_HOST}:{_PORT}/health"
         with urllib.request.urlopen(url, timeout=5) as r:
@@ -788,7 +787,6 @@ class TestPreConfiguredRootsE2E(unittest.TestCase):
 
 def _require_api_server() -> None:
     """Raise AssertionError if the management API (tsquery_server.py) is not reachable."""
-    import unittest
     try:
         from indexserver.config import load_config as _load_config
         _API_PORT = _load_config().api_port
