@@ -63,10 +63,14 @@ from indexserver.watcher import run_watcher
 
 # ── runtime paths ──────────────────────────────────────────────────────────────
 _HOME        = Path.home()
-_RUN_DIR     = Path(os.environ.get("TYPESENSE_DATA", _HOME / ".local" / "typesense"))
+_DEFAULT_RUN_DIR = (
+    Path(os.environ.get("LOCALAPPDATA", _HOME / "AppData" / "Local")) / "typesense"
+    if sys.platform == "win32"
+    else _HOME / ".local" / "typesense"
+)
+_RUN_DIR     = Path(os.environ.get("TYPESENSE_DATA", _DEFAULT_RUN_DIR))
 _DAEMON_PID  = _RUN_DIR / "mcp_daemon.pid"
 _INDEXER_PID = _RUN_DIR / "indexer.pid"
-_PROGRESS_FILE = _RUN_DIR / "verifier_progress.json"
 
 CHECK_INTERVAL = 30    # heartbeat poll interval (seconds)
 FAIL_THRESHOLD = 3     # consecutive failures before restarting Typesense
@@ -88,10 +92,11 @@ _watcher_stop:   threading.Event  = threading.Event()
 _watcher_thread: threading.Thread | None = None
 _watcher_lock    = threading.Lock()
 
-_sync_thread:  threading.Thread | None = None
-_sync_lock     = threading.Lock()
-_sync_pending: list = []
-_sync_stop:    threading.Event | None = None
+_sync_thread:   threading.Thread | None = None
+_sync_lock      = threading.Lock()
+_sync_pending:  list = []
+_sync_stop:     threading.Event | None = None
+_sync_progress: dict = {}
 
 _schema_status: dict = {}
 _ts_client = None
@@ -222,11 +227,8 @@ def _syncer_status() -> dict:
         "running": running,
         "pending": len(_sync_pending),
     }
-    if running and _PROGRESS_FILE.exists():
-        try:
-            result["progress"] = json.loads(_PROGRESS_FILE.read_text())
-        except Exception:
-            pass
+    if _sync_progress:
+        result["progress"] = _sync_progress
     return result
 
 
@@ -363,6 +365,7 @@ def _drain_sync_queue() -> None:
         stop = threading.Event()
         _sync_stop = stop
 
+        _sync_progress.clear()
         _INDEXER_PID.write_text(str(os.getpid()))
         try:
             run_verify(
@@ -374,6 +377,7 @@ def _drain_sync_queue() -> None:
                 stop_event=stop,
                 extensions=extensions,
                 on_complete=lambda: None,
+                on_progress=lambda p: _sync_progress.update(p),
             )
         except Exception as e:
             print(f"[syncer] ERROR for {collection}: {e}", flush=True)
@@ -432,6 +436,20 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
         if _ts_health():
             break
         stop_event.wait(2)
+
+    if stop_event.is_set():
+        return
+
+    # /health returning ok doesn't guarantee the collections API is ready yet
+    # (Typesense returns 503 "Not Ready or Lagging" while loading RocksDB).
+    # Wait until a lightweight collections call succeeds before starting the queue.
+    print("[tsquery_server] Waiting for Typesense API to become ready…", flush=True)
+    while not stop_event.is_set():
+        try:
+            get_client().collections.retrieve()
+            break
+        except Exception:
+            stop_event.wait(2)
 
     if stop_event.is_set():
         return
@@ -783,6 +801,8 @@ def start_daemon() -> bool:
     global _server
 
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
+
+    _sync_progress.clear()
 
     try:
         _server = _ThreadedHTTPServer(("127.0.0.1", API_PORT), _Handler)

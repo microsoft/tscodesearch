@@ -144,23 +144,15 @@ class TestVerifier(unittest.TestCase):
         run_verify(src_root=self.tmpdir, collection=self.coll, delete_orphans=True)
         time.sleep(0.3)
 
-    # ── progress file ──────────────────────────────────────────────────────────
+    # ── on_progress callback ───────────────────────────────────────────────────
 
-    def test_progress_file_written_on_verify(self):
-        """run_verify should write verifier_progress.json with status=complete."""
-        import pathlib
-        run_dir = pathlib.Path(os.environ.get(
-            "TYPESENSE_DATA",
-            pathlib.Path.home() / ".local" / "typesense"
-        ))
-        progress_file = run_dir / "verifier_progress.json"
-
-        run_verify(src_root=self.tmpdir, collection=self.coll)
-
-        self.assertTrue(progress_file.exists(), "verifier_progress.json should be written")
-        data = json.loads(progress_file.read_text(encoding="utf-8"))
-        self.assertEqual(data.get("status"), "complete")
-        self.assertEqual(data.get("collection"), self.coll)
+    def test_on_progress_callback_on_verify(self):
+        """run_verify should call on_progress with status=complete when done."""
+        last = {}
+        run_verify(src_root=self.tmpdir, collection=self.coll,
+                   on_progress=lambda p: last.update(p))
+        self.assertEqual(last.get("status"), "complete")
+        self.assertEqual(last.get("collection"), self.coll)
 
 
 if __name__ == "__main__":

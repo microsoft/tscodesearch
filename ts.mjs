@@ -258,13 +258,61 @@ async function pollHealth(port, timeoutMs = 60_000, label = 'server') {
     die(`${label} did not become healthy within ${timeoutMs / 1000}s`);
 }
 
-/** Gracefully stop the tsquery_server daemon via POST /management/shutdown. */
+/** Poll until the given port stops accepting connections or we time out. */
+async function waitForPortClosed(port, timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const still_up = await new Promise(resolve => {
+            const req = http.request(
+                { host: 'localhost', port, path: '/health', method: 'GET' },
+                res => { res.resume(); resolve(true); }
+            );
+            req.on('error', () => resolve(false));
+            req.setTimeout(500, () => { req.destroy(); resolve(false); });
+            req.end();
+        });
+        if (!still_up) return;
+        await new Promise(r => setTimeout(r, 200));
+    }
+}
+
+/** Gracefully stop the tsquery_server daemon, force-killing if needed. */
 async function shutdownDaemon() {
+    // Read PID before sending shutdown so we can force-kill if needed
+    const pidFile = path.join(
+        process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? '', 'AppData', 'Local'),
+        'typesense', 'mcp_daemon.pid'
+    );
+    let daemonPid = null;
+    try { daemonPid = fs.readFileSync(pidFile, 'utf-8').trim() || null; } catch { /* no pid file */ }
+
     try {
         await apiPost('/management/shutdown', {}, 5000);
         log('Daemon shutdown sent.');
     } catch {
         log('Daemon not reachable (already stopped?).');
+        return;
+    }
+
+    // Wait up to 5s for graceful exit
+    await waitForPortClosed(API_PORT, 5_000);
+
+    // If still alive, force-kill
+    const pidFile2 = pidFile; // reuse
+    const stillUp = await new Promise(resolve => {
+        const req = http.request(
+            { host: 'localhost', port: API_PORT, path: '/health', method: 'GET' },
+            res => { res.resume(); resolve(true); }
+        );
+        req.on('error', () => resolve(false));
+        req.setTimeout(500, () => { req.destroy(); resolve(false); });
+        req.end();
+    });
+
+    if (stillUp && daemonPid) {
+        log(`Daemon did not exit — force-killing pid ${daemonPid}...`);
+        spawnSync('taskkill', ['/F', '/PID', daemonPid], { stdio: 'pipe' });
+        await waitForPortClosed(API_PORT, 5_000);
     }
 }
 
@@ -375,7 +423,8 @@ function printDockerStatus(apiBody) {
     // ── Queue stats ──────────────────────────────────────────────────────────
     if (qEnqueued > 0 || qDepth > 0) {
         const errStr = qErrors > 0 ? `  errors=${qErrors}` : '';
-        console.log(`  Queue   : depth=${fmtNum(qDepth)}  enqueued=${fmtNum(qEnqueued)}  upserted=${fmtNum(qUpserted)}  skipped=${fmtNum(qSkipped)}  deduped=${fmtNum(qDeduped)}  deleted=${fmtNum(qDeleted)}${errStr}`);
+        const throttle = queue.throttle_s > 0 ? `  throttle=${queue.throttle_s.toFixed(1)}s` : '';
+        console.log(`  Queue   : depth=${fmtNum(qDepth)}  enqueued=${fmtNum(qEnqueued)}  upserted=${fmtNum(qUpserted)}  skipped=${fmtNum(qSkipped)}  deduped=${fmtNum(qDeduped)}  deleted=${fmtNum(qDeleted)}${errStr}${throttle}`);
     }
 
     // ── Watcher ──────────────────────────────────────────────────────────────
@@ -384,7 +433,7 @@ function printDockerStatus(apiBody) {
     if (state === 'watching') {
         console.log(`  Watcher : [OK] watching`);
     } else if (state === 'paused') {
-        console.log(`  Watcher : [OK] paused (VS Code watcher active)`);
+        console.log(`  Watcher : [OK] paused`);
     } else if (state === 'processing') {
         console.log(`  Watcher : [>>] processing  queue_depth=${watchQD}`);
     } else {
@@ -404,12 +453,10 @@ async function cmdStart() {
     if (MODE === 'wsl') {
         log('Starting Typesense (WSL)...');
         wslRun('start');
-        log(`Waiting for Typesense on port ${TS_PORT}...`);
-        await pollHealth(TS_PORT, 60_000, 'Typesense');
         startTsqueryDaemon();
         log(`Waiting for management API on port ${API_PORT}...`);
         await pollHealth(API_PORT, 30_000, 'management API');
-        log('Done.');
+        log('Service is starting. Typesense may still be initializing — use \'ts status\' to check progress.');
         return;
     }
 
@@ -427,10 +474,10 @@ async function cmdStart() {
             log(`Starting existing container '${CONTAINER}'...`);
             const r = docker(['start', CONTAINER]);
             if (r.status !== 0) die('docker start failed.');
-            log(`Waiting for Typesense on port ${TS_PORT}...`);
-            await pollHealth(TS_PORT, 60_000, 'Typesense');
             startTsqueryDaemon();
+            log(`Waiting for management API on port ${API_PORT}...`);
             await pollHealth(API_PORT, 30_000, 'management API');
+            log('Service is starting. Typesense may still be initializing — use \'ts status\' to check progress.');
             return;
         }
     }
@@ -439,10 +486,10 @@ async function cmdStart() {
     const configFile = writeContainerConfig();
     const r = dockerCreate(configFile);
     if (r.status !== 0) die('docker run failed.');
-    log(`Waiting for Typesense on port ${TS_PORT}...`);
-    await pollHealth(TS_PORT, 60_000, 'Typesense');
     startTsqueryDaemon();
+    log(`Waiting for management API on port ${API_PORT}...`);
     await pollHealth(API_PORT, 30_000, 'management API');
+    log('Service is starting. Typesense may still be initializing — use \'ts status\' to check progress.');
 }
 
 async function cmdStop() {
@@ -459,34 +506,8 @@ async function cmdStop() {
 }
 
 async function cmdRestart() {
-    if (MODE === 'wsl') {
-        await cmdStop();
-        await cmdStart();
-        return;
-    }
-
-    const info = dockerCapture(['info', '--format', '{{.ID}}']);
-    if (info.status !== 0) die('Docker is not running. Start Docker Desktop and try again.');
-
-    ensureImage();
-
-    if (containerExists()) {
-        // Normal restart: stop + start, preserving the container
-        log(`Restarting container '${CONTAINER}'...`);
-        docker(['stop', CONTAINER], { silent: true });
-        const r = docker(['start', CONTAINER]);
-        if (r.status !== 0) die('docker start failed.');
-        log('Done.');
-        return;
-    } else {
-        // No container — treat as start
-        const configFile = writeContainerConfig();
-        log(`Creating container '${CONTAINER}'...`);
-        const r = dockerCreate(configFile);
-        if (r.status !== 0) die('docker run failed.');
-    }
-
-    await waitForReady();
+    await cmdStop();
+    await cmdStart();
 }
 
 async function cmdStatus() {

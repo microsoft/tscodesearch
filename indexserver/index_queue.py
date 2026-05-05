@@ -19,6 +19,7 @@ MTIME_DELETE (None) as a sentinel — mtime is irrelevant for deletions.
 from __future__ import annotations
 
 import os
+import time
 import threading
 from collections import OrderedDict
 
@@ -39,7 +40,7 @@ class _Fence:
 class IndexQueue:
     """Thread-safe, deduplicating batching queue for Typesense index writes."""
 
-    def __init__(self, batch_size: int = 50):
+    def __init__(self, batch_size: int = 20):
         self._batch_size = batch_size
         self._cond  = threading.Condition()
         # Ordered so the worker drains FIFO.  Duplicate keys update in-place,
@@ -58,6 +59,7 @@ class IndexQueue:
         self._n_skipped   = 0
         self._n_errors    = 0
         self._n_by_reason: dict[str, int] = {}
+        self._throttle_s: float = 0.0   # inter-batch pause; grows on errors, shrinks on success
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -163,13 +165,14 @@ class IndexQueue:
         """Snapshot of queue counters."""
         with self._cond:
             result = {
-                "depth":     len(self._items),
-                "enqueued":  self._n_enqueued,
-                "deduped":   self._n_deduped,
-                "upserted":  self._n_upserted,
-                "deleted":   self._n_deleted,
-                "skipped":   self._n_skipped,
-                "errors":    self._n_errors,
+                "depth":      len(self._items),
+                "enqueued":   self._n_enqueued,
+                "deduped":    self._n_deduped,
+                "upserted":   self._n_upserted,
+                "deleted":    self._n_deleted,
+                "skipped":    self._n_skipped,
+                "errors":     self._n_errors,
+                "throttle_s": self._throttle_s,
             }
             if self._n_by_reason:
                 result["by_reason"] = dict(self._n_by_reason)
@@ -194,7 +197,13 @@ class IndexQueue:
                     else:
                         regular.append(item)
                 if regular:
-                    self._flush(regular)
+                    ok = self._flush(regular)
+                    if ok:
+                        self._throttle_s = max(self._throttle_s - 0.5, 0.0)
+                    else:
+                        self._throttle_s = min(self._throttle_s + 2.0, 10.0)
+                    if self._throttle_s > 0:
+                        time.sleep(self._throttle_s)
             else:
                 with self._cond:
                     if not self._items and not self._stop.is_set():
@@ -209,8 +218,8 @@ class IndexQueue:
                 batch.append(item)
             return batch
 
-    def _flush(self, batch: list) -> None:
-        """Build documents and write to Typesense."""
+    def _flush(self, batch: list) -> bool:
+        """Build documents and write to Typesense. Returns True if all writes succeeded."""
         upserts: dict[str, list] = {}
         deletes: dict[str, list] = {}
         n_skipped = 0
@@ -246,16 +255,20 @@ class IndexQueue:
             with self._cond:
                 self._n_skipped += n_skipped
 
+        had_errors = False
         for coll, docs in upserts.items():
-            try:
-                self._client.collections[coll].documents.import_(docs, {"action": "upsert"})
-                with self._cond:
-                    self._n_upserted += len(docs)
-                print(f"[index-queue] +{len(docs)} → {coll}", flush=True)
-            except Exception as e:
-                with self._cond:
-                    self._n_errors += len(docs)
-                print(f"[index-queue] upsert error ({coll}): {e}", flush=True)
+            while True:
+                try:
+                    self._client.collections[coll].documents.import_(docs, {"action": "upsert"})
+                    with self._cond:
+                        self._n_upserted += len(docs)
+                    print(f"[index-queue] +{len(docs)} → {coll}", flush=True)
+                    break
+                except Exception as e:
+                    had_errors = True
+                    delay = max(self._throttle_s, 1.0)
+                    print(f"[index-queue] upsert error ({coll}), retrying in {delay:.1f}s: {e}", flush=True)
+                    time.sleep(delay)
 
         for coll, ids in deletes.items():
             n = 0
@@ -269,3 +282,5 @@ class IndexQueue:
                 with self._cond:
                     self._n_deleted += n
                 print(f"[index-queue] -{n} from {coll}", flush=True)
+
+        return not had_errors

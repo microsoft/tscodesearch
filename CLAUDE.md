@@ -225,8 +225,6 @@ node run_tests.mjs
 
 **Watcher observer selection.** `watcher.py` uses `watchdog.observers.Observer` on Windows (ReadDirectoryChangesW, ~1 s latency) and `PollingObserver` on Linux/WSL (inotify doesn't fire for NTFS `/mnt/` changes). Don't hardcode either.
 
-**`vscode-codesearch/src/watcher.ts` is a stub.** It only provides `apiPost`/`apiGet` HTTP helpers. File watching is owned by `tsquery_server.py`. No `vscode.FileSystemWatcher`, no `/watcher/pause` calls.
-
 **`entrypoint.sh` only starts Typesense.** The management API (PORT+1) is always `tsquery_server.py` running on Windows.
 
 **`entrypoint.sh --background` vs `--background --disown`.** Without `--disown`, daemons die when the WSL session ends (intentional for test teardown). With `--disown`, they survive (used by `ts start`).

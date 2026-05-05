@@ -127,25 +127,27 @@ else
     echo "[entrypoint] Typesense started (pid=$TYPESENSE_PID)"
 fi
 
-# ── Wait for Typesense health ─────────────────────────────────────────────────
+# ── Wait for Typesense health (foreground/Docker only) ────────────────────────
 
-echo -n "[entrypoint] Waiting for Typesense"
-TS_HEALTH_URL="http://127.0.0.1:${CODESEARCH_PORT}/health"
-MAX_WAIT=60
-WAITED=0
-while [ $WAITED -lt $MAX_WAIT ]; do
-    if "$PYTHON3" "${APP_ROOT}/scripts/http_ok.py" "$TS_HEALTH_URL" 2>/dev/null; then
-        echo " ready"
-        break
+if [ "$BACKGROUND" = "0" ]; then
+    echo -n "[entrypoint] Waiting for Typesense"
+    TS_HEALTH_URL="http://127.0.0.1:${CODESEARCH_PORT}/health"
+    MAX_WAIT=60
+    WAITED=0
+    while [ $WAITED -lt $MAX_WAIT ]; do
+        if "$PYTHON3" "${APP_ROOT}/scripts/http_ok.py" "$TS_HEALTH_URL" 2>/dev/null; then
+            echo " ready"
+            break
+        fi
+        echo -n "."
+        sleep 1
+        WAITED=$((WAITED + 1))
+    done
+    if [ $WAITED -ge $MAX_WAIT ]; then
+        echo ""
+        echo "[entrypoint] ERROR: Typesense did not become healthy within ${MAX_WAIT}s"
+        exit 1
     fi
-    echo -n "."
-    sleep 1
-    WAITED=$((WAITED + 1))
-done
-if [ $WAITED -ge $MAX_WAIT ]; then
-    echo ""
-    echo "[entrypoint] ERROR: Typesense did not become healthy within ${MAX_WAIT}s"
-    exit 1
 fi
 
 # ── Foreground mode: handle signals and keep alive (Docker) ───────────────────
