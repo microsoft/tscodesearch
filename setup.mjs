@@ -122,36 +122,39 @@ try {
   console.log(`  Set tscodesearch.repoPath manually to ${REPO}`);
 }
 
-// [2] Client venv — mcp_server.py + query_single_file (Windows Python, no WSL required)
+// [2] Client venv — mcp_server.py + query_single_file (managed Python via uv, no system Python required)
 step(2, 'Creating client venv (.client-venv)');
 {
   const clientVenv = join(REPO, '.client-venv');
   const pyExe      = join(clientVenv, 'Scripts', 'python.exe');
-  const pipExe     = join(clientVenv, 'Scripts', 'pip.exe');
   const reqs       = join(REPO, 'requirements-client.txt');
+  const PYTHON_VER = '3.12';
 
-  function findPython() {
-    for (const cmd of ['py', 'python', 'python3']) {
-      const v = capture(cmd, ['--version']);
-      if (v && v.startsWith('Python 3')) return cmd;
-    }
-    return null;
+  if (!commandExists('uv')) {
+    console.log('  uv not found — installing via winget...');
+    if (run('winget', ['install', '--id', 'astral-sh.uv', '-e', '--silent']) !== 0)
+      die('uv install failed. Install uv manually (https://docs.astral.sh/uv/) then re-run setup.');
+    if (!commandExists('uv'))
+      die('uv installed but not yet in PATH — open a new terminal and re-run setup.');
   }
 
-  if (existsSync(pyExe)) {
-    console.log('  Already exists, updating packages...');
-    runOrDie(pipExe, ['install', '--quiet', '--upgrade', '-r', reqs], 'pip install (client)');
-  } else {
-    const python = findPython();
-    if (!python) {
-      console.log('  WARNING: Python 3 not found in PATH — skipping client venv.');
-      console.log('  Install Python 3.9+ and re-run setup to enable query_single_file.');
-    } else {
-      runOrDie(python, ['-m', 'venv', clientVenv], 'python -m venv');
-      runOrDie(pipExe, ['install', '--quiet', '--upgrade', '-r', reqs], 'pip install (client)');
-      console.log('  Done.');
-    }
+  runOrDie('uv', ['python', 'install', PYTHON_VER], `uv python install ${PYTHON_VER}`);
+
+  const needsCreate = !existsSync(pyExe) || (() => {
+    const v = capture(pyExe, ['--version']);
+    const m = v?.match(/^Python 3\.(\d+)/);
+    return !m || parseInt(m[1], 10) < 10;
+  })();
+
+  if (needsCreate) {
+    if (existsSync(pyExe)) console.log('  Python version too old — recreating venv...');
+    runOrDie('uv', ['venv', '--python', PYTHON_VER, clientVenv], 'uv venv');
   }
+
+  console.log(needsCreate ? '  Installing packages...' : '  Updating packages...');
+  runOrDie('uv', ['pip', 'install', '--quiet', '--upgrade', '-r', reqs],
+    'uv pip install', { env: { ...process.env, VIRTUAL_ENV: clientVenv } });
+  console.log('  Done.');
 }
 
 // [3] WSL environment (wsl mode only)

@@ -10,10 +10,8 @@ file is enqueued twice before the worker picks it up, the second enqueue
 overwrites the action in-place (last event wins) without adding a duplicate.
 
 mtime tracking: each upsert item carries the file's mtime (int seconds) at
-enqueue time.  At flush time the stored Typesense mtime is compared against
-the file's current mtime; if they match the upsert is skipped (tree-sitter
-parsing and the Typesense write are both avoided).  Delete items carry
-MTIME_DELETE (None) as a sentinel — mtime is irrelevant for deletions.
+enqueue time.  Delete items carry MTIME_DELETE (None) as a sentinel — mtime
+is irrelevant for deletions.
 """
 
 from __future__ import annotations
@@ -22,6 +20,7 @@ import os
 import time
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 
 from indexserver.indexer import build_document, file_id as _file_id
 
@@ -39,7 +38,7 @@ class _Fence:
 class IndexQueue:
     """Thread-safe, deduplicating batching queue for Typesense index writes."""
 
-    def __init__(self, batch_size: int = 20, max_file_bytes: int = 3 * 1024 * 1024):
+    def __init__(self, batch_size: int = 50, max_file_bytes: int = 3 * 1024 * 1024):
         self._batch_size = batch_size
         self._max_file_bytes = max_file_bytes
         self._cond  = threading.Condition()
@@ -56,10 +55,11 @@ class IndexQueue:
         self._n_deduped   = 0
         self._n_upserted  = 0
         self._n_deleted   = 0
-        self._n_skipped   = 0
         self._n_errors    = 0
         self._n_by_reason: dict[str, int] = {}
         self._throttle_s: float = 0.0   # inter-batch pause; grows on errors, shrinks on success
+        self._t_parse_total: float = 0.0
+        self._t_index_total: float = 0.0
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -170,9 +170,10 @@ class IndexQueue:
                 "deduped":    self._n_deduped,
                 "upserted":   self._n_upserted,
                 "deleted":    self._n_deleted,
-                "skipped":    self._n_skipped,
                 "errors":     self._n_errors,
                 "throttle_s": self._throttle_s,
+                "parse_s":    round(self._t_parse_total, 2),
+                "index_s":    round(self._t_index_total, 2),
             }
             if self._n_by_reason:
                 result["by_reason"] = dict(self._n_by_reason)
@@ -222,53 +223,68 @@ class IndexQueue:
         """Build documents and write to Typesense. Returns True if all writes succeeded."""
         upserts: dict[str, list] = {}
         deletes: dict[str, list] = {}
-        n_skipped = 0
+        max_bytes = self._max_file_bytes
 
-        for full_path, rel, collection, action, mtime in batch:
-            stored_id = _file_id(rel)
+        def _parse_one(item):
+            full_path, rel, collection, action, _mtime = item
             if action == "delete":
-                deletes.setdefault(collection, []).append(stored_id)
-            else:
-                try:
-                    stat = os.stat(full_path)
-                    if stat.st_size > self._max_file_bytes:
-                        continue
-                    current_mtime = int(stat.st_mtime)
+                return ("delete", collection, _file_id(rel))
+            try:
+                if os.path.getsize(full_path) > max_bytes:
+                    return None
+                doc = build_document(full_path, rel)
+                if doc:
+                    return ("upsert", collection, doc)
+            except OSError:
+                pass
+            return None
 
-                    # Skip upsert if file hasn't changed since it was last indexed.
-                    if mtime is not None and current_mtime == mtime:
-                        try:
-                            stored = self._client.collections[collection].documents[stored_id].retrieve()
-                            if stored.get("mtime") == mtime:
-                                n_skipped += 1
-                                continue
-                        except Exception:
-                            pass  # doc absent or fetch failed — proceed with upsert
+        t_parse_start = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for result in pool.map(_parse_one, batch):
+                if result is None:
+                    continue
+                kind, coll, payload = result
+                if kind == "delete":
+                    deletes.setdefault(coll, []).append(payload)
+                else:
+                    upserts.setdefault(coll, []).append(payload)
+        t_parse = time.perf_counter() - t_parse_start
 
-                    doc = build_document(full_path, rel)
-                    if doc:
-                        upserts.setdefault(collection, []).append(doc)
-                except OSError:
-                    pass
-
-        if n_skipped:
-            with self._cond:
-                self._n_skipped += n_skipped
+        n_tried   = len(batch)
+        n_built   = sum(len(v) for v in upserts.values())
+        n_skipped = n_tried - n_built - sum(len(v) for v in deletes.values())
 
         had_errors = False
+        t_index = 0.0
         for coll, docs in upserts.items():
             while not self._stop.is_set():
+                t0 = time.perf_counter()
                 try:
-                    self._client.collections[coll].documents.import_(docs, {"action": "upsert"})
-                    with self._cond:
-                        self._n_upserted += len(docs)
-                    print(f"[index-queue] +{len(docs)} → {coll}", flush=True)
-                    break
+                    results = self._client.collections[coll].documents.import_(docs, {"action": "upsert"})
                 except Exception as e:
+                    t_index += time.perf_counter() - t0
                     had_errors = True
                     delay = max(self._throttle_s, 1.0)
                     print(f"[index-queue] upsert error ({coll}), retrying in {delay:.1f}s: {e}", flush=True)
                     time.sleep(delay)
+                    continue
+                t_index += time.perf_counter() - t0
+                # Import call returned — count results and break regardless of print errors.
+                n_ok   = sum(1 for r in results if r.get("success"))
+                n_fail = len(results) - n_ok
+                with self._cond:
+                    self._n_upserted += n_ok
+                if n_fail:
+                    first_err = next((r.get("error") for r in results if not r.get("success")), None)
+                    print(f"[index-queue] import {coll}: {n_ok} ok, {n_fail} failed -- first error: {first_err}", flush=True)
+                print(
+                    f"[index-queue] +{n_ok} -> {coll}"
+                    f"  parse={t_parse:.2f}s index={t_index:.2f}s"
+                    f"  ({n_built} docs)",
+                    flush=True,
+                )
+                break
 
         for coll, ids in deletes.items():
             n = 0
@@ -283,4 +299,7 @@ class IndexQueue:
                     self._n_deleted += n
                 print(f"[index-queue] -{n} from {coll}", flush=True)
 
+        with self._cond:
+            self._t_parse_total += t_parse
+            self._t_index_total += t_index
         return not had_errors

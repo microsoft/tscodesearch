@@ -24,11 +24,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import time
-import urllib.request
 
 _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
@@ -38,35 +36,10 @@ from indexserver.config import to_native_path
 from indexserver.indexer import (
     walk_source_files, file_id,
     get_client, ensure_collection, index_file_list,
+    export_index_map,
 )
 
 BATCH_SIZE = 50
-
-
-def _export_index(collection: str, cfg) -> dict[str, int]:
-    """Bulk-export the collection and return {doc_id: mtime_int}.
-
-    Uses the Typesense streaming export endpoint so large collections are not
-    buffered entirely in memory.
-    """
-    url = f"http://{cfg.host}:{cfg.port}/collections/{collection}/documents/export"
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": cfg.api_key})
-    id_mtime: dict[str, int] = {}
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            for raw_line in r:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                try:
-                    doc = json.loads(line)
-                    if "id" in doc:
-                        id_mtime[doc["id"]] = int(doc.get("mtime", 0))
-                except (json.JSONDecodeError, ValueError):
-                    pass
-    except Exception as e:
-        print(f"[verifier] WARNING: index export failed: {e}", flush=True)
-    return id_mtime
 
 
 def _fmt_time(seconds: float) -> str:
@@ -115,7 +88,7 @@ def check_ready(cfg, src_root: str | None = None,
     error_msg = ""
 
     try:
-        index_map = _export_index(coll, cfg)
+        index_map = export_index_map(coll, cfg)
     except Exception as e:
         return {
             "ready": False, "poll_ok": False, "index_ok": False,
@@ -232,7 +205,7 @@ def run_verify(cfg, src_root: str | None = None,
     progress["phase"] = "collecting: exporting index"
     if on_progress: on_progress(progress)
 
-    index_map = _export_index(coll_name, cfg)
+    index_map = export_index_map(coll_name, cfg)
     progress["index_docs"] = len(index_map)
     print(f"[verifier]   {len(index_map):,} documents in index", flush=True)
 
