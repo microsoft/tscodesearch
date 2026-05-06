@@ -320,7 +320,7 @@ class TestIndexQueue(unittest.TestCase):
 
     def test_stats_has_expected_keys(self):
         stats = self.queue.stats()
-        for key in ("depth", "enqueued", "deduped", "upserted", "deleted", "skipped", "errors"):
+        for key in ("depth", "enqueued", "deduped", "upserted", "deleted", "errors"):
             self.assertIn(key, stats, f"stats() missing key: {key}")
 
     # ── worker / flush behavior ────────────────────────────────────────────────
@@ -332,24 +332,6 @@ class TestIndexQueue(unittest.TestCase):
         docs = self.mock_client.collections[self.COLL].documents.upserted
         self.assertGreater(len(docs), 0)
         self.assertEqual(self.queue.stats()["upserted"], len(docs))
-
-    def test_worker_skips_unchanged_file(self):
-        """File whose stored mtime == current mtime must not be re-upserted."""
-        from indexserver.indexer import file_id as _file_id
-        full, rel = self._file("Skip.cs", "class Skip {}")
-        mtime = int(os.stat(full).st_mtime)
-        doc_id = _file_id(rel)
-        # Pre-populate mock with matching mtime so the skip condition fires
-        self.mock_client.collections[self.COLL].documents._stored[doc_id] = {"mtime": mtime}
-        initial_count = len(self.mock_client.collections[self.COLL].documents.upserted)
-
-        self.queue.enqueue(full, rel, self.COLL)
-        self._drain()
-
-        final_count = len(self.mock_client.collections[self.COLL].documents.upserted)
-        self.assertEqual(final_count, initial_count,
-                         "Upsert should be skipped when mtime matches stored value")
-        self.assertGreater(self.queue.stats()["skipped"], 0)
 
     def test_worker_deletes_from_typesense(self):
         from indexserver.indexer import file_id as _file_id

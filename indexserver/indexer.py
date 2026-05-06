@@ -7,12 +7,14 @@ Usage:
     python indexer.py --src /path/to/src --collection my_collection --resethard
 """
 
+import json
 import os
 import re
 import sys
 import time
 import hashlib
 import argparse
+import urllib.request
 from dataclasses import dataclass
 
 # Allow running as a standalone script: add claudeskills/ to path
@@ -591,6 +593,37 @@ def index_file_list(
     return total, errors
 
 
+def export_index_map(collection: str, cfg) -> dict[str, int]:
+    """Fetch {doc_id: mtime} for every document in *collection*.
+
+    Uses the streaming export endpoint with include_fields=id,mtime so
+    Typesense serialises only those two fields per line, keeping the
+    response compact for large collections.  Returns an empty dict on
+    any error (caller treats the index as empty and re-indexes everything).
+    """
+    url = (
+        f"http://{cfg.host}:{cfg.port}/collections/{collection}/documents/export"
+        "?include_fields=id,mtime"
+    )
+    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": cfg.api_key})
+    id_mtime: dict[str, int] = {}
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            for raw_line in r:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    doc = json.loads(line)
+                    if "id" in doc:
+                        id_mtime[doc["id"]] = int(doc.get("mtime", 0))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+    except Exception as e:
+        print(f"[indexer] WARNING: index export failed: {e}", flush=True)
+    return id_mtime
+
+
 def walk_and_enqueue(
     src_root: str,
     collection: str,
@@ -599,21 +632,48 @@ def walk_and_enqueue(
     resethard: bool = False,
     stop_event=None,
     extensions=None,
-) -> tuple[int, int]:
-    """Walk *src_root* and feed every source file into *queue*.
+) -> tuple[int, int, int]:
+    """Walk *src_root*, enqueue changed files, and delete orphans from the index.
 
-    Calls ensure_collection() first (dropping the collection when resethard=True).
-    Returns (new_entries, deduped_entries).
+    1. Exports {doc_id: mtime} from the current index (skipped when resethard
+       is True since the collection is dropped and recreated first).
+    2. Walks the filesystem.  Files whose mtime already matches the index are
+       skipped — no parse, no queue entry.
+    3. After the walk, any doc_id that was in the index but not seen on disk is
+       deleted synchronously (orphan cleanup).
+
+    Returns (new_entries, deduped_entries, orphans_deleted).
     """
     from indexserver.config import to_native_path
     src_root = to_native_path(src_root)
     client = get_client(cfg)
     ensure_collection(client, collection, resethard=resethard)
-    return queue.enqueue_bulk(
-        walk_source_files(src_root, cfg, extensions=extensions),
-        collection=collection,
-        stop_event=stop_event,
-    )
+
+    index_map: dict[str, int] = {} if resethard else export_index_map(collection, cfg)
+    remaining = set(index_map)
+    n_new = n_dedup = 0
+
+    for sf in walk_source_files(src_root, cfg, extensions=extensions):
+        if stop_event and stop_event.is_set():
+            break
+        doc_id = file_id(sf.rel)
+        remaining.discard(doc_id)
+        if index_map.get(doc_id) == sf.mtime:
+            continue  # already indexed at this mtime
+        if queue.enqueue(sf.full_path, sf.rel, collection, mtime=sf.mtime):
+            n_new += 1
+        else:
+            n_dedup += 1
+
+    n_deleted = 0
+    for doc_id in remaining:
+        try:
+            client.collections[collection].documents[doc_id].delete()
+            n_deleted += 1
+        except Exception:
+            pass
+
+    return n_new, n_dedup, n_deleted
 
 
 def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False, collection=None):

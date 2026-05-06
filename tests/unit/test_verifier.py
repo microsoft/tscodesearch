@@ -1,7 +1,7 @@
 """
-Unit tests for the verifier: _export_index and run_verify.
+Unit tests for the verifier: export_index_map and run_verify.
 
-TestExportIndex      — unit tests for _export_index (no server needed, mocks HTTP)
+TestExportIndex      — unit tests for export_index_map (no server needed, mocks HTTP)
 TestRunVerifyUnit    — unit tests for run_verify (no server, mock index_file_list)
 
 Integration tests (require Typesense) are in tests/integration/test_verifier.py.
@@ -20,8 +20,8 @@ from unittest.mock import patch, MagicMock
 
 from tests.helpers import _FOO_CS, _BAR_CS
 from indexserver.config import load_config as _load_config
-from indexserver.indexer import file_id
-from indexserver.verifier import _export_index, run_verify
+from indexserver.indexer import file_id, export_index_map
+from indexserver.verifier import run_verify
 
 _cfg = _load_config()
 
@@ -29,7 +29,7 @@ _cfg = _load_config()
 # ── TestExportIndex ───────────────────────────────────────────────────────────
 
 class TestExportIndex(unittest.TestCase):
-    """Unit tests for _export_index — no Typesense server needed."""
+    """Unit tests for export_index_map — no Typesense server needed."""
 
     def _make_response(self, docs: list[dict]) -> io.BytesIO:
         """Build a fake JSONL HTTP response body."""
@@ -42,13 +42,13 @@ class TestExportIndex(unittest.TestCase):
         mock_cm = MagicMock()
         mock_cm.__enter__ = lambda s: buf
         mock_cm.__exit__ = MagicMock(return_value=False)
-        return patch("indexserver.verifier.urllib.request.urlopen",
+        return patch("indexserver.indexer.urllib.request.urlopen",
                      return_value=mock_cm)
 
     def test_returns_id_mtime_dict(self):
         docs = [{"id": "abc", "mtime": 1700000000}]
         with self._patch_urlopen(docs):
-            result = _export_index("test_coll", _cfg)
+            result = export_index_map("test_coll", _cfg)
         self.assertEqual(result, {"abc": 1700000000})
 
     def test_multiple_docs(self):
@@ -58,38 +58,38 @@ class TestExportIndex(unittest.TestCase):
             {"id": "c", "mtime": 300},
         ]
         with self._patch_urlopen(docs):
-            result = _export_index("test_coll", _cfg)
+            result = export_index_map("test_coll", _cfg)
         self.assertEqual(len(result), 3)
         self.assertEqual(result["b"], 200)
 
     def test_missing_mtime_defaults_to_zero(self):
         docs = [{"id": "no_mtime"}]
         with self._patch_urlopen(docs):
-            result = _export_index("test_coll", _cfg)
+            result = export_index_map("test_coll", _cfg)
         self.assertEqual(result["no_mtime"], 0)
 
     def test_doc_without_id_skipped(self):
         docs = [{"content": "no id here"}, {"id": "valid", "mtime": 42}]
         with self._patch_urlopen(docs):
-            result = _export_index("test_coll", _cfg)
+            result = export_index_map("test_coll", _cfg)
         self.assertEqual(list(result.keys()), ["valid"])
 
     def test_empty_response_returns_empty_dict(self):
         with self._patch_urlopen([]):
-            result = _export_index("test_coll", _cfg)
+            result = export_index_map("test_coll", _cfg)
         self.assertEqual(result, {})
 
     def test_network_error_returns_empty_dict(self):
-        with patch("indexserver.verifier.urllib.request.urlopen",
+        with patch("indexserver.indexer.urllib.request.urlopen",
                    side_effect=OSError("connection refused")):
-            result = _export_index("test_coll", _cfg)
+            result = export_index_map("test_coll", _cfg)
         self.assertEqual(result, {})
 
 
 # ── TestRunVerifyUnit ─────────────────────────────────────────────────────────
 
 class TestRunVerifyUnit(unittest.TestCase):
-    """Unit tests for run_verify logic — no server; mock _export_index and index_file_list."""
+    """Unit tests for run_verify logic — no server; mock export_index_map and index_file_list."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="ts_verify_unit_")
@@ -110,7 +110,7 @@ class TestRunVerifyUnit(unittest.TestCase):
         return int(os.stat(os.path.join(self.tmpdir, rel)).st_mtime)
 
     def _run_verify_mocked(self, index_map: dict, delete_orphans: bool = True):
-        """Run run_verify with _export_index and index_file_list mocked."""
+        """Run run_verify with export_index_map and index_file_list mocked."""
         indexed = []
         deleted = []
 
@@ -123,7 +123,7 @@ class TestRunVerifyUnit(unittest.TestCase):
                 on_progress(len(pairs), 0)
             return len(pairs), 0
 
-        with patch("indexserver.verifier._export_index", return_value=index_map), \
+        with patch("indexserver.verifier.export_index_map", return_value=index_map), \
              patch("indexserver.verifier.index_file_list", fake_index_file_list), \
              patch("indexserver.verifier.get_client", return_value=MagicMock()) as mock_client:
             # Patch delete on the mock client

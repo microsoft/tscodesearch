@@ -339,19 +339,31 @@ async function shutdownDaemon() {
     }
 }
 
-/** Start the tsquery_server daemon on Windows, detached. */
+/** Absolute path to the daemon log file (%LOCALAPPDATA%\typesense\tsquery_server.log). */
+function daemonLogFile() {
+    const base = process.env.LOCALAPPDATA
+        ?? path.join(process.env.USERPROFILE ?? '', 'AppData', 'Local');
+    return path.join(base, 'typesense', 'tsquery_server.log');
+}
+
+/** Start the tsquery_server daemon on Windows, detached, logging to daemonLogFile(). */
 function startTsqueryDaemon() {
     const py = clientVenvPython();
     if (!fs.existsSync(py)) {
         die(`.client-venv not found at ${py} — run setup.cmd first`);
     }
+    const logPath = daemonLogFile();
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    const logFd = fs.openSync(logPath, 'a');
     const child = spawn(py, [path.join(__dirname, 'tsquery_server.py'), '--daemon'], {
         detached: true,
-        stdio: 'ignore',
+        stdio: ['ignore', logFd, logFd],
         windowsHide: true,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
     });
     child.unref();
-    log('tsquery_server daemon started (detached).');
+    fs.closeSync(logFd);
+    log(`tsquery_server daemon started (detached). Log: ${logPath}`);
 }
 
 // ── Status display (Docker mode) ──────────────────────────────────────────────
@@ -624,12 +636,25 @@ async function cmdVerify(args) {
 
 function cmdLog(args) {
     if (MODE === 'wsl') {
-        // In WSL mode the daemon log goes to the indexserver-venv log dir on WSL.
-        // Delegate to service.py which knows the right paths.
+        const n = args.lines ?? 40;
+        if (!args.indexer && !args.error) {
+            // Show the Windows daemon log (tsquery_server + index-queue output).
+            const logPath = daemonLogFile();
+            if (fs.existsSync(logPath)) {
+                const lines = fs.readFileSync(logPath, 'utf-8').split('\n');
+                const tail  = lines.slice(-n).join('\n');
+                console.log(`=== daemon log (${logPath}) ===`);
+                console.log(tail);
+            } else {
+                console.log(`(daemon log not found — run 'ts restart' to start logging)`);
+            }
+        }
+        // Also show Typesense / indexer log from WSL via service.py.
         const extra = [];
         if (args.indexer)  extra.push('--indexer');
         if (args.error)    extra.push('--error');
-        extra.push('-n', String(args.lines ?? 40));
+        extra.push('-n', String(n));
+        console.log('\n=== WSL / Typesense log ===');
         wslRun('log', extra);
         return;
     }
