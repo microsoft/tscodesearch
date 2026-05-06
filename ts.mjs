@@ -21,6 +21,8 @@
  *   root --remove NAME     Remove a root from config.json
  *   build                  Docker only: build the Docker image
  *   setup                  Docker: build image if needed + start container
+ *   diag                   WSL only: run startup diagnostics (binary, config,
+ *                          port, RocksDB lock, HTTP health)
  */
 
 import fs from 'fs';
@@ -551,12 +553,17 @@ async function cmdStop() {
 }
 
 async function cmdRestart() {
-    // Restart only the management daemon — Typesense keeps running.
+    // Restart the management daemon. Typesense is left running if it is already up.
+    // In WSL mode we also ensure Typesense is started if it went down (e.g. after a
+    // WSL session restart), so the new daemon does not get stuck in its loading loop.
     await shutdownDaemon();
+    if (MODE === 'wsl') {
+        wslRun(['--background', '--disown']);
+    }
     startTsqueryDaemon();
     log(`Waiting for management API on port ${API_PORT}...`);
     await pollHealth(API_PORT, 30_000, 'management API');
-    log('Daemon restarted. Typesense was not restarted.');
+    log('Daemon restarted.');
 }
 
 async function cmdStatus() {
@@ -691,6 +698,14 @@ function cmdLog(args) {
     docker(dockerArgs);
 }
 
+async function cmdDiag() {
+    if (MODE !== 'wsl') {
+        log('diag is only available in WSL mode.');
+        return;
+    }
+    wslRun(['--diag']);
+}
+
 function cmdBuild() {
     const dockerfile = path.join(__dirname, 'docker', 'Dockerfile');
     if (!fs.existsSync(dockerfile)) die(`Dockerfile not found: ${dockerfile}`);
@@ -795,6 +810,7 @@ Commands:
   root --remove NAME     Remove a root from config.json
   build                  Docker only: build the Docker image
   setup                  Build image if needed, then start
+  diag                   WSL only: diagnose startup problems
 `.trim());
     process.exit(0);
 }
@@ -859,6 +875,7 @@ const commands = {
     root:    cmdRoot,
     build:   () => cmdBuild(),
     setup:   cmdSetup,
+    diag:    cmdDiag,
 };
 
 if (!commands[args.cmd]) {
