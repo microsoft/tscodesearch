@@ -210,9 +210,8 @@ if [ "$DIAG" = "1" ]; then
         if [ -n "$_LOCK_HOLDER" ]; then
             _ok "Lock held by: $_LOCK_HOLDER  (Typesense is running)"
         else
-            _fail "Stale lock file: $_LOCK"
-            _info "This will prevent Typesense from starting."
-            _info "Fix: rm '$_LOCK'"
+            _ok "Lock file present, no current holder (normal post-shutdown state)"
+            _info "RocksDB will reacquire the fcntl lock on next start — does not block startup."
         fi
     fi
 
@@ -233,9 +232,8 @@ if [ "$DIAG" = "1" ]; then
                     _info "Fix: rm '$TYPESENSE_PID_FILE'"
                 fi
             else
-                _fail "Stale PID file: pid=$_DIAG_PID is not running"
-                _info "Typesense crashed or was killed."
-                _info "Fix: rm '$TYPESENSE_PID_FILE'  (or just run: ts start)"
+                _ok "PID file present, pid=$_DIAG_PID is not running (typesense was killed or crashed)"
+                _info "Does not block startup — 'ts start' will overwrite the PID file."
             fi
         else
             _fail "PID file contains invalid value: '$_DIAG_PID'"
@@ -407,6 +405,30 @@ else
     [ "$BACKGROUND" = "1" ] && [ "$DISOWN" = "1" ] && disown "$TYPESENSE_PID"
     echo "$TYPESENSE_PID" > "$TYPESENSE_PID_FILE"
     echo "[entrypoint] Typesense started (pid=$TYPESENSE_PID)"
+
+    # Watch for early crash in background mode (foreground does its own health wait).
+    # nohup returns instantly even if the binary dies, so a stable pid is meaningless
+    # without a brief survival check. If it dies, dump the log so the user sees why.
+    if [ "$BACKGROUND" = "1" ]; then
+        for _ in 1 2 3; do
+            sleep 1
+            if ! kill -0 "$TYPESENSE_PID" 2>/dev/null; then
+                echo "[entrypoint] ERROR: Typesense exited during startup (pid=$TYPESENSE_PID)"
+                # glog tags error/fatal lines with E/F prefix — those are the root cause.
+                # The tail then provides shutdown context for cases without glog output.
+                _ERR_LINES=$(grep -E '^[EF][0-9]' "$TYPESENSE_LOG" 2>/dev/null | head -10)
+                if [ -n "$_ERR_LINES" ]; then
+                    echo "[entrypoint] ---- error/fatal lines from $TYPESENSE_LOG ----"
+                    echo "$_ERR_LINES"
+                fi
+                echo "[entrypoint] ---- last 30 lines of $TYPESENSE_LOG ----"
+                tail -n 30 "$TYPESENSE_LOG" 2>/dev/null || echo "(log empty or missing)"
+                echo "[entrypoint] ---- end of log ----"
+                rm -f "$TYPESENSE_PID_FILE"
+                exit 1
+            fi
+        done
+    fi
 fi
 
 # ── Wait for Typesense health (foreground/Docker only) ────────────────────────
