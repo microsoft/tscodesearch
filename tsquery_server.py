@@ -101,6 +101,7 @@ _sync_stop:     threading.Event | None = None
 _sync_progress: dict = {}
 
 _schema_status: dict = {}
+_synced_roots: dict[str, str] = {}   # root_name → ISO timestamp of last successful sync
 _ts_client = None
 _ts_healthy:      bool  = True
 _ts_last_checked: float = 0.0
@@ -255,12 +256,15 @@ def _collections_status() -> dict:
             except Exception:
                 pass
         col_live_exists = ndocs is not None
+        synced_at = _synced_roots.get(root.name)
         collections[root.name] = {
             "collection":        root.collection,
             "num_documents":     ndocs,
             "collection_exists": col_live_exists,
             "schema_ok":         col_live_exists and schema.get("ok", False),
             "schema_warnings":   schema.get("warnings", []) if col_live_exists else [],
+            "synced":            bool(synced_at),
+            "synced_at":         synced_at,
         }
     return collections
 
@@ -282,13 +286,20 @@ def _ts_health() -> bool:
 
 def _restart_typesense() -> None:
     print("[tsquery_server] Restarting Typesense…", flush=True)
-    mode      = _CFG_EXTRA.get("mode", "docker")
-    venv_py   = str(_HOME / ".local" / "indexserver-venv" / "bin" / "python3")
-    service   = str(_REPO / "indexserver" / "service.py")
+    mode       = _CFG_EXTRA.get("mode", "docker")
+    venv_py    = str(_HOME / ".local" / "indexserver-venv" / "bin" / "python3")
+    entrypoint = str(_REPO / "scripts" / "entrypoint.sh")
     if sys.platform == "win32":
         if mode == "wsl":
             repo_wsl = _win_to_wsl(str(_REPO))
-            cmd = f"~/.local/indexserver-venv/bin/python3 {repo_wsl}/indexserver/service.py start --typesense-only"
+            env_prefix = (
+                f"TYPESENSE_DATA=~/.local/typesense "
+                f"CONFIG_FILE={repo_wsl}/config.json "
+                f"APP_ROOT={repo_wsl} "
+                f"PYTHON3=~/.local/indexserver-venv/bin/python3 "
+                f"CODESEARCH_API_HOST=127.0.0.1"
+            )
+            cmd = f'{env_prefix} bash "{repo_wsl}/scripts/entrypoint.sh" --background --disown'
             subprocess.Popen(
                 ["wsl.exe", "bash", "-lc", cmd],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -300,11 +311,20 @@ def _restart_typesense() -> None:
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
     else:
-        # Linux / WSL: call service.py directly
+        # Linux / WSL: call entrypoint.sh directly
         py = venv_py if os.path.exists(venv_py) else sys.executable
+        env = {
+            **os.environ,
+            "TYPESENSE_DATA": str(_HOME / ".local" / "typesense"),
+            "CONFIG_FILE":    str(_REPO / "config.json"),
+            "APP_ROOT":       str(_REPO),
+            "PYTHON3":        py,
+            "CODESEARCH_API_HOST": "127.0.0.1",
+        }
         subprocess.Popen(
-            [py, service, "start", "--typesense-only"],
+            ["bash", entrypoint, "--background", "--disown"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env,
         )
 
 
@@ -357,13 +377,15 @@ def _heartbeat_loop(stop_event: threading.Event) -> None:
 # ── Syncer ─────────────────────────────────────────────────────────────────────
 
 def _drain_sync_queue() -> None:
-    global _sync_stop
+    global _sync_stop, _schema_status
+
     while True:
         with _sync_lock:
             if not _sync_pending:
                 break
             job = _sync_pending.pop(0)
 
+        root_name  = job.get("root_name", "")
         src_root   = job["src_root"]
         collection = job["collection"]
         resethard  = job["resethard"]
@@ -389,6 +411,19 @@ def _drain_sync_queue() -> None:
             )
         except Exception as e:
             print(f"[syncer] ERROR for {collection}: {e}", flush=True)
+        else:
+            # Mark root as synced and refresh schema status if not cancelled.
+            if _sync_progress.get("status") != "cancelled":
+                _synced_roots[root_name] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                if resethard and _ts_client is not None:
+                    from indexserver.indexer import verify_schema
+                    ok, warnings = verify_schema(_ts_client, collection)
+                    _schema_status[root_name] = {
+                        "ok":               ok and not warnings,
+                        "collection_exists": ok,
+                        "warnings":         warnings,
+                        "collection":       collection,
+                    }
         finally:
             if _INDEXER_PID.exists():
                 _INDEXER_PID.unlink()
