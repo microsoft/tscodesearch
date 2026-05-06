@@ -96,7 +96,7 @@ ts start                           start the service (auto-indexes if needed)
 ts stop                            stop everything
 ts restart                         stop then start
 ts index                           re-index in background (incremental, keeps existing collection)
-ts index --reset                   drop + recreate collection, then re-index
+ts index --resethard               wipe all data and reindex from scratch
 ts index --root <name>             index a specific named root
 ts verify                          scan FS + repair index: add missing, re-index stale, remove orphans
 ts verify --root <name>            verify a specific named root
@@ -168,43 +168,23 @@ node run_tests.mjs --wsl tests/test_query_cs.py
 
 ## Direct CLI usage
 
-### Full-text search (`search.py`)
+### Management API via curl
 
 ```bash
-# From WSL:
-~/.local/indexserver-venv/bin/python search.py "Widget"
-~/.local/indexserver-venv/bin/python search.py "ProcessOrder" --ext cs --sub payments
-~/.local/indexserver-venv/bin/python search.py "IRepository"  --mode implements
-~/.local/indexserver-venv/bin/python search.py "SaveChanges"  --mode calls
-~/.local/indexserver-venv/bin/python search.py "Obsolete"     --mode attrs
-~/.local/indexserver-venv/bin/python search.py "ConnectionString" --mode uses
+# Read key/port from config.json — never hard-code
+API_KEY=$(node -e "const c=require('./config.json'); process.stdout.write(c.api_key)")
+API_PORT=$(node -e "const c=require('./config.json'); process.stdout.write(String((c.port??8108)+1))")
+curl -s -X POST http://localhost:$API_PORT/query-codebase \
+  -H "Content-Type: application/json" -H "X-TYPESENSE-API-KEY: $API_KEY" \
+  -d '{"mode":"declarations","pattern":"SaveChanges","root":""}' | python -m json.tool
 ```
 
-### Structural C# AST queries (`query.py`)
+### AST queries without a server (`python -m query`)
 
 ```bash
-# Listing modes (no pattern needed)
-~/.local/indexserver-venv/bin/python query.py --methods  Order.cs
-~/.local/indexserver-venv/bin/python query.py --classes  Order.cs
-~/.local/indexserver-venv/bin/python query.py --fields   Order.cs
-~/.local/indexserver-venv/bin/python query.py --usings   Order.cs
-
-# Pattern modes with explicit file(s) or glob
-~/.local/indexserver-venv/bin/python query.py --calls     SaveChanges        "src/data/**/*.cs"
-~/.local/indexserver-venv/bin/python query.py --calls     Repository.Save    "src/data/**/*.cs"
-~/.local/indexserver-venv/bin/python query.py --casts     Widget             "src/**/*.cs"
-~/.local/indexserver-venv/bin/python query.py --all-refs  ProcessOrder       "src/**/*.cs"
-~/.local/indexserver-venv/bin/python query.py --accesses-on Widget           Order.cs
-~/.local/indexserver-venv/bin/python query.py --accesses-of Status           "src/**/*.cs"
-~/.local/indexserver-venv/bin/python query.py --attrs     TestMethod         "src/**/*.cs"
-~/.local/indexserver-venv/bin/python query.py --declarations ProcessOrder    Order.cs
-~/.local/indexserver-venv/bin/python query.py --params    SaveChanges        Order.cs
-
-# Pattern modes with --search (Typesense finds the files automatically)
-~/.local/indexserver-venv/bin/python query.py --implements IRepository       --search "IRepository"
-~/.local/indexserver-venv/bin/python query.py --uses       Order             --search "Order"
-~/.local/indexserver-venv/bin/python query.py --uses       ConnectionString  --uses-kind field   --search "ConnectionString"
-~/.local/indexserver-venv/bin/python query.py --uses       Widget            --uses-kind param   --search "Widget"
+# Runs on Windows via .client-venv — no indexserver needed
+.client-venv\Scripts\python.exe -m query --mode methods --file C:/myproject/src/Widget.cs
+.client-venv\Scripts\python.exe -m query --mode calls   --file C:/myproject/src/Widget.cs --pattern SaveChanges
 ```
 
 ## Architecture
@@ -224,22 +204,21 @@ Typical flow: Typesense narrows the haystack to ~50 candidate files → tree-sit
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  MCP CLIENT  (Claude ↔ tools)                                │
-│  mcp_server.js  (Node.js — runs on Windows)                  │
-│  Claude Code → mcp.cmd → node mcp_server.js                  │
+│  mcp_server.py  (.client-venv — runs on Windows)             │
+│  Claude Code → mcp.cmd → .client-venv\python.exe            │
 └────────────────────────────┬─────────────────────────────────┘
                              │  HTTP  localhost:PORT+1
-                             │  (indexserver management API)
 ┌────────────────────────────▼─────────────────────────────────┐
-│  DOCKER CONTAINER                                            │
-│  indexserver/api.py  (management API + thread manager)       │
-│    • watcher thread    (PollingObserver)                      │
-│    • heartbeat thread  (Typesense health check)              │
-│    • syncer thread     (on-demand, via POST /index/start)    │
-│  /app/tests (volume mount)                                   │
+│  DAEMON  tsquery_server.py  (.client-venv — runs on Windows) │
+│    • HTTP server   (management API on PORT+1)                │
+│    • watcher       (ReadDirectoryChangesW)                   │
+│    • IndexQueue    (batch Typesense writes)                  │
+│    • syncer        (on-demand, via POST /index/start)        │
+│    • heartbeat     (Typesense health check + auto-restart)   │
 └──────────────────────────────────────────────────────────────┘
-                             │  internal
+                             │  TCP  localhost:PORT
                         Typesense server
-                      (Docker volume for data)
+                      (Docker container — volume for data)
 ```
 
 **WSL mode:**
@@ -247,22 +226,22 @@ Typical flow: Typesense narrows the haystack to ~50 candidate files → tree-sit
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  MCP CLIENT  (Claude ↔ tools)                                │
-│  mcp_server.js  (Node.js — runs on Windows)                  │
-│  Claude Code → mcp.cmd → node mcp_server.js                  │
+│  mcp_server.py  (.client-venv — runs on Windows)             │
+│  Claude Code → mcp.cmd → .client-venv\python.exe            │
 └────────────────────────────┬─────────────────────────────────┘
                              │  HTTP  localhost:PORT+1
 ┌────────────────────────────▼─────────────────────────────────┐
-│  INDEXSERVER  (WSL process: api.py)                          │
-│    • watcher thread    (PollingObserver, /mnt/)              │
-│    • heartbeat thread  (Typesense health check)              │
-│    • syncer thread     (on-demand, via POST /index/start)    │
-│  Venv: ~/.local/indexserver-venv/                            │
+│  DAEMON  tsquery_server.py  (.client-venv — runs on Windows) │
+│    • HTTP server   (management API on PORT+1)                │
+│    • watcher       (ReadDirectoryChangesW on Windows)        │
+│    • IndexQueue    (batch Typesense writes)                  │
+│    • syncer        (on-demand, via POST /index/start)        │
+│    • heartbeat     (Typesense health check + auto-restart)   │
 └──────────────────────────────────────────────────────────────┘
-                             │  data at ~/.local/typesense/
-                        Typesense server (Linux binary)
+                             │  TCP  localhost:PORT (WSL2 auto-forwards)
+                        Typesense server
+                      (WSL Linux binary — data at ~/.local/typesense/)
 ```
-
-> **MCP server is Node.js.** `mcp.cmd` (Windows) runs `node mcp_server.js`; on Linux/WSL run it directly — no Python venv needed for the MCP layer. `mcp_server.js` communicates with the indexserver via HTTP on localhost (port `PORT+1`). Typesense is internal-only.
 
 ### File map
 
@@ -270,48 +249,46 @@ Typical flow: Typesense narrows the haystack to ~50 candidate files → tree-sit
 
 | File | Purpose |
 |------|---------|
-| `config.py` | Shared constants: HOST, PORT, API_KEY, ROOTS, collection names. Reads `config.json`. |
-| `search.py` | Typesense HTTP search; `search()` + `format_results()` |
-| `ast_cs.py` | C# tree-sitter AST helpers (node sets, `_find_all`, `_text`, `symbol_kind_query_by`) |
-| `ast_py.py` | Python tree-sitter AST helpers (`_line`, `_py_in_literal`, `_py_base_names`, etc.) |
-| `ast_js.py` | JavaScript/TypeScript tree-sitter AST helpers |
-| `ast_rust.py` | Rust tree-sitter AST helpers |
-| `ast_cpp.py` | C/C++ tree-sitter AST helpers |
-| `query_cs.py` | C# AST query functions (`q_classes`, `q_methods`, `q_calls`, etc.) + `process_cs_file()` |
-| `query_py.py` | Python AST query functions + `process_py_file()` |
-| `query_js.py` | JavaScript/TypeScript AST query functions + `process_js_file()` |
-| `query_rust.py` | Rust AST query functions + `process_rust_file()` |
-| `query_cpp.py` | C/C++ AST query functions + `process_cpp_file()` |
-| `query.py` | Dispatcher: imports all language modules, `process_any_file()`, `files_from_search()` |
-| `mcp_server.ts` / `mcp_server.js` | Node.js MCP server: `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `manage_service` tools |
-| `mcp.cmd` | Windows launcher: `node mcp_server.js` (Linux/WSL: run directly) |
+| `mcp_server.py` | Python MCP server (FastMCP). Exposes `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `manage_service`. Calls `tsquery_server.start_daemon()` at startup. Runs under `.client-venv` on Windows. |
+| `tsquery_server.py` | Management daemon. Owns the HTTP API on PORT+1, watcher, IndexQueue, syncer, and heartbeat threads. Runs under `.client-venv` on Windows. |
+| `mcp.cmd` | Windows launcher: `.client-venv\Scripts\python.exe mcp_server.py` |
 | `ts.cmd` | Thin wrapper: `node ts.mjs %*` |
-| `ts.mjs` | Management CLI: start/stop/restart/status/index/verify/log/root/build/setup. Reads `mode` from `config.json`. |
+| `ts.mjs` | Management CLI: start/stop/restart/status/index/verify/log/root/build/setup. Reads `mode` from `config.json`. Calls `entrypoint.sh` directly for Typesense lifecycle in WSL mode. |
 | `setup.cmd` | Thin wrapper: checks Node.js 20+, calls `node setup.mjs %*` |
-| `setup.mjs` | Full one-time setup: build MCP, register with Claude Code, WSL env (if --wsl), config.json, start service, VS Code extension |
+| `setup.mjs` | One-time setup: `.client-venv`, WSL venv, `config.json`, MCP registration, VS Code extension. |
 | `run_tests.cmd` | Thin wrapper: `node run_tests.mjs %*` |
 | `run_tests.mjs` | Test runner: `--docker`, `--wsl`, or `--linux` mode |
+
+**AST query layer (`query/`)**
+
+| File | Purpose |
+|------|---------|
+| `query/cs.py` | C# AST functions + `query_cs_bytes()` |
+| `query/py.py` | Python AST functions + `query_py_bytes()` |
+| `query/js.py` | JS/TS AST functions + `query_js_bytes()` |
+| `query/rust.py` | Rust AST functions + `query_rust_bytes()` |
+| `query/cpp.py` | C/C++ AST functions + `query_cpp_bytes()` |
+| `query/sql.py` | SQL AST functions + `query_sql_bytes()` |
+| `query/dispatch.py` | Pure query dispatcher. `query_file(src_bytes, ext, mode, pattern, ...)`. No Typesense dependency. |
+| `query/__main__.py` | CLI: `python -m query --mode methods --file Widget.cs` |
 
 **Server-side (`indexserver/`)**
 
 | File | Purpose |
 |------|---------|
-| `config.py` | Same constants as client config.py; also has INCLUDE_EXTENSIONS, EXCLUDE_DIRS, MAX_FILE_BYTES |
-| `api.py` | Single indexserver process: management HTTP API + watcher/heartbeat/syncer threads. Syncer runs `run_verify()` on demand (startup + explicit requests) and reports progress in `GET /status`. |
-| `indexer.py` | Full re-index via `os.walk` + `.gitignore` parsing + tree-sitter C#/Python metadata extraction. Shared `index_file_list()` pipeline used by the syncer. Supports per-root extension filtering. |
-| `verifier.py` | Sync/repair logic. `run_verify()` does a two-phase FS diff and enqueues changes to `IndexQueue`. `check_ready()` for synchronous readiness checks. Used by both startup sync and explicit `ts verify` / `verify_index`. |
-| `watcher.py` | Incremental updates: `PollingObserver` (10 s interval) monitors source root and upserts changes. Uses polling because inotify doesn't fire for Windows-backed `/mnt/` paths in WSL. |
-| `start_server.py` | Downloads Typesense Linux binary; starts server process in WSL |
-| `service.py` | CLI dispatcher for all `ts` subcommands |
-| `smoke_test.py` | Quick sanity check that the server is up and basic queries work |
+| `config.py` | Reads `config.json`. `Config`, `Root`, `load_config()`, `to_native_path()`. |
+| `indexer.py` | `walk_source_files()`, `index_file_list()`, `build_schema()`, `ensure_collection()`, `export_index_map()`. |
+| `verifier.py` | `run_verify()` (two-phase FS diff + repair), `check_ready()` (read-only health check). |
+| `watcher.py` | `run_watcher()`. `Observer` on Windows (ReadDirectoryChangesW), `PollingObserver` on Linux/WSL. |
+| `index_queue.py` | Deduplicated batch queue for all Typesense writes. |
+| `start_server.py` | Downloads Typesense binary (`--install`). |
 
-**Scripts**
+**Scripts / infra**
 
 | File | Purpose |
 |------|---------|
-| `scripts/entrypoint.sh` | Docker/WSL container entry point. `--background`: start daemons and exit. `--background --disown`: start + disown (survives session end). Default: Docker foreground mode. |
+| `scripts/entrypoint.sh` | Full Typesense lifecycle for Docker and WSL. WSL: `--background --disown` start, `--stop` stop, `--background --disown --resethard` wipe+restart, `--log` tail logs. Docker: foreground mode (no flags). |
 | `scripts/wsl-setup.sh` | WSL environment setup (venv, Typesense binary) — called by `setup.mjs --wsl` |
-| `scripts/e2e.sh` | End-to-end test script (runs inside container/WSL) |
 | `docker/Dockerfile` | Docker image definition |
 | `docker/docker-compose.yml` | Docker Compose configuration |
 

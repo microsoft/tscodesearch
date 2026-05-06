@@ -245,11 +245,18 @@ function waitForReady() {
 
 // ── WSL mode helper ───────────────────────────────────────────────────────────
 
-function wslRun(cmd, extraArgs = []) {
-    const repoWsl   = winToWsl(__dirname);
-    const venvPy    = '~/.local/indexserver-venv/bin/python3';
-    const servicePy = `${repoWsl}/indexserver/service.py`;
-    const cmdLine   = [venvPy, servicePy, cmd, ...extraArgs].join(' ');
+/** Invoke entrypoint.sh inside WSL with the required environment variables. */
+function wslRun(flags) {
+    const repoWsl    = winToWsl(__dirname);
+    const entrypoint = `${repoWsl}/scripts/entrypoint.sh`;
+    const env = [
+        `TYPESENSE_DATA=~/.local/typesense`,
+        `CONFIG_FILE=${repoWsl}/config.json`,
+        `APP_ROOT=${repoWsl}`,
+        `PYTHON3=~/.local/indexserver-venv/bin/python3`,
+        `CODESEARCH_API_HOST=127.0.0.1`,
+    ].join(' ');
+    const cmdLine = `${env} bash "${entrypoint}" ${flags.join(' ')}`;
     const r = spawnSync('wsl.exe', ['bash', '-lc', cmdLine], {
         stdio: 'inherit', encoding: 'utf-8',
     });
@@ -490,7 +497,7 @@ function printDockerStatus(apiBody) {
 async function cmdStart() {
     if (MODE === 'wsl') {
         log('Starting Typesense (WSL)...');
-        wslRun('start');
+        wslRun(['--background', '--disown']);
         startTsqueryDaemon();
         log(`Waiting for management API on port ${API_PORT}...`);
         await pollHealth(API_PORT, 30_000, 'management API');
@@ -533,7 +540,7 @@ async function cmdStart() {
 async function cmdStop() {
     if (MODE === 'wsl') {
         await shutdownDaemon();
-        wslRun('stop');
+        wslRun(['--stop']);
         return;
     }
     await shutdownDaemon();
@@ -595,21 +602,40 @@ async function cmdStatus() {
 async function cmdIndex(args) {
 
     const rootName = args.root || Object.keys(ROOTS)[0] || 'default';
+
     if (args.resethard) {
-        // For resethard in Docker mode, stop+rm the container and restart (wipes volume)
-        log('Hard reset: stopping container...');
-        docker(['stop', CONTAINER], { silent: true });
-        docker(['rm',   CONTAINER], { silent: true });
-        log('Removing data volume...');
-        docker(['volume', 'rm', DATA_VOL], { silent: true });
-        log('Starting fresh...');
-        await cmdStart();
-        // After start, trigger indexer
+        if (MODE === 'docker') {
+            // Wipe the Typesense data volume and restart from scratch.
+            // The daemon's startup loop auto-queues the initial index job once
+            // Typesense is ready, so no POST /index/start is needed here.
+            log('Hard reset: stopping container...');
+            docker(['stop', CONTAINER], { silent: true });
+            docker(['rm',   CONTAINER], { silent: true });
+            log('Removing data volume...');
+            docker(['volume', 'rm', DATA_VOL], { silent: true });
+            log('Starting fresh...');
+            await cmdStart();
+        } else {
+            // WSL: stop the daemon first, then delegate to service.py which stops
+            // Typesense (releasing RocksDB locks), wipes the data directory, and
+            // restarts Typesense. We then start a fresh daemon which auto-queues
+            // the initial index job once Typesense is ready.
+            log('Hard reset: shutting down daemon...');
+            await shutdownDaemon();
+            log('Wiping Typesense data and restarting...');
+            wslRun(['--background', '--disown', '--resethard']);
+            log('Starting management daemon...');
+            startTsqueryDaemon();
+            log(`Waiting for management API on port ${API_PORT}...`);
+            await pollHealth(API_PORT, 30_000, 'management API');
+        }
+        log('Hard reset complete. The daemon will reindex automatically — monitor with: ts status');
+        return;
     }
 
     try {
         const { status, body } = await apiPost('/index/start', {
-            root: rootName, resethard: !!args.resethard,
+            root: rootName, resethard: false,
         });
         if (status === 409) { log('Indexer already running. Monitor with: ts status'); return; }
         if (status !== 200) die(`indexserver returned ${status}: ${body?.error ?? JSON.stringify(body)}`);
@@ -649,13 +675,13 @@ function cmdLog(args) {
                 console.log(`(daemon log not found — run 'ts restart' to start logging)`);
             }
         }
-        // Also show Typesense / indexer log from WSL via service.py.
-        const extra = [];
-        if (args.indexer)  extra.push('--indexer');
-        if (args.error)    extra.push('--error');
-        extra.push('-n', String(n));
+        // Also show Typesense / indexer log from WSL via entrypoint.sh.
+        const flags = ['--log'];
+        if (args.indexer)  flags.push('--indexer');
+        if (args.error)    flags.push('--error');
+        flags.push('-n', String(n));
         console.log('\n=== WSL / Typesense log ===');
-        wslRun('log', extra);
+        wslRun(flags);
         return;
     }
 

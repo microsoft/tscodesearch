@@ -88,15 +88,14 @@ Windows side
 | `verifier.py` | `run_verify()` (two-phase diff + repair), `check_ready()` (read-only health check). |
 | `watcher.py` | `run_watcher()`. Uses `watchdog.observers.Observer` on Windows (real-time), `PollingObserver` on Linux/WSL (10 s poll). |
 | `index_queue.py` | Deduplicated batch queue for all Typesense writes. |
-| `start_server.py` | Downloads Typesense binary, starts it, writes `typesense.pid`. |
-| `service.py` | CLI for Typesense lifecycle: `start`, `stop`, `restart`, `status`, `index`, `verify`, `log`. Called by `ts.mjs` WSL mode. |
+| `start_server.py` | Downloads Typesense binary (`--install`), stops it (`--stop`). |
 
 ### Scripts / infra
 
 | File | Responsibility |
 |------|---------------|
-| `scripts/entrypoint.sh` | Starts Typesense, waits for health, then exits (WSL `--background`) or keeps alive (Docker foreground). Never starts the management API. |
-| `ts.mjs` | Management CLI. WSL mode: calls `service.py start/stop` for Typesense, spawns `tsquery_server.py --daemon` for the management API. Docker mode: `docker start` + same daemon spawn. |
+| `scripts/entrypoint.sh` | Full Typesense lifecycle for both Docker and WSL. WSL flags: `--background [--disown]` start, `--stop` stop, `--background --disown --resethard` wipe+restart, `--log [--indexer\|--error] [-n N]` tail logs. Docker: foreground mode (no flags). Never starts the management API. |
+| `ts.mjs` | Management CLI. WSL mode: calls `entrypoint.sh` directly for Typesense lifecycle, spawns `tsquery_server.py --daemon` for the management API. Docker mode: `docker start` + same daemon spawn. |
 | `setup.mjs` | Creates `.client-venv`, WSL venv, `config.json`, registers MCP. |
 | `run_tests.mjs` | VS Code extension unit tests (no Typesense required). |
 
@@ -225,9 +224,9 @@ node run_tests.mjs
 
 **Watcher observer selection.** `watcher.py` uses `watchdog.observers.Observer` on Windows (ReadDirectoryChangesW, ~1 s latency) and `PollingObserver` on Linux/WSL (inotify doesn't fire for NTFS `/mnt/` changes). Don't hardcode either.
 
-**`entrypoint.sh` only starts Typesense.** The management API (PORT+1) is always `tsquery_server.py` running on Windows.
+**`entrypoint.sh` manages Typesense only.** The management API (PORT+1) is always `tsquery_server.py` running on Windows. `entrypoint.sh` never starts the daemon.
 
-**`entrypoint.sh --background` vs `--background --disown`.** Without `--disown`, daemons die when the WSL session ends (intentional for test teardown). With `--disown`, they survive (used by `ts start`).
+**`entrypoint.sh` WSL flags.** `--background --disown` starts Typesense and survives WSL session end (used by `ts start`). `--background` without `--disown` dies when the session ends (useful for tests). `--stop` stops Typesense. `--background --disown --resethard` stops, wipes `~/.local/typesense`, reinstalls the binary, and starts fresh — no daemon required.
 
 **Running tests from the Bash tool.** For pytest, use `MSYS_NO_PATHCONV=1 wsl.exe bash -lc "..."` — the Bash tool runs in Git Bash on Windows. For VS Code tests, `node run_tests.mjs` works directly (Git Bash `node` = Windows Node.js). Don't use `wsl.exe node`.
 
