@@ -357,7 +357,7 @@ describe('doQueryCodebase', () => {
             body: {
                 found: 1, overflow: false,
                 hits: [{
-                    document: { id: '42', relative_path: 'foo/Bar.cs', subsystem: 'foo', filename: 'Bar.cs' },
+                    document: { id: '42', relative_path: 'foo/Bar.cs', filename: 'Bar.cs' },
                     matches: [
                         { line: 10, text: 'public void Foo()' },
                         { line: 20, text: 'private IWidget _widget;' },
@@ -414,12 +414,12 @@ describe('runSearchPipeline', () => {
             body: {
                 found: 2, overflow: false,
                 hits: [
-                    { document: { id: '1', relative_path: 'a/A.cs', subsystem: 'a', filename: 'A.cs' },
+                    { document: { id: '1', relative_path: 'a/A.cs', filename: 'A.cs' },
                       matches: [{ line: 5, text: 'void Foo()' }] },
-                    { document: { id: '2', relative_path: 'b/B.cs', subsystem: 'b', filename: 'B.cs' },
+                    { document: { id: '2', relative_path: 'b/B.cs', filename: 'B.cs' },
                       matches: [{ line: 3, text: 'IFoo _foo;' }] },
                 ],
-                facet_counts: [{ field_name: 'subsystem', counts: [{ value: 'a', count: 1 }] }],
+                facet_counts: [{ field_name: 'path_segments', counts: [{ value: 'a', count: 1 }] }],
             },
         });
         const result = await runSearchPipeline(makeCfg(), 'IFoo', 'uses', '', '', '', 10);
@@ -458,7 +458,7 @@ describe('runSearchPipeline', () => {
     // ------------------------------------------------------------------
     // Large-result / capped-view expansion scenario:
     //   1. Initial search returns overflow (too many files, hits=[])
-    //   2. User clicks a subsystem → expandSub triggers a sub-filtered search
+    //   2. User clicks a folder → expandSub triggers a sub-filtered search
     //   3. Sub-filtered search returns actual hits that can be clicked
     // ------------------------------------------------------------------
     it('overflow search returns overflow=true, found>0, and empty hits array', async () => {
@@ -466,7 +466,7 @@ describe('runSearchPipeline', () => {
             status: 200,
             body: {
                 found: 350, overflow: true, hits: [],
-                facet_counts: [{ field_name: 'subsystem', counts: [
+                facet_counts: [{ field_name: 'path_segments', counts: [
                     { value: 'storage', count: 200 },
                     { value: 'api',     count: 150 },
                 ] }],
@@ -476,9 +476,9 @@ describe('runSearchPipeline', () => {
         assert.equal(result.overflow, true);
         assert.equal(result.found, 350);
         assert.equal(result.hits.length, 0, 'overflow result must have no hits');
-        assert.ok(result.facet_counts, 'facet_counts must be present for capped-view subsystem list');
-        const sf = result.facet_counts!.find((f) => f.field_name === 'subsystem');
-        assert.ok(sf, 'subsystem facet must be present');
+        assert.ok(result.facet_counts, 'facet_counts must be present for capped-view folder list');
+        const sf = result.facet_counts!.find((f) => f.field_name === 'path_segments');
+        assert.ok(sf, 'path_segments facet must be present');
         assert.equal(sf!.counts.length, 2);
         assert.equal(sf!.counts[0].value, 'storage');
     });
@@ -494,17 +494,17 @@ describe('runSearchPipeline', () => {
                     found: 3, overflow: false,
                     hits: [
                         {
-                            document: { id: '1', relative_path: 'storage/WidgetStore.cs', subsystem: 'storage', filename: 'WidgetStore.cs' },
+                            document: { id: '1', relative_path: 'storage/WidgetStore.cs', filename: 'WidgetStore.cs' },
                             matches: [{ line: 12, text: '  private readonly IWidgetStore _store;' }],
                             ast_expanded: true,
                         },
                         {
-                            document: { id: '2', relative_path: 'storage/WidgetCache.cs', subsystem: 'storage', filename: 'WidgetCache.cs' },
+                            document: { id: '2', relative_path: 'storage/WidgetCache.cs', filename: 'WidgetCache.cs' },
                             matches: [{ line: 5, text: '  public class WidgetCache' }],
                             ast_expanded: false,  // server did not expand this file
                         },
                         {
-                            document: { id: '3', relative_path: 'storage/WidgetIndex.cs', subsystem: 'storage', filename: 'WidgetIndex.cs' },
+                            document: { id: '3', relative_path: 'storage/WidgetIndex.cs', filename: 'WidgetIndex.cs' },
                             matches: [],
                             // ast_expanded omitted — old-format response, should default to true
                         },
@@ -539,8 +539,8 @@ describe('runSearchPipeline', () => {
             'missing ast_expanded in server response must default to true');
     });
 
-    it('expandSub still-overflowing subsystem: returns overflow=true with empty hits', async () => {
-        // Subsystem itself has too many matches — should surface overflow, not silently show nothing
+    it('expandSub still-overflowing folder: returns overflow=true with empty hits', async () => {
+        // Folder itself has too many matches — should surface overflow, not silently show nothing
         mockHandler = () => ({
             status: 200,
             body: { found: 80, overflow: true, hits: [], facet_counts: [] },

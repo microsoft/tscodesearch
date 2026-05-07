@@ -161,7 +161,6 @@ export interface PipelineHit {
     document: {
         id?: string;
         relative_path: string;
-        subsystem?: string;
         filename?: string;
     };
     _matches: MatchItem[];
@@ -195,6 +194,7 @@ export async function doQueryCodebase(
     sub: string,
     rootName: string,
     limit: number,
+    excludePath: string = '',
 ): Promise<{ found: number; overflow: boolean; hits: PipelineHit[]; facet_counts: FacetCounts | undefined }> {
     const modeEntry = MODES.find((m) => m.key === mode);
     const serverMode = modeEntry?.astMode ?? mode;
@@ -202,6 +202,7 @@ export async function doQueryCodebase(
     const apiKey = config.api_key;
     const bodyObj: Record<string, unknown> = { mode: serverMode, pattern: query, sub, ext, root: rootName, limit };
     if (modeEntry?.uses_kind) { bodyObj['uses_kind'] = modeEntry.uses_kind; }
+    if (excludePath) { bodyObj['exclude_path'] = excludePath; }
     const body   = JSON.stringify(bodyObj);
 
     return new Promise((resolve, reject) => {
@@ -224,7 +225,7 @@ export async function doQueryCodebase(
                     try {
                         const parsed = JSON.parse(data) as {
                             found: number; overflow: boolean;
-                            hits: Array<{ document: { id: string; relative_path: string; subsystem: string; filename: string }; matches: Array<{ line: number; text: string }>; ast_expanded?: boolean }>;
+                            hits: Array<{ document: { id: string; relative_path: string; filename: string }; matches: Array<{ line: number; text: string }>; ast_expanded?: boolean }>;
                             facet_counts: FacetCounts | undefined;
                             error?: string;
                         };
@@ -235,7 +236,6 @@ export async function doQueryCodebase(
                                 document: {
                                     id:            h.document.id,
                                     relative_path: h.document.relative_path,
-                                    subsystem:     h.document.subsystem,
                                     filename:      h.document.filename,
                                 },
                                 _matches: (h.matches ?? []).map((m) => ({
@@ -336,9 +336,10 @@ export async function runSearchPipeline(
     sub: string,
     rootName: string,
     limit: number,
+    excludePath: string = '',
 ): Promise<PipelineResult> {
     const start = Date.now();
-    const result = await doQueryCodebase(config, query, modeKey, ext, sub, rootName, limit);
+    const result = await doQueryCodebase(config, query, modeKey, ext, sub, rootName, limit, excludePath);
     return {
         hits:         result.hits,
         found:        result.found,
@@ -361,16 +362,18 @@ export function renderTextTree(result: PipelineResult, query: string, mode: stri
 
     if (result.found === 0) { lines.push('  (no results)'); return lines.join('\n'); }
 
-    // Group by subsystem
+    // Group by top-level folder (first segment of relative_path)
     const bySub = new Map<string, PipelineHit[]>();
     for (const h of result.hits) {
-        const s = h.document.subsystem ?? '';
+        const rel = (h.document.relative_path ?? '').replace(/\\/g, '/');
+        const idx = rel.indexOf('/');
+        const s   = idx > 0 ? rel.slice(0, idx) : '';
         if (!bySub.has(s)) { bySub.set(s, []); }
         bySub.get(s)!.push(h);
     }
 
     for (const [sub, subHits] of [...bySub.entries()].sort()) {
-        lines.push(`\n[${sub || '(no subsystem)'}]  ${subHits.length} file(s)`);
+        lines.push(`\n[${sub || '(no folder)'}]  ${subHits.length} file(s)`);
         for (const h of subHits) {
             lines.push(`  ${h.document.relative_path}`);
             const matches = h._matches;

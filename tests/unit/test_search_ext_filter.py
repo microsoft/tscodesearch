@@ -31,41 +31,33 @@ _spec.loader.exec_module(_search_mod)
 # typesense client call.
 
 
-def _build_filter(ext, sub=None):
-    """Return the filter_by string that search() would send for given ext/sub."""
+def _build_filter(ext=None, sub=None, exclude_path=None):
+    """Return the filter_by string production search() actually sends to Typesense.
+
+    Monkey-patches _ts_search (the real HTTP entry point in scripts/search.py),
+    captures params['filter_by'], and returns it verbatim.
+    """
     captured = {}
 
-    class _FakeClient:
-        class collections:
-            class _coll:
-                class documents:
-                    @staticmethod
-                    def search(params):
-                        captured["filter_by"] = params.get("filter_by", "")
-                        return {"hits": [], "found": 0, "facet_counts": []}
-            def __getitem__(self, _):
-                return self._coll
-
-        def __getitem__(self, _):
-            return self.collections()
+    def _fake_ts_search(coll, params):
+        captured["filter_by"] = params.get("filter_by", "")
+        return {"hits": [], "found": 0, "facet_counts": []}
 
     import unittest.mock as _mock
-    with _mock.patch.object(_search_mod, "_get_client", return_value=_FakeClient()):
-        try:
-            _search_mod.search(
-                query="Widget",
-                ext=ext,
-                sub=sub,
-                collection="codesearch_default",
-            )
-        except Exception:
-            pass
+    with _mock.patch.object(_search_mod, "_ts_search", _fake_ts_search):
+        _search_mod.search(
+            query="Widget",
+            ext=ext,
+            sub=sub,
+            exclude_path=exclude_path,
+            collection="codesearch_default",
+        )
     return captured.get("filter_by", "")
 
 
 class TestExtFilterExpansion(unittest.TestCase):
 
-    def _filter(self, ext, sub=None):
+    def _filter(self, ext, sub=None, exclude_path=None):
         """Directly compute the filter string from search.py logic."""
         _CPP_SRC = {"cpp", "cc", "cxx", "c"}
         _CPP_HDR = {"h", "hpp", "hxx"}
@@ -79,7 +71,19 @@ class TestExtFilterExpansion(unittest.TestCase):
             else:
                 parts.append(f"extension:=[{','.join(sorted(exts))}]")
         if sub:
-            parts.append(f"subsystem:={sub}")
+            included = [p.replace(chr(92), '/').strip('/') for p in sub.split(",")]
+            included = [p for p in included if p]
+            if len(included) == 1:
+                parts.append(f"path_segments:={included[0]}")
+            elif included:
+                parts.append(f"path_segments:=[{','.join(included)}]")
+        if exclude_path:
+            excluded = [p.replace(chr(92), '/').strip('/') for p in exclude_path.split(",")]
+            excluded = [p for p in excluded if p]
+            if len(excluded) == 1:
+                parts.append(f"path_segments:!={excluded[0]}")
+            elif excluded:
+                parts.append(f"path_segments:!=[{','.join(excluded)}]")
         return " && ".join(parts)
 
     # ── C++ expansion ──────────────────────────────────────────────────────────
@@ -138,12 +142,157 @@ class TestExtFilterExpansion(unittest.TestCase):
     def test_cpp_with_sub(self):
         f = self._filter("cpp", sub="AP_HAL_ChibiOS")
         self.assertIn("extension:=[", f)
-        self.assertIn("subsystem:=AP_HAL_ChibiOS", f)
+        self.assertIn("path_segments:=AP_HAL_ChibiOS", f)
         self.assertIn(" && ", f)
 
     def test_cs_with_sub(self):
         f = self._filter("cs", sub="services")
-        self.assertEqual(f, "extension:=cs && subsystem:=services")
+        self.assertEqual(f, "extension:=cs && path_segments:=services")
+
+    def test_cs_with_multi_segment_sub(self):
+        """sub='services/billing' must produce a multi-segment path_segments filter."""
+        f = self._filter("cs", sub="services/billing")
+        self.assertEqual(f, "extension:=cs && path_segments:=services/billing")
+
+    # ── exclude_path ───────────────────────────────────────────────────────────
+
+    def test_exclude_single_folder(self):
+        f = self._filter("cs", exclude_path="tests")
+        self.assertEqual(f, "extension:=cs && path_segments:!=tests")
+
+    def test_exclude_multiple_folders(self):
+        f = self._filter("cs", exclude_path="tests,generated")
+        self.assertEqual(f, "extension:=cs && path_segments:!=[tests,generated]")
+
+    def test_exclude_multi_segment_path(self):
+        f = self._filter("cs", exclude_path="services/billing/legacy")
+        self.assertEqual(f, "extension:=cs && path_segments:!=services/billing/legacy")
+
+    def test_exclude_combines_with_sub(self):
+        f = self._filter("cs", sub="services", exclude_path="services/legacy,tests")
+        self.assertEqual(
+            f,
+            "extension:=cs && path_segments:=services && path_segments:!=[services/legacy,tests]",
+        )
+
+    def test_exclude_strips_whitespace_safe(self):
+        """Backslashes get normalised to forward-slashes; trim leading/trailing slashes."""
+        f = self._filter("cs", exclude_path=r"\tests\,/generated/")
+        self.assertEqual(f, "extension:=cs && path_segments:!=[tests,generated]")
+
+
+class TestMultiSubProduction(unittest.TestCase):
+    """Verify production search() emits the expected filter_by for multi-value sub."""
+
+    def test_single_value_unchanged(self):
+        self.assertEqual(
+            _build_filter(ext="cs", sub="services"),
+            "extension:=cs && path_segments:=services",
+        )
+
+    def test_two_values(self):
+        self.assertEqual(
+            _build_filter(ext="cs", sub="services,vendor"),
+            "extension:=cs && path_segments:=[services,vendor]",
+        )
+
+    def test_three_values(self):
+        self.assertEqual(
+            _build_filter(ext="cs", sub="a,b,c"),
+            "extension:=cs && path_segments:=[a,b,c]",
+        )
+
+    def test_multi_segment_values(self):
+        self.assertEqual(
+            _build_filter(ext="cs", sub="services/billing,vendor/aws"),
+            "extension:=cs && path_segments:=[services/billing,vendor/aws]",
+        )
+
+    def test_normalises_backslashes_and_slashes(self):
+        self.assertEqual(
+            _build_filter(ext="cs", sub=r"\services\,/vendor/"),
+            "extension:=cs && path_segments:=[services,vendor]",
+        )
+
+    def test_empty_segments_dropped(self):
+        self.assertEqual(
+            _build_filter(ext="cs", sub="services,,vendor"),
+            "extension:=cs && path_segments:=[services,vendor]",
+        )
+
+    def test_only_slashes_drops_segment(self):
+        self.assertEqual(_build_filter(ext="cs", sub="/"), "extension:=cs")
+
+    def test_combines_with_exclude_path(self):
+        self.assertEqual(
+            _build_filter(ext="cs", sub="services,vendor",
+                          exclude_path="services/legacy"),
+            "extension:=cs && path_segments:=[services,vendor] && "
+            "path_segments:!=services/legacy",
+        )
+
+    def test_combines_with_multi_exclude(self):
+        self.assertEqual(
+            _build_filter(ext="cs", sub="services,vendor",
+                          exclude_path="tests,generated"),
+            "extension:=cs && path_segments:=[services,vendor] && "
+            "path_segments:!=[tests,generated]",
+        )
+
+
+class TestExcludePathProduction(unittest.TestCase):
+    """Verify production search() in scripts/search.py actually emits the
+    expected filter_by, by monkey-patching _ts_search to capture the
+    params it would have sent."""
+
+    def test_single_folder(self):
+        self.assertEqual(
+            _build_filter(ext="cs", exclude_path="tests"),
+            "extension:=cs && path_segments:!=tests",
+        )
+
+    def test_multiple_folders(self):
+        self.assertEqual(
+            _build_filter(ext="cs", exclude_path="tests,generated"),
+            "extension:=cs && path_segments:!=[tests,generated]",
+        )
+
+    def test_multi_segment_path(self):
+        self.assertEqual(
+            _build_filter(ext="cs", exclude_path="services/billing/legacy"),
+            "extension:=cs && path_segments:!=services/billing/legacy",
+        )
+
+    def test_combines_with_sub(self):
+        self.assertEqual(
+            _build_filter(ext="cs", sub="services",
+                          exclude_path="services/legacy,tests"),
+            "extension:=cs && path_segments:=services && "
+            "path_segments:!=[services/legacy,tests]",
+        )
+
+    def test_normalises_backslashes_and_slashes(self):
+        self.assertEqual(
+            _build_filter(ext="cs", exclude_path=r"\tests\,/generated/"),
+            "extension:=cs && path_segments:!=[tests,generated]",
+        )
+
+    def test_empty_string_no_filter(self):
+        self.assertEqual(_build_filter(ext="cs", exclude_path=""), "extension:=cs")
+
+    def test_none_no_filter(self):
+        self.assertEqual(_build_filter(ext="cs", exclude_path=None), "extension:=cs")
+
+    def test_only_whitespace_segments_dropped(self):
+        """Empty segments between commas get dropped, not emitted as bare !=."""
+        self.assertEqual(
+            _build_filter(ext="cs", exclude_path="tests,,generated"),
+            "extension:=cs && path_segments:!=[tests,generated]",
+        )
+
+    def test_only_slashes_drops_segment(self):
+        """A path that strips down to empty must not produce a filter."""
+        self.assertEqual(_build_filter(ext="cs", exclude_path="/"), "extension:=cs")
 
 
 if __name__ == "__main__":

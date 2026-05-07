@@ -138,7 +138,7 @@ Windows side
 | Exact line-level results across the codebase | `query_codebase` |
 | Inspect/enumerate one specific file | `query_single_file` |
 
-**`query_codebase`**: Typesense pre-filter → ≤50 files → tree-sitter exact lines. Returns subsystem breakdown if >50 files match. Pattern-based modes only; listing modes redirect to `query_single_file`. `uses` accepts `uses_kind`: `field`, `param`, `return`, `cast`, `base`.
+**`query_codebase`**: Typesense pre-filter → ≤50 files → tree-sitter exact lines. Returns folder breakdown (one level deeper than the current `sub=` scope) if >50 files match. Pattern-based modes only; listing modes redirect to `query_single_file`. `uses` accepts `uses_kind`: `field`, `param`, `return`, `cast`, `base`. `sub=` accepts any folder depth (`services` or `services/billing`).
 
 **`query_single_file`**: No Typesense. Supports listing modes (`methods`, `fields`, `classes`, `usings`, `imports`). Works offline.
 

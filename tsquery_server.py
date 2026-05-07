@@ -679,6 +679,7 @@ class _Handler(BaseHTTPRequestHandler):
             include_body = bool(body.get("include_body", False))
             symbol_kind  = str(body.get("symbol_kind", "") or "")
             uses_kind    = str(body.get("uses_kind", "") or "")
+            exclude_path = str(body.get("exclude_path", "") or "")
 
             if mode not in _EXT_TO_TS_AND_AST:
                 self._send_json(400, {"error": f"unknown mode: {mode!r}"})
@@ -725,6 +726,7 @@ class _Handler(BaseHTTPRequestHandler):
                     collection   = collection,
                     symbol_kind  = symbol_kind,
                     uses_kind    = uses_kind,
+                    exclude_path = exclude_path,
                 )
             except SystemExit:
                 detail = _buf.getvalue().strip()
@@ -737,13 +739,22 @@ class _Handler(BaseHTTPRequestHandler):
             hits   = ts_result.get("hits", [])
             facets = ts_result.get("facet_counts", [])
 
-            ast_hits     = hits[:limit]
-            pending_hits = hits[limit:]
+            # Tier 1 — too many candidate files: skip AST, let the client emit
+            # a folder drill-down from facet_counts. This is what makes a
+            # broad query cheap; the AST step is the expensive part.
+            if found > _QUERY_CODEBASE_MAX_LIMIT:
+                self._send_json(200, {
+                    "overflow":     True,
+                    "found":        found,
+                    "hits":         [],
+                    "facet_counts": facets,
+                })
+                return
 
             file_list:    list[Path] = []
             hit_by_path:  dict[str, dict] = {}
             native_src_root = Path(root.path).resolve()
-            for hit in ast_hits:
+            for hit in hits:
                 rel      = hit["document"].get("relative_path", "")
                 abs_path = Path(root.to_local(rel)).resolve()
                 try:
@@ -769,28 +780,13 @@ class _Handler(BaseHTTPRequestHandler):
                     "document": {
                         "id":            doc.get("id", ""),
                         "relative_path": root.to_external(doc.get("relative_path", "")),
-                        "subsystem":     doc.get("subsystem", ""),
                         "filename":      doc.get("filename", ""),
                     },
-                    "matches":      ast_item["matches"],
-                    "ast_expanded": True,
-                })
-
-            for hit in pending_hits:
-                doc = hit.get("document", {})
-                response_hits.append({
-                    "document": {
-                        "id":            doc.get("id", ""),
-                        "relative_path": root.to_external(doc.get("relative_path", "")),
-                        "subsystem":     doc.get("subsystem", ""),
-                        "filename":      doc.get("filename", ""),
-                    },
-                    "matches":      [],
-                    "ast_expanded": False,
+                    "matches": ast_item["matches"],
                 })
 
             self._send_json(200, {
-                "overflow":     found > len(hits),
+                "overflow":     False,
                 "found":        found,
                 "hits":         response_hits,
                 "facet_counts": facets,

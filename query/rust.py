@@ -367,6 +367,7 @@ def query_rust_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fa
         "declarations": lambda: rust_q_declarations(src_bytes, tree, lines, mode_arg,
                                                     include_body=include_body),
         "all_refs":     lambda: rust_q_all_refs(src_bytes, tree, lines, mode_arg),
+        "text":         lambda: rust_q_all_refs(src_bytes, tree, lines, mode_arg),
         "imports":      lambda: rust_q_imports(src_bytes, tree, lines),
         "params":       lambda: rust_q_params(src_bytes, tree, lines, mode_arg),
     }

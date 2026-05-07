@@ -49,7 +49,7 @@ _SCHEMA_FIELDS = [
     {"name": "filename",         "type": "string"},
     {"name": "extension",        "type": "string", "facet": True},
     {"name": "language",         "type": "string", "facet": True},
-    {"name": "subsystem",        "type": "string", "facet": True},
+    {"name": "path_segments",    "type": "string[]", "facet": True},
     {"name": "namespace",        "type": "string", "optional": True, "facet": True},
     {"name": "class_names",      "type": "string[]", "optional": True},
     {"name": "method_names",     "type": "string[]", "optional": True},
@@ -188,9 +188,20 @@ def file_id(relative_path: str) -> str:
     return hashlib.md5(relative_path.replace("\\", "/").encode()).hexdigest()
 
 
-def subsystem_from_path(relative_path: str) -> str:
-    parts = relative_path.replace("\\", "/").split("/")
-    return parts[0] if parts else ""
+def path_segments_from_path(relative_path: str) -> list[str]:
+    """Cumulative ancestor folders for filter+facet narrowing.
+
+    "a/b/c/Foo.cs" -> ["a", "a/b", "a/b/c"]
+    "Foo.cs"       -> []
+    """
+    parts = [p for p in relative_path.replace("\\", "/").split("/") if p]
+    if len(parts) < 2:
+        return []
+    out, acc = [], []
+    for p in parts[:-1]:
+        acc.append(p)
+        out.append("/".join(acc))
+    return out
 
 
 _LANGUAGE: dict[str, str] = {
@@ -282,7 +293,7 @@ def build_document(full_path: str, relative_path: str) -> dict:
         "filename":         os.path.basename(full_path),
         "extension":        ext.lstrip("."),
         "language":         _file_language(ext),
-        "subsystem":        subsystem_from_path(relative_path_norm),
+        "path_segments":    path_segments_from_path(relative_path_norm),
         "namespace":        meta["namespace"],
         "class_names":      meta["class_names"],
         "method_names":     meta["method_names"],
@@ -705,14 +716,15 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
     print()
 
     def _tracked_files():
-        """Yield (full_path, rel) from walk_source_files with subsystem logging."""
+        """Yield (full_path, rel) from walk_source_files with top-folder progress logging."""
         nonlocal current_sub
         for sf in walk_source_files(src_root, cfg, extensions=exts):
-            sub = subsystem_from_path(sf.rel)
-            if sub != current_sub:
-                current_sub = sub
+            parts = sf.rel.replace("\\", "/").split("/", 1)
+            top = parts[0] if len(parts) > 1 else ""
+            if top != current_sub:
+                current_sub = top
                 elapsed = time.time() - t0
-                print(f"  [{_fmt_time(elapsed)}] subsystem: {sub}  "
+                print(f"  [{_fmt_time(elapsed)}] folder: {top}  "
                       f"(total so far: {total_indexed})")
             yield sf.full_path, sf.rel
 

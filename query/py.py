@@ -321,6 +321,7 @@ def query_py_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fals
         "implements":   lambda: py_q_implements(src_bytes, tree, lines, mode_arg),
         "ident":        lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
         "all_refs":     lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
+        "text":         lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
         "declarations": lambda: py_q_declarations(src_bytes, tree, lines, mode_arg),
         "decorators":   lambda: py_q_decorators(src_bytes, tree, lines, mode_arg),
         "attrs":        lambda: py_q_decorators(src_bytes, tree, lines, mode_arg),

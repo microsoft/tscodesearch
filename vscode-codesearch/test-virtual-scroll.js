@@ -67,7 +67,9 @@ function buildRows(hits) {
     let nextDirId = 0;
     const subs = Object.create(null);
     hits.forEach(h => {
-        const s = h.document.subsystem || '';
+        const rel = (h.document.relative_path || '').replace(/\\/g, '/');
+        const i = rel.indexOf('/');
+        const s = i > 0 ? rel.slice(0, i) : '';
         (subs[s] || (subs[s] = [])).push(h);
     });
     Object.keys(subs).sort().forEach(sub => {
@@ -190,7 +192,6 @@ async function run() {
     const hits = (raw.hits ?? []).map(h => ({
         document: {
             relative_path: h.document.relative_path,
-            subsystem:     h.document.subsystem || '',
             filename:      h.document.filename  || '',
         },
         _matches: (h.matches ?? []).map(m => ({ text: m.text, line: m.line - 1 })),
@@ -215,28 +216,28 @@ async function run() {
     console.log(`    ${fmtCounts(vis0)}`);
     check('all rows visible', vis0.length === rows.length);
 
-    // ── 4. Collapse each subsystem, verify, re-expand ─────────────────────────
+    // ── 4. Collapse each folder, verify, re-expand ─────────────────────────
     const subs = rows.filter(r => r.type === 'sub');
-    console.log(`\n[2] Collapse / re-expand each subsystem (${subs.length} total)`);
+    console.log(`\n[2] Collapse / re-expand each folder (${subs.length} total)`);
     for (const sr of subs) {
         const csubs = { [sr.sub]: true };
         const visC = computeVis(rows, csubs, {});
         const hidden = rows.filter(r => r.type !== 'sub' && r.sub === sr.sub).length;
         check(
-            `collapse "${sr.sub || '(no subsystem)'}": -${hidden} rows`,
+            `collapse "${sr.sub || '(no folder)'}": -${hidden} rows`,
             visC.length === vis0.length - hidden,
             `expected ${vis0.length - hidden}, got ${visC.length}`,
         );
         // Re-expand
         const visE = computeVis(rows, {}, {});
         check(
-            `re-expand "${sr.sub || '(no subsystem)'}": back to full`,
+            `re-expand "${sr.sub || '(no folder)'}": back to full`,
             visE.length === vis0.length,
         );
     }
 
-    // ── 5. Collapse all subsystems at once ────────────────────────────────────
-    console.log(`\n[3] Collapse all subsystems at once`);
+    // ── 5. Collapse all folders at once ────────────────────────────────────
+    console.log(`\n[3] Collapse all folders at once`);
     subs.forEach(sr => { allCollapsed[sr.sub] = true; });
     const visAllC = computeVis(rows, allCollapsed, {});
     check(

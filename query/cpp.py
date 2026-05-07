@@ -512,6 +512,7 @@ def query_cpp_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fal
         "declarations": lambda: cpp_q_declarations(src_bytes, tree, lines, mode_arg,
                                                    include_body=include_body),
         "all_refs":     lambda: cpp_q_all_refs(src_bytes, tree, lines, mode_arg),
+        "text":         lambda: cpp_q_all_refs(src_bytes, tree, lines, mode_arg),
         "includes":     lambda: cpp_q_includes(src_bytes, tree, lines),
         "params":       lambda: cpp_q_params(src_bytes, tree, lines, mode_arg),
     }

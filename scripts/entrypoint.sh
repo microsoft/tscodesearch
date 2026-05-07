@@ -399,6 +399,7 @@ else
         --peering-port="$((CODESEARCH_PORT - 1))" \
         --listen-address=0.0.0.0 \
         --enable-cors \
+        --snapshot-interval-seconds=600 \
         > "$TYPESENSE_LOG" 2>&1 &
 
     TYPESENSE_PID=$!
