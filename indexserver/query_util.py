@@ -137,7 +137,7 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
 
     filter_parts = [f"extension:={ext.lstrip('.')}"] if ext else []
     if sub:
-        filter_parts.append(f"subsystem:={sub}")
+        filter_parts.append(f"path_segments:={sub.replace(chr(92), '/').strip('/')}")
 
     params = {
         "q":         query,
@@ -200,7 +200,7 @@ def main():
 
     ap.add_argument("files", nargs="*", metavar="FILE_OR_PATTERN")
     ap.add_argument("--search",       metavar="QUERY")
-    ap.add_argument("--search-sub",   metavar="SUBSYSTEM")
+    ap.add_argument("--search-sub",   metavar="FOLDER_PATH")
     ap.add_argument("--search-ext",   metavar="EXT", default="cs")
     ap.add_argument("--search-limit", metavar="N", type=int, default=50)
     ap.add_argument("--uses-kind",    metavar="KIND", default="")

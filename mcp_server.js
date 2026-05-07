@@ -199,7 +199,7 @@ const QUERY_CODEBASE_LIMIT = 250;
 // ── query_codebase ────────────────────────────────────────────────────────────
 server.tool("query_codebase", `Typesense pre-filter + tree-sitter AST in one call. Returns exact line-level results.
 NEVER returns partial results. If the search matches more than 250 files, returns a
-per-subsystem breakdown — repeat with sub= to narrow.
+per-folder breakdown — repeat with a deeper sub= to narrow further.
 
 For listing modes (methods, fields, classes, usings, imports) use query_single_file.
 
@@ -208,7 +208,9 @@ Args:
                 accesses_of, accesses_on, all_refs (C#);
                 calls, implements, ident, declarations, params, decorators (Python)
   pattern:      Type/method/name to search for.
-  sub:          Narrow to a subsystem (first path component only).
+  sub:          Narrow to an ancestor folder. Accepts any depth, e.g.
+                "services" or "services/billing". On overflow the response
+                suggests deeper paths to drill into.
   ext:          File extension ("cs" or "py"). Default: cs.
   context_lines: Surrounding source lines per match.
   root:         Named source root (empty = default).
@@ -264,19 +266,30 @@ Examples:
     const hits = data.hits ?? [];
     const facets = data.facet_counts ?? [];
     if (data.overflow) {
-        const lines = [`Too many files (${found}) — narrowing required.`, "Repeat with sub= to scope to one subsystem, then re-run.", ""];
-        if (!sub) {
-            const counts = [];
-            for (const fc of facets)
-                if (fc.field_name === "subsystem")
-                    for (const c of fc.counts ?? [])
-                        counts.push([c.value, Number(c.count)]);
-            if (counts.length) {
-                counts.sort((a, b) => b[1] - a[1]);
-                lines.push(`Subsystems with '${pattern}' hits — re-run with sub=<name>:`);
-                for (const [name, count] of counts.slice(0, 25))
-                    lines.push(`  query_codebase("${m}", "${pattern}", sub="${name}")  # ~${count} files`);
+        const scope       = (sub || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+        const scopeDepth  = scope ? scope.split("/").length : 0;
+        const nextDepth   = scopeDepth + 1;
+        const prefix      = scope ? scope + "/" : "";
+        const counts = [];
+        for (const fc of facets) {
+            if (fc.field_name !== "path_segments") continue;
+            for (const c of fc.counts ?? []) {
+                const val = c.value;
+                if (scope && !val.startsWith(prefix)) continue;
+                if (val.split("/").length !== nextDepth) continue;
+                counts.push([val, Number(c.count)]);
             }
+        }
+        const lines = [`Too many files (${found}) — narrowing required.`,
+                       "Repeat with a deeper sub= to scope further, then re-run.", ""];
+        if (counts.length) {
+            counts.sort((a, b) => b[1] - a[1]);
+            const scopeLabel = scope ? ` under '${scope}'` : "";
+            lines.push(`Folders${scopeLabel} with '${pattern}' hits — re-run with sub=<path>:`);
+            for (const [name, count] of counts.slice(0, 25))
+                lines.push(`  query_codebase("${m}", "${pattern}", sub="${name}")  # ~${count} files`);
+        } else {
+            lines.push("No deeper folder breakdown available — try a more specific pattern.");
         }
         lines.push("", "Use query_single_file for a specific known file.");
         return { content: [{ type: "text", text: warn + lines.join("\n") }] };

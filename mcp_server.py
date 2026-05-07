@@ -165,7 +165,7 @@ def query_codebase(
 ) -> str:
     """Typesense pre-filter + tree-sitter AST in one call. Returns exact line-level results.
 NEVER returns partial results. If the search matches more than 250 files, returns a
-per-subsystem breakdown — repeat with sub= to narrow.
+per-folder breakdown — repeat with a deeper sub= to narrow further.
 
 For listing modes (methods, fields, classes, usings, imports) use query_single_file.
 
@@ -174,7 +174,9 @@ Args:
                 accesses_of, accesses_on, all_refs (C#);
                 calls, implements, ident, declarations, params, decorators (Python)
   pattern:      Type/method/name to search for.
-  sub:          Narrow to a subsystem (first path component only).
+  sub:          Narrow to an ancestor folder. Accepts any depth, e.g.
+                "services" or "services/billing". On overflow the response
+                suggests deeper paths to drill into.
   ext:          File extension filter. Common values: "cs", "py", "cpp".
                 For C/C++, "cpp" automatically includes header files (.h, .hpp, .hxx).
                 Omit to search all indexed languages. Default: cs.
@@ -223,19 +225,32 @@ Examples:
     facets = data.get("facet_counts", [])
 
     if data.get("overflow"):
+        scope        = (sub or "").replace("\\", "/").strip("/")
+        scope_depth  = scope.count("/") + 1 if scope else 0
+        next_depth   = scope_depth + 1
+        prefix       = scope + "/" if scope else ""
+
+        counts = []
+        for fc in facets:
+            if fc.get("field_name") == "path_segments":
+                for c in fc.get("counts", []):
+                    val = c["value"]
+                    if scope and not val.startswith(prefix):
+                        continue
+                    if (val.count("/") + 1) != next_depth:
+                        continue
+                    counts.append((val, int(c["count"])))
+
         lines = [f"Too many files ({found}) — narrowing required.",
-                 "Repeat with sub= to scope to one subsystem, then re-run.", ""]
-        if not sub:
-            counts = []
-            for fc in facets:
-                if fc.get("field_name") == "subsystem":
-                    for c in fc.get("counts", []):
-                        counts.append((c["value"], int(c["count"])))
-            if counts:
-                counts.sort(key=lambda x: -x[1])
-                lines.append(f"Subsystems with '{pattern}' hits — re-run with sub=<name>:")
-                for name, count in counts[:25]:
-                    lines.append(f'  query_codebase("{m}", "{pattern}", sub="{name}")  # ~{count} files')
+                 "Repeat with a deeper sub= to scope further, then re-run.", ""]
+        if counts:
+            counts.sort(key=lambda x: -x[1])
+            scope_label = f" under '{scope}'" if scope else ""
+            lines.append(f"Folders{scope_label} with '{pattern}' hits — re-run with sub=<path>:")
+            for name, count in counts[:25]:
+                lines.append(f'  query_codebase("{m}", "{pattern}", sub="{name}")  # ~{count} files')
+        else:
+            lines.append("No deeper folder breakdown available — try a more specific pattern.")
         lines += ["", "Use query_single_file for a specific known file."]
         return warn + "\n".join(lines)
 

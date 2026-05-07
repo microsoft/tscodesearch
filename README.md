@@ -309,7 +309,7 @@ The collection uses tiered semantic fields extracted by tree-sitter at index tim
 
 Search ranking by file type: `.cs` (priority 3) → `.h/.cpp/.c` (2) → scripts/`.py/.ts` (1) → config/docs (0).
 
-The `subsystem` field is the first path component under the source root. Use `sub=` to scope searches to a subsystem.
+The `path_segments` field is the list of every ancestor folder of each file (e.g. `services/billing/Foo.cs` → `["services", "services/billing"]`). Use `sub=` to scope searches to any folder path — single segment (`services`) or nested (`services/billing`). On overflow, the response suggests deeper folder paths to drill into.
 
 ### config.json
 

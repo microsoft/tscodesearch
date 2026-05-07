@@ -82,20 +82,20 @@ _LIST_FIELDS = {
     "class_names", "method_names", "member_sigs", "base_types",
     "field_types", "local_types", "param_types", "return_types",
     "cast_types", "type_refs", "call_sites", "member_accesses",
-    "attr_names", "usings",
+    "attr_names", "usings", "path_segments",
 }
 
 # Scalar fields shown as-is
 _SCALAR_FIELDS = {
     "id", "relative_path", "filename", "extension",
-    "subsystem", "language", "namespace", "mtime",
+    "language", "namespace", "mtime",
 }
 
 _ALL_FIELDS = _SCALAR_FIELDS | _LIST_FIELDS | _TOKEN_FIELDS
 
 _FIELD_ORDER = [
     # identity
-    "id", "relative_path", "filename", "extension", "language", "subsystem",
+    "id", "relative_path", "filename", "extension", "language", "path_segments",
     "namespace", "mtime",
     # declaration fields
     "class_names", "method_names", "member_sigs",

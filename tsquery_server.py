@@ -769,7 +769,6 @@ class _Handler(BaseHTTPRequestHandler):
                     "document": {
                         "id":            doc.get("id", ""),
                         "relative_path": root.to_external(doc.get("relative_path", "")),
-                        "subsystem":     doc.get("subsystem", ""),
                         "filename":      doc.get("filename", ""),
                     },
                     "matches":      ast_item["matches"],
@@ -782,7 +781,6 @@ class _Handler(BaseHTTPRequestHandler):
                     "document": {
                         "id":            doc.get("id", ""),
                         "relative_path": root.to_external(doc.get("relative_path", "")),
-                        "subsystem":     doc.get("subsystem", ""),
                         "filename":      doc.get("filename", ""),
                     },
                     "matches":      [],

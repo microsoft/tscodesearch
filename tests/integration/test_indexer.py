@@ -87,11 +87,13 @@ class TestIndexer(unittest.TestCase):
         self.assertEqual(foo["relative_path"], "myapp/Foo.cs",
             f"Expected myapp/Foo.cs, got {foo['relative_path']}")
 
-    def test_subsystem_extracted(self):
+    def test_path_segments_extracted(self):
         hits = _search(self.coll, "BlobStore")
         blob = next((h for h in hits if h["filename"] == "BlobStore.cs"), None)
         self.assertIsNotNone(blob, "BlobStore.cs not found")
-        self.assertEqual(blob["subsystem"], "storage")
+        # path_segments contains every ancestor folder for path-prefix filtering.
+        # "storage/BlobStore.cs" has only "storage" (the file's own basename is excluded).
+        self.assertIn("storage", blob.get("path_segments", []))
 
     def test_reset_recreates_collection(self):
         """resethard=True drops and recreates the collection."""

@@ -115,11 +115,11 @@ function printTree(tree: string): void {
 // ---------------------------------------------------------------------------
 
 describe('renderTextTree', () => {
-    it('renders subsystem header, filename, and match items with line numbers', () => {
+    it('renders folder header, filename, and match items with line numbers', () => {
         const result = {
             hits: [{
                 document: { id: '1', relative_path: 'myapp/Service.cs',
-                            filename: 'Service.cs', subsystem: 'myapp' },
+                            filename: 'Service.cs' },
                 _matches: [
                     { text: 'void GetItems(...)', line: 9 },
                     { text: 'Task WriteAsync(...)', line: 24 },
@@ -128,7 +128,7 @@ describe('renderTextTree', () => {
             found: 1, elapsed: 12, facet_counts: [],
         };
         const tree = renderTextTree(result, 'IService', 'declarations');
-        assert.ok(tree.includes('[myapp]'),          'expected subsystem header');
+        assert.ok(tree.includes('[myapp]'),          'expected folder header');
         assert.ok(tree.includes('Service.cs'),       'expected filename');
         assert.ok(tree.includes('GetItems'),         'expected match text');
         assert.ok(tree.includes(':10'),              'expected 1-indexed line number');
@@ -148,7 +148,7 @@ describe('renderTextTree', () => {
         const matches = Array.from({ length: 15 }, (_, i) => ({ text: `match${i}`, line: i }));
         const result = {
             hits: [{ document: { id: '1', relative_path: 'a/B.cs',
-                                  filename: 'B.cs', subsystem: 'a' }, _matches: matches }],
+                                  filename: 'B.cs' }, _matches: matches }],
             found: 1, elapsed: 1, facet_counts: [],
         };
         const tree = renderTextTree(result, 'x', 'all_refs');

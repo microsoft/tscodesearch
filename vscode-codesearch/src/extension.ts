@@ -136,7 +136,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     <span class="filter-label">Ext</span>
     <input id="ext" class="filter-input" type="text" placeholder="cs, h, py…" title="Filter by file extension (e.g. cs)">
     <span class="filter-label">Sub</span>
-    <input id="sub" class="filter-input" type="text" placeholder="subsystem…" title="Filter by subsystem directory">
+    <input id="sub" class="filter-input" type="text" placeholder="folder path…" title="Filter by ancestor folder (e.g. services or services/billing)">
     <span id="rootWrap" class="filter-label" style="display:none">Root</span>
     <select id="root" class="filter-select" title="Source root" style="display:none"></select>
   </div>
@@ -205,7 +205,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
 
   // ── Persistent children of resultsEl ─────────────────────────────────────
   // _spacer sets the virtual scroll height; _msgEl shows empty/error text;
-  // _cappedEl holds the capped-subsystem tree (rendered via innerHTML).
+  // _cappedEl holds the capped-folder tree (rendered via innerHTML).
   var _spacer = document.createElement('div');
   _spacer.style.cssText = 'pointer-events:none;flex-shrink:0';
   resultsEl.appendChild(_spacer);
@@ -251,7 +251,9 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     var nextDirId = 0;
     var subs = Object.create(null);
     hits.forEach(function(h) {
-      var s = h.document.subsystem || '';
+      var rel = (h.document.relative_path || '').replace(/\\/g, '/');
+      var i = rel.indexOf('/');
+      var s = i > 0 ? rel.slice(0, i) : '';
       (subs[s] || (subs[s] = [])).push(h);
     });
     Object.keys(subs).sort().forEach(function(sub) {
@@ -306,7 +308,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     if (r.type === 'sub') {
       return '<span class="chev">&#9660;</span>'
         + (r.sub ? '<span class="sub-name">' + esc(r.sub) + '</span>'
-                 : '<span class="sub-name dim">(no subsystem)</span>')
+                 : '<span class="sub-name dim">(root)</span>')
         + '<span class="badge">' + r.count + '</span>';
     }
     if (r.type === 'dir') {
@@ -436,7 +438,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
       vscode.postMessage({ type: 'openFile', relativePath: mi.dataset.path,
         root: currentSearch.root, line: line, query: currentSearch.query }); return;
     }
-    // Capped subsystem expand (inside _cappedEl, not virtual rows)
+    // Capped folder expand (inside _cappedEl, not virtual rows)
     var ch = t.closest('.sub-hdr.is-cap');
     if (ch) { handleSubExpand(ch.dataset.sub); }
     } catch (err) { vscode.postMessage({ type: 'jsError', message: 'click handler: ' + (err instanceof Error ? err.message : String(err)) }); }
@@ -452,7 +454,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
     if (mi) { mi.click(); e.preventDefault(); }
   });
 
-  // ── Capped results (subsystem-level lazy loading, rendered via innerHTML) ─
+  // ── Capped results (folder-level lazy loading, rendered via innerHTML) ─
   var currentSearch  = { query: '', mode: '', ext: '', sub: '', root: '' };
   var _cappedSearch  = { query: '', mode: '', ext: '', root: '' }; // params from the search that produced the capped view
   var currentFacets  = [];
@@ -527,7 +529,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
   }
 
   function renderCappedTree() {
-    var html = '<div class="cap-hint">Too many results \u2014 click a subsystem to expand</div>';
+    var html = '<div class="cap-hint">Too many results \u2014 click a folder to expand</div>';
     currentFacets.forEach(function(f) {
       var sub = f.value;
       var exp = subExpansions[sub];
@@ -621,12 +623,20 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
       _cappedSearch = { query: data.query, mode: data.mode, ext: data.ext || '', root: data.root || currentSearch.root };
       currentFacets = [];
       if (data.facet_counts) {
-        var sf = data.facet_counts.find(function(f) { return f.field_name === 'subsystem'; });
-        if (sf) { currentFacets = sf.counts || []; }
+        var sf = data.facet_counts.find(function(f) { return f.field_name === 'path_segments'; });
+        if (sf) {
+          // Show top-level folders only (no '/' in the segment value)
+          currentFacets = (sf.counts || []).filter(function(c) { return c.value && c.value.indexOf('/') < 0; });
+        }
       }
       if (currentFacets.length === 0) {
         var seen = {};
-        hits.forEach(function(h) { var s = h.document.subsystem || ''; seen[s] = (seen[s] || 0) + 1; });
+        hits.forEach(function(h) {
+          var rel = (h.document.relative_path || '').replace(/\\/g, '/');
+          var i = rel.indexOf('/');
+          var s = i > 0 ? rel.slice(0, i) : '';
+          seen[s] = (seen[s] || 0) + 1;
+        });
         currentFacets = Object.keys(seen).sort().map(function(s) { return { value: s, count: seen[s] }; });
       }
       _setMode('capped');

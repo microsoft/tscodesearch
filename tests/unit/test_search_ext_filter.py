@@ -79,7 +79,7 @@ class TestExtFilterExpansion(unittest.TestCase):
             else:
                 parts.append(f"extension:=[{','.join(sorted(exts))}]")
         if sub:
-            parts.append(f"subsystem:={sub}")
+            parts.append(f"path_segments:={sub.replace(chr(92), '/').strip('/')}")
         return " && ".join(parts)
 
     # ── C++ expansion ──────────────────────────────────────────────────────────
@@ -138,12 +138,17 @@ class TestExtFilterExpansion(unittest.TestCase):
     def test_cpp_with_sub(self):
         f = self._filter("cpp", sub="AP_HAL_ChibiOS")
         self.assertIn("extension:=[", f)
-        self.assertIn("subsystem:=AP_HAL_ChibiOS", f)
+        self.assertIn("path_segments:=AP_HAL_ChibiOS", f)
         self.assertIn(" && ", f)
 
     def test_cs_with_sub(self):
         f = self._filter("cs", sub="services")
-        self.assertEqual(f, "extension:=cs && subsystem:=services")
+        self.assertEqual(f, "extension:=cs && path_segments:=services")
+
+    def test_cs_with_multi_segment_sub(self):
+        """sub='services/billing' must produce a multi-segment path_segments filter."""
+        f = self._filter("cs", sub="services/billing")
+        self.assertEqual(f, "extension:=cs && path_segments:=services/billing")
 
 
 if __name__ == "__main__":
