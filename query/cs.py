@@ -1259,6 +1259,7 @@ def query_cs_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fals
         "uses":         lambda: q_uses(src_bytes, tree, lines, mode_arg, uses_kind=uses_kind),
         "accesses_on":  lambda: q_accesses_on(src_bytes, tree, lines, mode_arg),
         "all_refs":     lambda: q_all_refs(src_bytes, tree, lines, mode_arg),
+        "text":         lambda: q_all_refs(src_bytes, tree, lines, mode_arg),
         "casts":        lambda: q_casts(src_bytes, tree, lines, mode_arg),
         "attrs":        lambda: q_attrs(src_bytes, tree, lines, mode_arg),
         "accesses_of":  lambda: q_accesses_of(src_bytes, tree, lines, mode_arg),

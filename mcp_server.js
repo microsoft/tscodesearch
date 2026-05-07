@@ -217,12 +217,25 @@ Args:
   include_body: For declarations — include full body. Default false.
   symbol_kind:  For declarations — restrict to: method, class, interface, etc.
   uses_kind:    For uses — all, field, param, return, cast, base, locals.
+  exclude_path: Comma-separated list of folder paths to exclude from results.
+                Each value is matched as an exact ancestor folder, not a glob —
+                wildcards are not supported. Behavior:
+                  - "tests"                    excludes any file under any tests/
+                                               directory at any depth
+                                               (e.g. tests/, src/tests/, a/b/tests/)
+                  - "services/billing/legacy"  excludes only that exact subtree
+                  - "tests,generated,vendor"   excludes all three (logical OR)
+                Composes with sub= as set intersection: scope to one tree, then
+                exclude subtrees within it. Backslashes are normalised to "/" and
+                leading/trailing slashes are stripped, so paths from any OS work.
 
 Examples:
   query_codebase("calls", "SaveChanges", sub="services")
   query_codebase("uses", "IDataStore", uses_kind="param", sub="services")
   query_codebase("implements", "IRepository")
-  query_codebase("declarations", "SaveChanges", symbol_kind="method")`, {
+  query_codebase("declarations", "SaveChanges", symbol_kind="method")
+  query_codebase("calls", "SaveChanges", exclude_path="tests,generated")
+  query_codebase("uses", "IRepo", sub="services", exclude_path="services/legacy")`, {
     mode: z.string(),
     pattern: z.string(),
     sub: z.string().default(""),
@@ -232,7 +245,8 @@ Examples:
     include_body: z.boolean().default(false),
     symbol_kind: z.string().default(""),
     uses_kind: z.string().default(""),
-}, async ({ mode, pattern, sub, ext, context_lines, root, include_body, symbol_kind, uses_kind }) => {
+    exclude_path: z.string().default(""),
+}, async ({ mode, pattern, sub, ext, context_lines, root, include_body, symbol_kind, uses_kind, exclude_path }) => {
     const LISTING = new Set(["methods", "fields", "classes", "usings", "imports"]);
     const m = mode.toLowerCase().trim().replace(/-/g, "_");
     if (LISTING.has(m)) {
@@ -244,6 +258,7 @@ Examples:
             mode: m, pattern, sub: sub || "", ext: (ext || "cs").replace(/^\./, ""),
             root: root || "", limit: QUERY_CODEBASE_LIMIT,
             include_body, symbol_kind: symbol_kind || "", uses_kind: uses_kind || "",
+            exclude_path: exclude_path || "",
         });
     }
     catch (e) {

@@ -127,7 +127,8 @@ def _ts_search(collection: str, params: dict) -> dict:
 
 
 def files_from_search(query, sub=None, ext="cs", limit=50,
-                      collection=None, src_root=None, query_by=None):
+                      collection=None, src_root=None, query_by=None,
+                      exclude_path=None):
     """Run a Typesense search and return the local file paths of matching documents."""
     from indexserver.config import load_config as _load_config, to_native_path
     _cfg = _load_config()
@@ -138,6 +139,13 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
     filter_parts = [f"extension:={ext.lstrip('.')}"] if ext else []
     if sub:
         filter_parts.append(f"path_segments:={sub.replace(chr(92), '/').strip('/')}")
+    if exclude_path:
+        excluded = [p.replace(chr(92), '/').strip('/') for p in exclude_path.split(",")]
+        excluded = [p for p in excluded if p]
+        if len(excluded) == 1:
+            filter_parts.append(f"path_segments:!={excluded[0]}")
+        elif excluded:
+            filter_parts.append(f"path_segments:!=[{','.join(excluded)}]")
 
     params = {
         "q":         query,
@@ -201,6 +209,8 @@ def main():
     ap.add_argument("files", nargs="*", metavar="FILE_OR_PATTERN")
     ap.add_argument("--search",       metavar="QUERY")
     ap.add_argument("--search-sub",   metavar="FOLDER_PATH")
+    ap.add_argument("--search-exclude-path", metavar="FOLDERS",
+                    help="Exclude files under these folders (comma-separated)")
     ap.add_argument("--search-ext",   metavar="EXT", default="cs")
     ap.add_argument("--search-limit", metavar="N", type=int, default=50)
     ap.add_argument("--uses-kind",    metavar="KIND", default="")
@@ -255,6 +265,7 @@ def main():
             sub=getattr(args, "search_sub", None),
             ext=getattr(args, "search_ext", "cs"),
             limit=getattr(args, "search_limit", 50),
+            exclude_path=getattr(args, "search_exclude_path", None),
         )
         if not files:
             print("No matching files found in index.", file=sys.stderr)

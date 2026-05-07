@@ -7,6 +7,7 @@ Tools:
   query_codebase     - Typesense pre-filter + tree-sitter AST (via indexserver /query-codebase)
   query_single_file  - Tree-sitter AST on one file (direct import — no indexserver required)
   ready              - Quick index health snapshot
+  wait_for_sync      - Block until index has caught up to all pending file events
   verify_index       - Start/stop/monitor index repair scan
   service_status     - Typesense + indexserver status
   manage_service     - Docker container lifecycle (start/stop/restart/rebuild)
@@ -17,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -52,6 +54,13 @@ _DOCKER          = _cfg["docker_container"]
 
 _MAX_OUTPUT_CHARS     = 40_000
 _QUERY_CODEBASE_LIMIT = 250
+# Tier-2 vs tier-3 boundary: when the AST-confirmed match list contains this
+# many files or more, we collapse to filenames + hit counts only and direct
+# the caller to query_single_file for line-level detail.
+_DETAIL_FILES_THRESHOLD = 20
+# Tier-3 per-file cap: at most this many `path:line: content` lines per file.
+# Files with more than this many AST hits get a query_single_file suggestion.
+_PER_FILE_DETAIL_LINES  = 10
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
 
@@ -139,6 +148,36 @@ def _queue_warning() -> str:
         pass  # server may not be running; warnings are best-effort
     return ""
 
+def _sync_state(data: dict) -> tuple[bool, str]:
+    """Inspect a /status response. Returns (is_synced, human_state).
+
+    Synced means: Typesense is up, the index queue is empty, and the syncer
+    (verifier walk) is idle with no pending jobs. Watcher activity alone does
+    not block — events flow through the queue, which we already check.
+    """
+    if not isinstance(data, dict):
+        return False, "no status response"
+    if data.get("typesense_loading"):
+        return False, "typesense starting up"
+    if data.get("typesense_ok") is False:
+        return False, "typesense not healthy"
+    queue          = data.get("queue") or {}
+    syncer         = data.get("syncer") or {}
+    depth          = int(queue.get("depth", 0) or 0)
+    syncer_running = bool(syncer.get("running", False))
+    syncer_pending = int(syncer.get("pending", 0) or 0)
+    if depth == 0 and not syncer_running and syncer_pending == 0:
+        return True, "queue empty, syncer idle"
+    parts = []
+    if depth:
+        parts.append(f"queue={depth}")
+    if syncer_running:
+        parts.append("syncer running")
+    if syncer_pending:
+        parts.append(f"syncer pending={syncer_pending}")
+    return False, ", ".join(parts) or "working"
+
+
 def _truncate(output: str) -> tuple[str, bool]:
     if len(output) <= _MAX_OUTPUT_CHARS:
         return output, False
@@ -162,10 +201,24 @@ def query_codebase(
     include_body: bool = False,
     symbol_kind: str = "",
     uses_kind: str = "",
+    exclude_path: str = "",
 ) -> str:
-    """Typesense pre-filter + tree-sitter AST in one call. Returns exact line-level results.
-NEVER returns partial results. If the search matches more than 250 files, returns a
-per-folder breakdown — repeat with a deeper sub= to narrow further.
+    """Typesense pre-filter + tree-sitter AST. Returns one of three response shapes
+depending on result size, picked to keep the response compact and paged-friendly:
+
+  Tier 1 — more than 250 candidate files: a folder drill-down derived from
+           Typesense facets (no AST runs at all). Re-issue with a deeper or
+           different sub= to narrow.
+  Tier 2 — 20-250 files with AST matches: filenames + hit counts only,
+           sorted by hits desc. Use query_single_file on a specific file
+           to see line-level hits.
+  Tier 3 — fewer than 20 files with AST matches: full path:line:content,
+           but each file is capped at 10 lines. Files that get capped get
+           a per-file query_single_file suggestion appended.
+
+query_single_file accepts the same mode / pattern / root / include_body /
+symbol_kind / uses_kind arguments as this tool, so the suggested calls in
+tier 2 and tier 3 are drop-in.
 
 For listing modes (methods, fields, classes, usings, imports) use query_single_file.
 
@@ -175,8 +228,10 @@ Args:
                 calls, implements, ident, declarations, params, decorators (Python)
   pattern:      Type/method/name to search for.
   sub:          Narrow to an ancestor folder. Accepts any depth, e.g.
-                "services" or "services/billing". On overflow the response
-                suggests deeper paths to drill into.
+                "services" or "services/billing". Comma-separated values
+                form a logical OR: sub="services,vendor" searches files
+                under either tree. On overflow the response suggests
+                deeper paths to drill into.
   ext:          File extension filter. Common values: "cs", "py", "cpp".
                 For C/C++, "cpp" automatically includes header files (.h, .hpp, .hxx).
                 Omit to search all indexed languages. Default: cs.
@@ -185,12 +240,26 @@ Args:
   include_body: For declarations — include full body. Default false.
   symbol_kind:  For declarations — restrict to: method, class, interface, etc.
   uses_kind:    For uses — all, field, param, return, cast, base, locals.
+  exclude_path: Comma-separated list of folder paths to exclude from results.
+                Each value is matched as an exact ancestor folder, not a glob —
+                wildcards are not supported. Behavior:
+                  - "tests"                    excludes any file under any tests/
+                                               directory at any depth
+                                               (e.g. tests/, src/tests/, a/b/tests/)
+                  - "services/billing/legacy"  excludes only that exact subtree
+                  - "tests,generated,vendor"   excludes all three (logical OR)
+                Composes with sub= as set intersection: scope to one tree, then
+                exclude subtrees within it. Backslashes are normalised to "/" and
+                leading/trailing slashes are stripped, so paths from any OS work.
 
 Examples:
   query_codebase("calls", "SaveChanges", sub="services")
   query_codebase("uses", "IDataStore", uses_kind="param", sub="services")
   query_codebase("implements", "IRepository")
-  query_codebase("declarations", "SaveChanges", symbol_kind="method")"""
+  query_codebase("declarations", "SaveChanges", symbol_kind="method")
+  query_codebase("calls", "SaveChanges", sub="services,vendor")
+  query_codebase("calls", "SaveChanges", exclude_path="tests,generated")
+  query_codebase("uses", "IRepo", sub="services", exclude_path="services/legacy")"""
     _LISTING = {"methods", "fields", "classes", "usings", "imports"}
     m = mode.lower().strip().replace("-", "_")
     if m in _LISTING:
@@ -204,6 +273,7 @@ Examples:
             "root": root or "", "limit": _QUERY_CODEBASE_LIMIT,
             "include_body": include_body,
             "symbol_kind": symbol_kind or "", "uses_kind": uses_kind or "",
+            "exclude_path": exclude_path or "",
         })
     except Exception as e:
         return f"Could not reach indexserver: {e}\nStart it with: ts start"
@@ -225,52 +295,126 @@ Examples:
     facets = data.get("facet_counts", [])
 
     if data.get("overflow"):
-        scope        = (sub or "").replace("\\", "/").strip("/")
-        scope_depth  = scope.count("/") + 1 if scope else 0
-        next_depth   = scope_depth + 1
-        prefix       = scope + "/" if scope else ""
+        scopes = [s.strip("/") for s in (sub or "").replace("\\", "/").split(",")]
+        scopes = [s for s in scopes if s]
 
-        counts = []
-        for fc in facets:
-            if fc.get("field_name") == "path_segments":
+        counts: list[tuple[str, int]] = []
+        seen_vals: set[str] = set()
+        if scopes:
+            for scope in scopes:
+                scope_depth = scope.count("/") + 1
+                next_depth  = scope_depth + 1
+                prefix      = scope + "/"
+                for fc in facets:
+                    if fc.get("field_name") != "path_segments":
+                        continue
+                    for c in fc.get("counts", []):
+                        val = c["value"]
+                        if val in seen_vals:
+                            continue
+                        if not val.startswith(prefix):
+                            continue
+                        if (val.count("/") + 1) != next_depth:
+                            continue
+                        seen_vals.add(val)
+                        counts.append((val, int(c["count"])))
+        else:
+            for fc in facets:
+                if fc.get("field_name") != "path_segments":
+                    continue
                 for c in fc.get("counts", []):
                     val = c["value"]
-                    if scope and not val.startswith(prefix):
+                    if val in seen_vals or "/" in val:
                         continue
-                    if (val.count("/") + 1) != next_depth:
-                        continue
+                    seen_vals.add(val)
                     counts.append((val, int(c["count"])))
 
         lines = [f"Too many files ({found}) — narrowing required.",
                  "Repeat with a deeper sub= to scope further, then re-run.", ""]
         if counts:
             counts.sort(key=lambda x: -x[1])
-            scope_label = f" under '{scope}'" if scope else ""
+            scope_label = f" under '{','.join(scopes)}'" if scopes else ""
             lines.append(f"Folders{scope_label} with '{pattern}' hits — re-run with sub=<path>:")
             for name, count in counts[:25]:
                 lines.append(f'  query_codebase("{m}", "{pattern}", sub="{name}")  # ~{count} files')
         else:
             lines.append("No deeper folder breakdown available — try a more specific pattern.")
-        lines += ["", "Use query_single_file for a specific known file."]
         return warn + "\n".join(lines)
 
-    header = f"[Typesense: {found} files | AST scanned: {found} | files with matches: {len(hits)}]\n"
-    if not hits:
+    # AST-confirmed files only — drop Typesense false positives.
+    files_with_matches: list[tuple[str, list]] = []
+    total_matches = 0
+    for hit in hits:
+        matches = hit.get("matches") or []
+        if not matches:
+            continue
+        rel = (hit.get("document") or {}).get("relative_path", "")
+        files_with_matches.append((rel, matches))
+        total_matches += len(matches)
+
+    n_files = len(files_with_matches)
+    header  = (f"[Typesense: {found} files | files with matches: {n_files} | "
+               f"total matches: {total_matches}]\n")
+    if not files_with_matches:
         return warn + header + "No AST matches found."
 
-    out_lines = []
-    for hit in hits:
-        rel = (hit.get("document") or {}).get("relative_path", "")
-        for match in hit.get("matches") or []:
+    files_with_matches.sort(key=lambda fm: -len(fm[1]))
+
+    def _qsf_call(file_rel: str) -> str:
+        """A query_single_file call mirroring the current query_codebase params."""
+        args = [f'"{m}"']
+        if pattern:
+            args.append(f'"{pattern}"')
+        args.append(f'file="$SRC_ROOT/{file_rel}"')
+        if root:
+            args.append(f'root="{root}"')
+        if include_body:
+            args.append("include_body=True")
+        if symbol_kind:
+            args.append(f'symbol_kind="{symbol_kind}"')
+        if uses_kind:
+            args.append(f'uses_kind="{uses_kind}"')
+        return "query_single_file(" + ", ".join(args) + ")"
+
+    # Tier 2 — many files: filenames + counts only.
+    if n_files >= _DETAIL_FILES_THRESHOLD:
+        body_lines = [
+            f"{rel}  ({len(matches)} hit{'s' if len(matches) != 1 else ''})"
+            for rel, matches in files_with_matches
+        ]
+        suggestion = (f"\n\n{n_files} files matched — line-level results omitted. "
+                      f"To see hits in a specific file:\n"
+                      f"  {_qsf_call(files_with_matches[0][0])}")
+        output = "\n".join(body_lines) + suggestion
+        output, truncated = _truncate(output)
+        if truncated:
+            shown = output.count("\n") + 1
+            note  = f"[Result truncated — showing first {shown} lines of {n_files}.]\n\n"
+            return warn + header + note + output
+        return warn + header + output
+
+    # Tier 3 — few files: full content, but cap each file at PER_FILE_DETAIL_LINES.
+    out_lines: list[str] = []
+    truncated_files: list[tuple[str, int]] = []
+    for rel, matches in files_with_matches:
+        for match in matches[:_PER_FILE_DETAIL_LINES]:
             out_lines.append(f"{rel}:{match['line']}: {(match.get('text') or '').rstrip()}")
+        if len(matches) > _PER_FILE_DETAIL_LINES:
+            truncated_files.append((rel, len(matches)))
+
     output = "\n".join(out_lines)
-    if not output:
-        return warn + header + "No AST matches found."
+    if truncated_files:
+        notes = [f"\n\n{len(truncated_files)} file(s) had more than "
+                 f"{_PER_FILE_DETAIL_LINES} hits — showing first "
+                 f"{_PER_FILE_DETAIL_LINES} of each. To see all hits in a file:"]
+        for rel, total in truncated_files:
+            notes.append(f"  {_qsf_call(rel)}  # {total} total hits")
+        output += "\n".join(notes)
 
     output, truncated = _truncate(output)
     if truncated:
         shown   = output.count("\n") + 1
-        summary = f"[Result truncated — {len(out_lines)} matches. Showing first {shown} lines.]\n\n"
+        summary = f"[Result truncated — showing first {shown} lines.]\n\n"
         return warn + header + summary + output
     return warn + header + output
 
@@ -296,10 +440,12 @@ Works well on large source files — tree-sitter parses the whole file and retur
 Args:
   mode:    AST query mode.
            C# pattern-required: uses, calls, implements, casts, declarations,
-             attrs, accesses_of, accesses_on, all_refs, params
+             attrs, accesses_of, accesses_on, all_refs, text, params
            C# listing (no pattern): methods, fields, classes, usings
-           Python pattern-required: calls, implements, ident, declarations, decorators, params
+           Python pattern-required: calls, implements, ident, declarations, decorators, text, params
            Python listing (no pattern): classes, methods, imports
+           text behaves identically to all_refs (every identifier occurrence of
+             the pattern), matching the AST behavior of query_codebase("text", ...).
   pattern: Type/method/name to search for. Omit for listing modes.
   file:    Absolute path to the file. Accepts Windows paths (C:/…), /mnt/c/… paths,
            or $SRC_ROOT-prefixed paths. Relative paths are NOT supported.
@@ -438,6 +584,77 @@ Args:
         lines.append(f"Left to index: {queue.get('depth', 0)} queued — run verify_index(action='start') to check if index is complete")
 
     return "\n".join(lines)
+
+# ── wait_for_sync ─────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def wait_for_sync(timeout_s: float = 30.0, root: str = "") -> str:
+    """Block until the index has caught up to all pending file events.
+
+Use this between editing files and querying the index, to make sure your
+recent edits are reflected in query_codebase results. Without it, results
+can be a second or two stale on Windows (watcher latency + queue drain).
+
+Polls the indexserver's /status endpoint every 0.5 s, and returns once
+Typesense is healthy AND the index queue is empty AND the syncer is idle.
+A small initial delay (~1 s) is built in so events from a just-completed
+edit have time to reach the watcher before the first poll.
+
+Args:
+  timeout_s: Maximum seconds to wait. Default 30. The indexer typically
+             catches up in well under a second when only a few files
+             changed; raise this for large rewrites or initial indexing.
+  root:      Named source root (empty = default). Currently informational —
+             the indexserver tracks queue/syncer state globally, not per
+             root, so this argument is reserved for future use.
+
+Returns:
+  On success: "Index synced in {N}s" (plus a brief description of what
+  was pending when polling began, if anything).
+  On timeout: a state line describing what is still in flight.
+  On error:   a connection error message with a hint to start the daemon.
+"""
+    try:
+        if root:
+            _get_root(root)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    start         = time.monotonic()
+    deadline      = start + max(0.0, float(timeout_s))
+    initial_delay = min(1.0, max(0.0, float(timeout_s)))
+    poll_interval = 0.5
+    last_state    = "unknown"
+    initial_state = None
+
+    time.sleep(initial_delay)
+
+    while True:
+        try:
+            status, data = _get("/status", timeout=2)
+        except Exception as e:
+            return f"Indexserver is NOT running: {e}\nStart it with: ts start"
+        if status != 200:
+            return f"Status check failed: HTTP {status}"
+
+        synced, state = _sync_state(data if isinstance(data, dict) else {})
+        if initial_state is None:
+            initial_state = state
+        last_state = state
+        if synced:
+            elapsed = time.monotonic() - start
+            if initial_state and initial_state != state:
+                return f"Index synced in {elapsed:.1f}s (was: {initial_state})"
+            return f"Index synced in {elapsed:.1f}s"
+
+        if time.monotonic() >= deadline:
+            elapsed = time.monotonic() - start
+            return (f"Timed out after {elapsed:.1f}s — still working: {last_state}.\n"
+                    f"Re-run wait_for_sync with a larger timeout_s, or run "
+                    f"verify_index(action='start') if the index looks stuck.")
+
+        remaining = deadline - time.monotonic()
+        time.sleep(min(poll_interval, max(0.0, remaining)))
 
 # ── verify_index ──────────────────────────────────────────────────────────────
 

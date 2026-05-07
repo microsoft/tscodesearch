@@ -194,6 +194,7 @@ export async function doQueryCodebase(
     sub: string,
     rootName: string,
     limit: number,
+    excludePath: string = '',
 ): Promise<{ found: number; overflow: boolean; hits: PipelineHit[]; facet_counts: FacetCounts | undefined }> {
     const modeEntry = MODES.find((m) => m.key === mode);
     const serverMode = modeEntry?.astMode ?? mode;
@@ -201,6 +202,7 @@ export async function doQueryCodebase(
     const apiKey = config.api_key;
     const bodyObj: Record<string, unknown> = { mode: serverMode, pattern: query, sub, ext, root: rootName, limit };
     if (modeEntry?.uses_kind) { bodyObj['uses_kind'] = modeEntry.uses_kind; }
+    if (excludePath) { bodyObj['exclude_path'] = excludePath; }
     const body   = JSON.stringify(bodyObj);
 
     return new Promise((resolve, reject) => {
@@ -334,9 +336,10 @@ export async function runSearchPipeline(
     sub: string,
     rootName: string,
     limit: number,
+    excludePath: string = '',
 ): Promise<PipelineResult> {
     const start = Date.now();
-    const result = await doQueryCodebase(config, query, modeKey, ext, sub, rootName, limit);
+    const result = await doQueryCodebase(config, query, modeKey, ext, sub, rootName, limit, excludePath);
     return {
         hits:         result.hits,
         found:        result.found,
