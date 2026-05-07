@@ -19,7 +19,7 @@ Replicates behavior discovered in Round 4 of guided testing:
       parameter loop. Skips implicit_type (var) nodes since the element type
       cannot be determined without type inference.
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_foreach_accesses.py -v
 """
 from __future__ import annotations

@@ -1,5 +1,4 @@
 // Fixture for testing null-conditional member access (?.member) patterns.
-// No SPO code — generic types only.
 // Covers: q_calls, q_accesses_on, q_accesses_of with ?. syntax.
 namespace Sample
 {

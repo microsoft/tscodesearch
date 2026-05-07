@@ -17,9 +17,9 @@ with tests.
 
 ## Prerequisites
 
-- Service running and index populated (`mcp__tscodesearch__ready`)
-- Python environment with tree-sitter and the indexserver installed
-- Test command: `MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/<drive>/<path>/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/ -v"`
+- Daemon running and index populated (`mcp__tscodesearch__ready`)
+- `.client-venv` set up (`setup.cmd`)
+- Test command: `.client-venv\Scripts\python.exe -m pytest tests/ query/tests/ -v`
 
 ---
 
@@ -75,25 +75,22 @@ Read the actual source line before concluding anything is missing or spurious.
 ## Inspecting the AST
 
 When you need to understand why a node is or isn't being found, write a small
-Python script to a temp file and run it via WSL:
+Python script and run it through `.client-venv`:
 
 ```python
-# /tmp/inspect.py
+# inspect.py
 import sys
-sys.path.insert(0, "/mnt/<drive>/<path>/tscodesearch")
-from src.query.cs import _parse_src   # or equivalent
+sys.path.insert(0, r"Q:\spocore\tscodesearch")
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
 
 LANG = Language(tscsharp.language())
 parser = Parser(LANG)
 
-src = open("/mnt/<drive>/<path>/file.cs", encoding="utf-8").read()
+src = open(r"Q:\spocore\src\…\Widget.cs", encoding="utf-8").read()
 tree = parser.parse(src.encode())
 
 def walk(node, indent=0):
-    field_info = ""
-    # print node type, field name if known, and source text snippet
     print(" " * indent + node.type, repr(node.text[:60] if node.text else b""))
     for child in node.children:
         walk(child, indent + 2)
@@ -103,7 +100,7 @@ walk(tree.root_node)
 
 Run with:
 ```
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "~/.local/indexserver-venv/bin/python3 /tmp/inspect.py"
+.client-venv\Scripts\python.exe inspect.py
 ```
 
 Key things to check:
@@ -151,7 +148,7 @@ node type.
 A good fixture file:
 
 - Lives in `sample/root1/` with a descriptive name (e.g. `ForeachAccess.cs`)
-- Uses **generic types only** — no SPO-specific imports or dependencies
+- Uses **generic types only** — no project-specific imports or dependencies
 - Contains the **positive case** (the syntax that was missed)
 - Contains a **regression guard** (a plain form that already worked)
 - Contains a **negative case** (a different type that must NOT appear in results)
@@ -228,16 +225,16 @@ Workflow:
 
 Single file:
 ```
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/<drive>/<path>/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/test_cs_<topic>.py -v"
+.client-venv\Scripts\python.exe -m pytest query/tests/test_cs_<topic>.py -v
 ```
 
 Full suite:
 ```
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/<drive>/<path>/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/ -v"
+.client-venv\Scripts\python.exe -m pytest tests/ query/tests/ -v
 ```
 
-The e2e tests (`test_sample_e2e.py`) require Typesense running; they are
-skipped automatically when the service is not available.
+Integration tests open a fresh Tantivy index in `<repo>/.tantivy/test_*` for
+each test class — no external service needs to be running.
 
 ---
 

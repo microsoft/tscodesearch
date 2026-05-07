@@ -15,7 +15,7 @@ Replicates bug discovered in Round 13 of guided testing:
       Fix: added a loop over `as_expression` nodes reading the `right` field
       as the cast target type.
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_cast_as_expression.py -v
 """
 from __future__ import annotations

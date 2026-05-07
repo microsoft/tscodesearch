@@ -1,13 +1,12 @@
 """
 File watcher: monitors source roots for changes and enqueues them for indexing.
 
-On Windows (MCP daemon): uses watchdog Observer backed by ReadDirectoryChangesW.
-On Linux/WSL (indexserver): uses PollingObserver because inotify does not fire
-for changes made on the Windows side of a /mnt/ path.
+On Windows: watchdog Observer backed by ReadDirectoryChangesW (real-time).
+On Linux/macOS: PollingObserver (10 s poll).
 
 Usage:
     python watcher.py
-    python watcher.py --src /mnt/c/myrepo --collection my_collection
+    python watcher.py --src C:/myrepo --collection my_collection
 """
 
 import os
@@ -26,7 +25,7 @@ else:
     from watchdog.observers.polling import PollingObserver as _WatchdogObserver
 from watchdog.events import FileSystemEventHandler
 
-from indexserver.config import to_native_path
+from indexserver.config import normalize_path
 
 DEBOUNCE_SECONDS = 2.0
 
@@ -54,7 +53,7 @@ class SourceChangeHandler(FileSystemEventHandler):
         return os.path.splitext(path)[1].lower() in self._extensions
 
     def _is_excluded(self, path):
-        parts = path.replace("\\", "/").split("/")
+        parts = normalize_path(path).split("/")
         return any(p in self._exclude_dirs or p.startswith(".") for p in parts)
 
     def on_created(self, event):
@@ -97,7 +96,7 @@ class SourceChangeHandler(FileSystemEventHandler):
 
         n_new = n_dedup = 0
         for path, reason in pending.items():
-            rel    = os.path.relpath(path, self.src_root).replace("\\", "/")
+            rel    = normalize_path(os.path.relpath(path, self.src_root))
             action = "delete" if reason == "deleted" else "upsert"
             if self._queue.enqueue(path, rel, self._collection, action, reason=reason):
                 n_new += 1
@@ -115,17 +114,15 @@ def run_watcher(cfg, src_root=None, collection=None, stop_event=None, queue=None
     Changes are enqueued into *queue* (an IndexQueue) for async processing.
     If both src_root and collection are given, watches only that root.
     Otherwise watches every root in cfg.roots.
-    Windows-style paths (C:/...) are automatically converted to WSL paths.
     """
     if queue is None:
         raise ValueError("run_watcher requires a queue argument")
 
     if src_root is not None and collection is not None:
-        wsl_path = to_native_path(src_root)
-        roots_map = {wsl_path: (collection, None)}
+        roots_map = {normalize_path(src_root): (collection, None)}
     else:
         roots_map = {
-            r.native_path: (r.collection, r.extensions)
+            r.path: (r.collection, r.extensions)
             for r in cfg.roots.values()
         }
 
@@ -151,16 +148,26 @@ def run_watcher(cfg, src_root=None, collection=None, stop_event=None, queue=None
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Watch source files and update Typesense index")
+    ap = argparse.ArgumentParser(description="Watch source files and update the code index")
     ap.add_argument("--src",        default=None, help="Single source root to watch")
     ap.add_argument("--collection", default=None, help="Collection for --src")
     args = ap.parse_args()
-    # Standalone mode: create a minimal queue backed by a direct Typesense client
-    import typesense
+    # Standalone mode: open a Tantivy backend per root and route writes through the queue.
     from indexserver.config import load_config as _load_config
     from indexserver.index_queue import IndexQueue
+    from indexserver.indexer import ensure_backend
     _cfg = _load_config()
+    backends: dict = {}
+    if args.collection:
+        backends[args.collection] = ensure_backend(_cfg, args.collection)
+    else:
+        for r in _cfg.roots.values():
+            backends[r.collection] = ensure_backend(_cfg, r.collection)
     q = IndexQueue(max_file_bytes=_cfg.max_file_bytes)
-    q.start(typesense.Client(_cfg.typesense_client_config))
-    run_watcher(_cfg, src_root=args.src, collection=args.collection, queue=q)
-    q.stop()
+    q.start(lambda c: backends.get(c))
+    try:
+        run_watcher(_cfg, src_root=args.src, collection=args.collection, queue=q)
+    finally:
+        q.stop()
+        for b in backends.values():
+            b.close()

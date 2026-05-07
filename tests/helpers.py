@@ -3,75 +3,70 @@ Shared test helpers and source constants for the codesearch test suite.
 """
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
 import tempfile
-import urllib.request
-import urllib.parse
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from indexserver.config import load_config as _load_config
-_cfg = _load_config()
-HOST    = _cfg.host
-PORT    = _cfg.port
-API_KEY = _cfg.api_key
-
-
-def _server_ok() -> bool:
-    try:
-        with urllib.request.urlopen(f"http://{HOST}:{PORT}/health", timeout=3) as r:
-            return json.loads(r.read()).get("ok", False)
-    except Exception:
-        return False
-
 
 def _assert_server_ok() -> None:
-    """Skip the test class if Typesense is not running. Call from setUpClass."""
-    import time
-    import unittest
-    for _ in range(5):
-        if _server_ok():
-            return
-        time.sleep(1)
-    raise unittest.SkipTest("Typesense is not running — start with: ts start")
+    """No-op: Tantivy is in-process, no external server to reach."""
+    return None
 
 
 def _search(collection: str, q: str,
             query_by: str = "filename,class_names,method_names,tokens",
             per_page: int = 10) -> list[dict]:
-    params = urllib.parse.urlencode({
-        "q": q, "query_by": query_by,
-        "per_page": per_page, "num_typos": 0,
-    })
-    url = f"http://{HOST}:{PORT}/collections/{collection}/documents/search?{params}"
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": API_KEY})
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return [h["document"] for h in json.loads(r.read()).get("hits", [])]
+    """Run a backend search and return the documents from each hit."""
+    from indexserver.config import load_config as _load_config
+    from indexserver.indexer import ensure_backend
+    from indexserver.search import search as _backend_search
+    cfg = _load_config()
+    backend = ensure_backend(cfg, collection, write=False)
+    try:
+        result = _backend_search(
+            backend, q=q, query_by=query_by, per_page=per_page, num_typos=0,
+        )
+    finally:
+        backend.close()
+    return [h["document"] for h in result.get("hits", [])]
 
 
 def _collection_info(collection: str) -> dict | None:
-    url = f"http://{HOST}:{PORT}/collections/{collection}"
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": API_KEY})
+    """Return info for an existing Tantivy index, or None if it has not been created."""
+    import os
+    from indexserver.config import load_config as _load_config, index_root
+    from indexserver.backend import Backend
+    cfg = _load_config()
+    root = next((r for r in cfg.roots.values() if r.collection == collection), None)
+    index_dir = root.index_dir if root else str(index_root() / collection)
+    # Only consider the collection "to exist" if there is a meta.json on disk.
+    if not os.path.exists(os.path.join(index_dir, "meta.json")):
+        return None
     try:
-        with urllib.request.urlopen(req, timeout=3) as r:
-            return json.loads(r.read())
+        backend = Backend(index_dir, write=False, create=False)
+        info = {"num_documents": backend.num_documents()}
+        backend.close()
+        return info
     except Exception:
         return None
 
 
 def _delete_collection(collection: str) -> None:
-    url = f"http://{HOST}:{PORT}/collections/{collection}"
-    req = urllib.request.Request(url, method="DELETE",
-                                  headers={"X-TYPESENSE-API-KEY": API_KEY})
-    try:
-        urllib.request.urlopen(req, timeout=3)
-    except Exception:
-        pass
+    """Wipe a Tantivy collection's on-disk directory."""
+    from indexserver.config import load_config as _load_config
+    from indexserver.backend import drop
+    cfg = _load_config()
+    root = next((r for r in cfg.roots.values() if r.collection == collection), None)
+    if root is None:
+        from indexserver.config import index_root
+        drop(str(index_root() / collection))
+    else:
+        drop(root.index_dir)
 
 
 def _make_git_repo(files: dict) -> str:
@@ -86,43 +81,71 @@ def _make_git_repo(files: dict) -> str:
     return tmpdir
 
 
-class _MockDocuments:
+# ---------------------------------------------------------------------------
+# Fake backend used by unit tests that don't want the full Tantivy index
+# ---------------------------------------------------------------------------
+
+class _FakeBackend:
+    """Drop-in replacement for indexserver.backend.Backend in unit tests.
+
+    Stores documents in a dict keyed by id; no indexing or scoring.
+    Mirrors the streaming contract: ``add``/``delete`` buffer, ``commit``
+    finalizes, ``has_pending`` reports buffered state.
+    """
+
     def __init__(self):
+        self._docs: dict[str, dict] = {}
+        self._buffered_upserts: list[dict] = []
+        self._buffered_deletes: list[str] = []
         self.upserted: list[dict] = []
         self.deleted: list[str] = []
-        self._stored: dict[str, dict] = {}  # doc_id → stored doc (for mtime check)
-
-    def import_(self, docs, params):
-        for doc in docs:
-            self._stored[doc["id"]] = doc
-        self.upserted.extend(docs)
-        return [{"success": True}] * len(docs)
-
-    def __getitem__(self, doc_id: str):
-        parent = self
-        class _Doc:
-            def delete(self):
-                parent.deleted.append(doc_id)
-                parent._stored.pop(doc_id, None)
-            def retrieve(self):
-                if doc_id in parent._stored:
-                    return parent._stored[doc_id]
-                raise Exception(f"404 not found: {doc_id}")
-        return _Doc()
-
-
-class _MockCollection:
-    def __init__(self):
-        self.documents = _MockDocuments()
-
-
-class _MockTypesenseClient:
-    def __init__(self, collection_name: str = "test_coll"):
-        self._colls: dict[str, _MockCollection] = {collection_name: _MockCollection()}
 
     @property
-    def collections(self):
-        return self._colls
+    def has_pending(self) -> bool:
+        return bool(self._buffered_upserts or self._buffered_deletes)
+
+    def add(self, doc):
+        self._buffered_upserts.append(doc)
+
+    def delete(self, doc_id):
+        self._buffered_deletes.append(doc_id)
+
+    def commit(self):
+        for d in self._buffered_upserts:
+            self._docs[d["id"]] = d
+            self.upserted.append(d)
+        for doc_id in self._buffered_deletes:
+            if self._docs.pop(doc_id, None) is not None:
+                self.deleted.append(doc_id)
+        self._buffered_upserts.clear()
+        self._buffered_deletes.clear()
+
+    def upsert_many(self, docs):
+        for d in docs:
+            self.add(d)
+        self.commit()
+        return len(docs), 0
+
+    def delete_many(self, ids):
+        for doc_id in ids:
+            self.delete(doc_id)
+        n_present = sum(1 for i in ids if i in self._docs)
+        self.commit()
+        return n_present
+
+    def delete_all(self):
+        self.deleted.extend(self._docs)
+        self._docs.clear()
+
+    def export_id_mtime(self):
+        return {d["id"]: int(d.get("mtime", 0)) for d in self._docs.values()}
+
+    def num_documents(self):
+        return len(self._docs)
+
+    def close(self):
+        if self.has_pending:
+            self.commit()
 
 
 class _FakeEvent:
@@ -131,6 +154,10 @@ class _FakeEvent:
         self.is_directory = is_directory
         self.dest_path = dest_path
 
+
+# ---------------------------------------------------------------------------
+# Source fixtures (kept identical so unit tests keep their assertions)
+# ---------------------------------------------------------------------------
 
 _FOO_CS = """\
 using System;

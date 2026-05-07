@@ -83,7 +83,7 @@ _MEMBER_KINDS = frozenset({"method", "constructor", "property", "field", "event"
 
 
 def symbol_kind_query_by(kind: str) -> str:
-    """Return the Typesense query_by string for a given symbol_kind.
+    """Return the search query_by string for a given symbol_kind.
 
     Returns empty string when kind is unknown (caller should fall back to default).
     """

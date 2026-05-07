@@ -1,8 +1,8 @@
 """
 Tests for C# query modes using sample/root1/Throttle.cs.
 
-Replicates behaviors observed during live testing on the ExponentialBackoff
-pattern from absblobstore (without any real SPO code):
+Replicates behaviors observed during live testing of an ExponentialBackoff
+throttle pattern (with generic types only):
 
   declarations, implements, calls, methods, classes
     → all work correctly
@@ -17,7 +17,7 @@ pattern from absblobstore (without any real SPO code):
     → does NOT track properties declared as TYPE (property_declaration has
       no inner variable_declaration) — known gap, marked xfail
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_throttle.py -v
 """
 from __future__ import annotations

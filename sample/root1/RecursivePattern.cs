@@ -2,7 +2,6 @@
 // Bug: if (obj is Widget { Size: 0 } w) — uses recursive_pattern node, not
 // declaration_pattern. The type and name fields exist but were not in the
 // node-type set, so w was silently skipped.
-// No SPO code — generic types only.
 namespace Sample.Patterns
 {
     public class Widget { public int Size { get; } public void Use() { } }

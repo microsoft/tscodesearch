@@ -7,10 +7,10 @@
  *
  * mode defaults to "uses".  Examples:
  *   node test-virtual-scroll.js BlobStore uses
- *   node test-virtual-scroll.js IAbsBlobStore declarations
+ *   node test-virtual-scroll.js IRepository declarations
  *
  * Reads port / api_key from config.json (auto-discovered), or set env vars:
- *   TSCS_PORT   – Typesense port (API is port+1). Default: 8108
+ *   TSCS_PORT   – daemon HTTP port. Default: 8108
  *   TSCS_KEY    – API key.  Default: codesearch-local
  *   TSCS_ROOT   – Root name.  Default: default
  */

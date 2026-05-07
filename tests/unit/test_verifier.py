@@ -1,24 +1,19 @@
 """
 Unit tests for the verifier: export_index_map and run_verify.
 
-TestExportIndex      — unit tests for export_index_map (no server needed, mocks HTTP)
-TestRunVerifyUnit    — unit tests for run_verify (no server, mock index_file_list)
+TestExportIndex   — unit tests for export_index_map against a fake backend
+TestRunVerifyUnit — unit tests for run_verify with mocked index_file_list
 
-Integration tests (require Typesense) are in tests/integration/test_verifier.py.
-
-Run (from WSL):
-    ~/.local/indexserver-venv/bin/pytest tests/unit/test_verifier.py -v
+Integration tests (require a real Tantivy index) live in tests/integration/test_verifier.py.
 """
 
-import io
-import json
 import os
 import shutil
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from tests.helpers import _FOO_CS, _BAR_CS
+from tests.helpers import _FOO_CS, _BAR_CS, _FakeBackend
 from indexserver.config import load_config as _load_config
 from indexserver.indexer import file_id, export_index_map
 from indexserver.verifier import run_verify
@@ -29,71 +24,41 @@ _cfg = _load_config()
 # ── TestExportIndex ───────────────────────────────────────────────────────────
 
 class TestExportIndex(unittest.TestCase):
-    """Unit tests for export_index_map — no Typesense server needed."""
-
-    def _make_response(self, docs: list[dict]) -> io.BytesIO:
-        """Build a fake JSONL HTTP response body."""
-        lines = "\n".join(json.dumps(d) for d in docs)
-        return io.BytesIO(lines.encode("utf-8"))
-
-    def _patch_urlopen(self, docs: list[dict]):
-        """Context manager: patch urllib.request.urlopen to return fake docs."""
-        buf = self._make_response(docs)
-        mock_cm = MagicMock()
-        mock_cm.__enter__ = lambda s: buf
-        mock_cm.__exit__ = MagicMock(return_value=False)
-        return patch("indexserver.indexer.urllib.request.urlopen",
-                     return_value=mock_cm)
+    """Unit tests for export_index_map — runs against the fake backend."""
 
     def test_returns_id_mtime_dict(self):
-        docs = [{"id": "abc", "mtime": 1700000000}]
-        with self._patch_urlopen(docs):
-            result = export_index_map("test_coll", _cfg)
-        self.assertEqual(result, {"abc": 1700000000})
+        b = _FakeBackend()
+        b.upsert_many([{"id": "abc", "mtime": 1700000000}])
+        self.assertEqual(export_index_map(b), {"abc": 1700000000})
 
     def test_multiple_docs(self):
-        docs = [
+        b = _FakeBackend()
+        b.upsert_many([
             {"id": "a", "mtime": 100},
             {"id": "b", "mtime": 200},
             {"id": "c", "mtime": 300},
-        ]
-        with self._patch_urlopen(docs):
-            result = export_index_map("test_coll", _cfg)
+        ])
+        result = export_index_map(b)
         self.assertEqual(len(result), 3)
         self.assertEqual(result["b"], 200)
 
     def test_missing_mtime_defaults_to_zero(self):
-        docs = [{"id": "no_mtime"}]
-        with self._patch_urlopen(docs):
-            result = export_index_map("test_coll", _cfg)
-        self.assertEqual(result["no_mtime"], 0)
+        b = _FakeBackend()
+        b.upsert_many([{"id": "no_mtime"}])
+        self.assertEqual(export_index_map(b)["no_mtime"], 0)
 
-    def test_doc_without_id_skipped(self):
-        docs = [{"content": "no id here"}, {"id": "valid", "mtime": 42}]
-        with self._patch_urlopen(docs):
-            result = export_index_map("test_coll", _cfg)
-        self.assertEqual(list(result.keys()), ["valid"])
-
-    def test_empty_response_returns_empty_dict(self):
-        with self._patch_urlopen([]):
-            result = export_index_map("test_coll", _cfg)
-        self.assertEqual(result, {})
-
-    def test_network_error_returns_empty_dict(self):
-        with patch("indexserver.indexer.urllib.request.urlopen",
-                   side_effect=OSError("connection refused")):
-            result = export_index_map("test_coll", _cfg)
-        self.assertEqual(result, {})
+    def test_empty_backend_returns_empty_dict(self):
+        b = _FakeBackend()
+        self.assertEqual(export_index_map(b), {})
 
 
 # ── TestRunVerifyUnit ─────────────────────────────────────────────────────────
 
 class TestRunVerifyUnit(unittest.TestCase):
-    """Unit tests for run_verify logic — no server; mock export_index_map and index_file_list."""
+    """Unit tests for run_verify logic — fake backend; mocked index_file_list."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="ts_verify_unit_")
-        # Write two source files
         os.makedirs(os.path.join(self.tmpdir, "src"), exist_ok=True)
         self._write("src/foo.cs", _FOO_CS)
         self._write("src/bar.cs", _BAR_CS)
@@ -109,12 +74,17 @@ class TestRunVerifyUnit(unittest.TestCase):
     def _mtime(self, rel: str) -> int:
         return int(os.stat(os.path.join(self.tmpdir, rel)).st_mtime)
 
-    def _run_verify_mocked(self, index_map: dict, delete_orphans: bool = True):
-        """Run run_verify with export_index_map and index_file_list mocked."""
-        indexed = []
-        deleted = []
+    def _run_verify_with_backend(self, index_map: dict, delete_orphans: bool = True):
+        """Run run_verify with a fake backend pre-populated by `index_map`."""
+        indexed: list = []
+        backend = _FakeBackend()
+        # Pre-populate the fake backend so export_id_mtime returns index_map.
+        for doc_id, mtime in index_map.items():
+            backend.upsert_many([{"id": doc_id, "mtime": mtime}])
+        # Reset upsert log so only verifier-driven writes show up below.
+        backend.upserted.clear()
 
-        def fake_index_file_list(client, file_pairs, coll_name,
+        def fake_index_file_list(_backend, file_pairs, coll_name,
                                  batch_size=50, verbose=False, on_progress=None,
                                  stop_event=None):
             pairs = list(file_pairs)
@@ -123,60 +93,42 @@ class TestRunVerifyUnit(unittest.TestCase):
                 on_progress(len(pairs), 0)
             return len(pairs), 0
 
-        with patch("indexserver.verifier.export_index_map", return_value=index_map), \
-             patch("indexserver.verifier.index_file_list", fake_index_file_list), \
-             patch("indexserver.verifier.get_client", return_value=MagicMock()) as mock_client:
-            # Patch delete on the mock client
-            mock_client.return_value.collections.__getitem__ = MagicMock(
-                return_value=MagicMock(
-                    documents=MagicMock(
-                        __getitem__=lambda s, doc_id: MagicMock(
-                            delete=lambda: deleted.append(doc_id)
-                        )
-                    )
-                )
-            )
+        with patch("indexserver.verifier.index_file_list", fake_index_file_list):
             run_verify(_cfg, src_root=self.tmpdir, collection="test_coll",
-                       delete_orphans=delete_orphans)
+                       delete_orphans=delete_orphans, backend=backend)
 
-        return indexed, deleted
+        return indexed, backend.deleted
 
     def test_missing_files_are_indexed(self):
-        """Files on disk but not in index should be fed to index_file_list."""
-        indexed, _ = self._run_verify_mocked(index_map={})
+        indexed, _ = self._run_verify_with_backend(index_map={})
         rel_paths = [rel for _, rel in indexed]
-        # Both files should be queued for indexing
         self.assertTrue(any("foo.cs" in r for r in rel_paths))
         self.assertTrue(any("bar.cs" in r for r in rel_paths))
 
     def test_up_to_date_files_not_reindexed(self):
-        """Files with matching mtimes should NOT be re-indexed."""
         foo_id = file_id("src/foo.cs")
         bar_id = file_id("src/bar.cs")
         index_map = {
             foo_id: self._mtime("src/foo.cs"),
             bar_id: self._mtime("src/bar.cs"),
         }
-        indexed, _ = self._run_verify_mocked(index_map=index_map)
+        indexed, _ = self._run_verify_with_backend(index_map=index_map)
         self.assertEqual(len(indexed), 0)
 
     def test_stale_file_is_reindexed(self):
-        """A file with a changed mtime should be re-indexed."""
         foo_id = file_id("src/foo.cs")
         bar_id = file_id("src/bar.cs")
         index_map = {
             foo_id: self._mtime("src/foo.cs") - 1,  # stale
-            bar_id: self._mtime("src/bar.cs"),        # current
+            bar_id: self._mtime("src/bar.cs"),       # current
         }
-        indexed, _ = self._run_verify_mocked(index_map=index_map)
+        indexed, _ = self._run_verify_with_backend(index_map=index_map)
         rel_paths = [rel for _, rel in indexed]
         self.assertEqual(len(indexed), 1)
         self.assertTrue(any("foo.cs" in r for r in rel_paths))
 
     def test_only_missing_count_matches_indexed_count(self):
-        """When index is empty, missing count == number of files on disk."""
-        indexed, _ = self._run_verify_mocked(index_map={})
-        # We wrote 2 files
+        indexed, _ = self._run_verify_with_backend(index_map={})
         self.assertEqual(len(indexed), 2)
 
 

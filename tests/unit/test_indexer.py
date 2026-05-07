@@ -1,14 +1,11 @@
 """
 Unit tests for the indexer: extract_metadata, index_file_list, and IndexQueue.
 
-TestExtractCsMetadata — no server; tree-sitter C# extractor unit tests
-TestIndexFileList     — no server; shared batch-upsert pipeline (mock client)
-TestIndexQueue        — no server; queue enqueue/dedup/mtime/worker behavior (mock client)
+TestExtractCsMetadata — tree-sitter C# extractor unit tests
+TestIndexFileList     — shared batch-upsert pipeline (fake backend)
+TestIndexQueue        — queue enqueue/dedup/mtime/worker behavior (fake backend)
 
-Integration tests (require Typesense) are in tests/integration/test_indexer.py.
-
-Run (from WSL):
-    ~/.local/indexserver-venv/bin/pytest tests/unit/test_indexer.py -v
+Integration tests (require a real Tantivy index) are in tests/integration/test_indexer.py.
 """
 
 import os
@@ -18,7 +15,7 @@ import time
 import unittest
 
 from tests.helpers import (
-    _MockTypesenseClient,
+    _FakeBackend,
     _QUALIFIED_CS, _GENERIC_WRAPPER_CS,
 )
 from indexserver.indexer import (
@@ -30,7 +27,7 @@ from indexserver.index_queue import IndexQueue, MTIME_DELETE
 # ── TestExtractCsMetadata ─────────────────────────────────────────────────────
 
 class TestExtractCsMetadata(unittest.TestCase):
-    """Unit tests for the tree-sitter C# extractor — no server required."""
+    """Unit tests for the tree-sitter C# extractor — no backend required."""
 
     def test_class_names(self):
         src = b"namespace N { public class MyClass { } }"
@@ -95,16 +92,13 @@ class TestExtractCsMetadata(unittest.TestCase):
 # ── TestIndexFileList ─────────────────────────────────────────────────────────
 
 class TestIndexFileList(unittest.TestCase):
-    """Unit tests for index_file_list — the shared batch-upsert pipeline.
-
-    Uses a mock Typesense client; no running server required.
-    """
+    """Unit tests for index_file_list — uses a fake in-memory backend."""
 
     COLL = "test_coll"
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="ts_ifl_test_")
-        self.mock_client = _MockTypesenseClient(self.COLL)
+        self.backend = _FakeBackend()
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -117,24 +111,20 @@ class TestIndexFileList(unittest.TestCase):
         return full, rel
 
     def test_indexes_all_files(self):
-        """All valid files are upserted."""
         f1 = self._make_file("sub/Foo.cs", "class Foo {}")
         f2 = self._make_file("sub/Bar.cs", "class Bar {}")
         total, errors = index_file_list(
-            self.mock_client, [f1, f2], self.COLL, batch_size=10,
+            self.backend, [f1, f2], self.COLL, batch_size=10,
         )
         self.assertEqual(total, 2)
         self.assertEqual(errors, 0)
-        self.assertEqual(
-            len(self.mock_client.collections[self.COLL].documents.upserted), 2
-        )
+        self.assertEqual(len(self.backend.upserted), 2)
 
     def test_batches_files(self):
-        """on_progress is called once per flushed batch."""
         files = [self._make_file(f"sub/File{i}.cs", f"class File{i} {{}}") for i in range(7)]
         calls: list[tuple[int, int]] = []
         total, errors = index_file_list(
-            self.mock_client, files, self.COLL,
+            self.backend, files, self.COLL,
             batch_size=3, on_progress=lambda n, e: calls.append((n, e)),
         )
         self.assertEqual(total, 7)
@@ -144,10 +134,9 @@ class TestIndexFileList(unittest.TestCase):
         self.assertEqual(calls[-1][0], 7)
 
     def test_empty_input_returns_zero(self):
-        """Empty file pair list returns (0, 0) without calling on_progress."""
         calls: list = []
         total, errors = index_file_list(
-            self.mock_client, [], self.COLL, batch_size=50,
+            self.backend, [], self.COLL, batch_size=50,
             on_progress=lambda n, e: calls.append((n, e)),
         )
         self.assertEqual(total, 0)
@@ -155,52 +144,44 @@ class TestIndexFileList(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_on_progress_none_no_crash(self):
-        """on_progress=None (default) does not raise."""
         f = self._make_file("a.cs", "class A {}")
         total, errors = index_file_list(
-            self.mock_client, [f], self.COLL, batch_size=50,
+            self.backend, [f], self.COLL, batch_size=50,
         )
         self.assertEqual(total, 1)
         self.assertEqual(errors, 0)
 
     def test_unreadable_file_counted_as_error(self):
-        """A file that does not exist is counted as an error, not a crash."""
         ghost = (os.path.join(self.tmpdir, "ghost.cs"), "ghost.cs")
         total, errors = index_file_list(
-            self.mock_client, [ghost], self.COLL, batch_size=50,
+            self.backend, [ghost], self.COLL, batch_size=50,
         )
         self.assertEqual(total, 0)
         self.assertEqual(errors, 1)
 
     def test_progress_increments_monotonically(self):
-        """on_progress receives a non-decreasing indexed count."""
         files = [self._make_file(f"m{i}.cs", f"class M{i} {{}}") for i in range(10)]
         counts: list[int] = []
         index_file_list(
-            self.mock_client, files, self.COLL,
+            self.backend, files, self.COLL,
             batch_size=4, on_progress=lambda n, _e: counts.append(n),
         )
         for a, b in zip(counts, counts[1:]):
             self.assertGreaterEqual(b, a, "on_progress count went backwards")
 
     def test_final_partial_batch_is_flushed(self):
-        """The last batch (< batch_size) is still flushed and counted."""
         files = [self._make_file(f"p{i}.cs", f"class P{i} {{}}") for i in range(5)]
         total, errors = index_file_list(
-            self.mock_client, files, self.COLL, batch_size=4,
+            self.backend, files, self.COLL, batch_size=4,
         )
-        # batch_size=4: first batch 4, second batch 1 — all 5 must be indexed
         self.assertEqual(total, 5)
-        self.assertEqual(
-            len(self.mock_client.collections[self.COLL].documents.upserted), 5
-        )
+        self.assertEqual(len(self.backend.upserted), 5)
 
     def test_mixed_valid_and_invalid_files(self):
-        """Valid files are indexed; invalid paths are errors; both counted."""
         f1 = self._make_file("good.cs", "class Good {}")
         ghost = (os.path.join(self.tmpdir, "ghost.cs"), "ghost.cs")
         total, errors = index_file_list(
-            self.mock_client, [f1, ghost], self.COLL, batch_size=50,
+            self.backend, [f1, ghost], self.COLL, batch_size=50,
         )
         self.assertEqual(total, 1)
         self.assertEqual(errors, 1)
@@ -209,18 +190,15 @@ class TestIndexFileList(unittest.TestCase):
 # ── TestIndexQueue ────────────────────────────────────────────────────────────
 
 class TestIndexQueue(unittest.TestCase):
-    """Unit tests for IndexQueue: enqueue/dedup/mtime/stats/worker behavior.
-
-    Uses a mock Typesense client — no running server required.
-    """
+    """Unit tests for IndexQueue — uses a fake in-memory backend."""
 
     COLL = "test_coll"
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="ts_iq_test_")
-        self.mock_client = _MockTypesenseClient(self.COLL)
+        self.backend = _FakeBackend()
         self.queue = IndexQueue(batch_size=10)
-        self.queue.start(self.mock_client)
+        self.queue.start(lambda c: self.backend if c == self.COLL else None)
 
     def tearDown(self):
         self.queue.stop(timeout=2)
@@ -247,14 +225,13 @@ class TestIndexQueue(unittest.TestCase):
 
     def test_enqueue_duplicate_returns_false(self):
         full, rel = self._file("Foo.cs")
-        self.queue._stop.set()  # freeze worker so the item stays in the queue
+        self.queue._stop.set()
         self.queue.enqueue(full, rel, self.COLL)
         self.assertFalse(self.queue.enqueue(full, rel, self.COLL))
 
     def test_enqueue_upsert_auto_stats_mtime(self):
         full, rel = self._file("Foo.cs")
         self.queue.enqueue(full, rel, self.COLL, "upsert")
-        # Stop the worker so the item stays in the queue
         self.queue._stop.set()
         with self.queue._cond:
             item = next(iter(self.queue._items.values()))
@@ -273,7 +250,6 @@ class TestIndexQueue(unittest.TestCase):
     def test_enqueue_dedup_updates_mtime(self):
         full, rel = self._file("Foo.cs")
         self.queue.enqueue(full, rel, self.COLL, "upsert")
-        # Advance mtime
         new_mtime = int(os.stat(full).st_mtime) + 100
         os.utime(full, (new_mtime, new_mtime))
         self.queue.enqueue(full, rel, self.COLL, "upsert")
@@ -284,13 +260,14 @@ class TestIndexQueue(unittest.TestCase):
 
     def test_depth_reflects_queue_size(self):
         full, rel = self._file("A.cs")
-        self.queue._stop.set()  # stop worker from draining
+        self.queue._stop.set()
         self.queue.enqueue(full, rel, self.COLL)
         self.assertEqual(self.queue.depth, 1)
 
     def test_enqueue_bulk_counts(self):
         self.queue._stop.set()
-        pairs = [SourceFile(f, r, int(os.stat(f).st_mtime)) for f, r in (self._file(f"f{i}.cs") for i in range(5))]
+        pairs = [SourceFile(f, r, int(os.stat(f).st_mtime))
+                 for f, r in (self._file(f"f{i}.cs") for i in range(5))]
         n_new, n_dedup = self.queue.enqueue_bulk(pairs, self.COLL)
         self.assertEqual(n_new, 5)
         self.assertEqual(n_dedup, 0)
@@ -299,7 +276,9 @@ class TestIndexQueue(unittest.TestCase):
         self.queue._stop.set()
         full, rel = self._file("Dup.cs")
         self.queue.enqueue(full, rel, self.COLL)
-        n_new, n_dedup = self.queue.enqueue_bulk([SourceFile(full, rel, int(os.stat(full).st_mtime))], self.COLL)
+        n_new, n_dedup = self.queue.enqueue_bulk(
+            [SourceFile(full, rel, int(os.stat(full).st_mtime))], self.COLL,
+        )
         self.assertEqual(n_new, 0)
         self.assertEqual(n_dedup, 1)
 
@@ -325,24 +304,21 @@ class TestIndexQueue(unittest.TestCase):
 
     # ── worker / flush behavior ────────────────────────────────────────────────
 
-    def test_worker_upserts_to_typesense(self):
+    def test_worker_upserts_to_backend(self):
         full, rel = self._file("MyFile.cs", "namespace T { public class MyClass {} }")
         self.queue.enqueue(full, rel, self.COLL)
         self._drain()
-        docs = self.mock_client.collections[self.COLL].documents.upserted
-        self.assertGreater(len(docs), 0)
-        self.assertEqual(self.queue.stats()["upserted"], len(docs))
+        self.assertGreater(len(self.backend.upserted), 0)
+        self.assertEqual(self.queue.stats()["upserted"], len(self.backend.upserted))
 
-    def test_worker_deletes_from_typesense(self):
+    def test_worker_deletes_from_backend(self):
         from indexserver.indexer import file_id as _file_id
         full, rel = self._file("Gone.cs", "class Gone {}")
         doc_id = _file_id(rel)
-        # Pre-populate so there is something to delete
-        self.mock_client.collections[self.COLL].documents._stored[doc_id] = {"id": doc_id}
+        self.backend._docs[doc_id] = {"id": doc_id}
         self.queue.enqueue(full, rel, self.COLL, "delete")
         self._drain()
-        deleted = self.mock_client.collections[self.COLL].documents.deleted
-        self.assertIn(doc_id, deleted)
+        self.assertIn(doc_id, self.backend.deleted)
         self.assertEqual(self.queue.stats()["deleted"], 1)
 
 

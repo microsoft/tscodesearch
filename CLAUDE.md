@@ -6,30 +6,32 @@
 
 ## CRITICAL: running Python scripts from the Bash tool
 
-**Always use the indexserver WSL venv** for any tscodesearch Python script:
+Everything runs in the **client venv** on Windows — there is no separate WSL venv anymore.
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/q/spocore/tscodesearch && ~/.local/indexserver-venv/bin/python3 <script> <args>"
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/q/spocore/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/ query/tests/ -v"
+.client-venv/Scripts/python.exe <script> <args>
+.client-venv/Scripts/python.exe -m pytest tests/ query/tests/ -v
 ```
 
-AST debug (no indexserver needed — runs via `.client-venv` on Windows):
+AST debug:
 ```bash
-.client-venv\Scripts\python.exe -m query --mode methods --file C:/myproject/src/Widget.cs
+.client-venv/Scripts/python.exe -m query --mode methods --file C:/myproject/src/Widget.cs
 ```
 
 Management API via curl (read key/port from config.json — never hard-code):
 ```bash
 API_KEY=$(node -e "const c=require('./config.json'); process.stdout.write(c.api_key)")
-API_PORT=$(node -e "const c=require('./config.json'); process.stdout.write(String((c.port??8108)+1))")
+API_PORT=$(node -e "const c=require('./config.json'); process.stdout.write(String(c.port??8108))")
 curl -s -X POST http://localhost:$API_PORT/query-codebase \
   -H "Content-Type: application/json" -H "X-TYPESENSE-API-KEY: $API_KEY" \
   -d '{"mode":"declarations","pattern":"SaveChanges","root":""}' | python -m json.tool
 ```
 
+The `X-TYPESENSE-API-KEY` header name is kept for backwards compatibility with existing callers; the daemon checks any value matches `config.json`'s `api_key`.
+
 ## CRITICAL: host-side orchestration scripts must be Node.js
 
-All orchestration scripts invoked from the host = `.mjs`/`.js`. Bash only inside Docker/WSL (`scripts/`). The MCP server is Python (`mcp_server.py`) via `.client-venv\Scripts\python.exe` — that's fine, it has no WSL dependency.
+All orchestration scripts invoked from the host = `.mjs`/`.js`. The MCP server is Python (`mcp_server.py`) via `.client-venv\Scripts\python.exe`.
 
 ## CRITICAL: fictional names in examples and documentation
 
@@ -43,20 +45,19 @@ Never use real names from the searched codebase (types, methods, namespaces) in 
 Windows side
 ────────────────────────────────────────────────────────────────
   tsquery_server.py (daemon)          mcp_server.py (MCP stdio)
-  started by ts start / mcp_server      started by Claude Code
-  owns PORT+1                           calls HTTP API at PORT+1
-        │◄──────────────── PORT+1 ──────────────────────────────┤
-        ├── ThreadingHTTPServer on PORT+1   ← VS Code extension
+  started by ts start                  started by Claude Code
+  owns the management API port         calls HTTP API at port
+        │◄──────────────── port ────────────────────────────────┤
+        ├── ThreadingHTTPServer on PORT    ← VS Code extension
         ├── watchdog Observer (ReadDirectoryChangesW on Windows)
-        ├── IndexQueue worker (batch Typesense writes)
+        ├── IndexQueue worker (batch Tantivy writes)
         ├── Syncer (verify/index jobs)
-        └── Heartbeat (pings Typesense, restarts on failure)
-                  │ TCP localhost:PORT  (WSL2 auto-forwards)
-                  ▼
-        Typesense  (WSL binary or Docker — Linux only)
+        └── Tantivy backends (one per root, on-disk in <repo>/.tantivy/)
 ```
 
-`tsquery_server.start_daemon()` tries to bind PORT+1; returns `False` if another instance is already running. Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `POST /index/start`, `POST /verify/start`, `POST /verify/stop`, `POST /query-codebase`, `POST /file-events`, `POST /management/shutdown`.
+`tsquery_server.start_daemon()` tries to bind PORT; returns `False` if another instance is already running. There is no separate Typesense process: the search index lives in-process via `tantivy-py`.
+
+Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `POST /index/start`, `POST /verify/start`, `POST /verify/stop`, `POST /query-codebase`, `POST /file-events`, `POST /management/shutdown`.
 
 `query_single_file` bypasses HTTP entirely — calls `query_file()` from `query/dispatch.py` in-process. Works without the daemon.
 
@@ -64,40 +65,47 @@ Windows side
 
 ## Module map
 
-### Client-side (repo root)
+### Backend (search index)
 
 | File | Responsibility |
 |------|---------------|
-| `tsquery_server.py` | Cross-platform management daemon. HTTP + watcher + heartbeat + syncer threads. Runs under `.client-venv` (Windows) or `indexserver-venv` (Linux/WSL). |
-| `mcp_server.py` | FastMCP server. Exposes `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `manage_service`. Calls `tsquery_server.start_daemon()` at startup. `--daemon` flag runs as a standalone daemon. |
-| `query/cs.py` | C# AST functions + `query_cs_bytes()`. `EXTENSIONS = frozenset({".cs"})`. |
-| `query/py.py` | Python AST functions + `query_py_bytes()`. `EXTENSIONS = frozenset({".py"})`. |
-| `query/js.py` | JS/TS AST functions + `query_js_bytes()`. Extensions: `.js .jsx .mjs .cjs .ts .tsx`. |
-| `query/rust.py` | Rust AST functions + `query_rust_bytes()`. `EXTENSIONS = frozenset({".rs"})`. |
-| `query/cpp.py` | C/C++ AST functions + `query_cpp_bytes()`. Extensions: `.cpp .cc .cxx .c .h .hpp .hxx`. |
-| `query/sql.py` | SQL AST functions + `query_sql_bytes()`. `EXTENSIONS = frozenset({".sql"})`. |
-| `query/dispatch.py` | Pure query layer. `query_file(src_bytes, ext, mode, mode_arg, ...)`, `describe_file()`, `ALL_EXTS`. No Typesense dependency. |
-| `query/__main__.py` | CLI: `python -m query --mode methods --file Widget.cs`. Also JSON stdin mode. |
+| `indexserver/backend.py` | Tantivy schema definition + `Backend` (write/read/upsert/delete/export). One Tantivy index per "collection"; on-disk directory `<repo>/.tantivy/<collection>/`. |
+| `indexserver/search.py` | `search()` — Typesense-shaped result dict on top of `Backend`. Translates `query_by`/`weights`/`num_typos`/`filter_by` into Tantivy queries. |
 
-### Server-side (`indexserver/`)
+### Daemon + MCP
 
 | File | Responsibility |
 |------|---------------|
-| `config.py` | Reads `config.json`. `API_PORT = PORT + 1`, `ROOT_EXTENSIONS`, `extensions_for_root()`. |
-| `indexer.py` | `run_index()`, `walk_source_files()`, `index_file_list()`, `build_schema()`. |
-| `verifier.py` | `run_verify()` (two-phase diff + repair), `check_ready()` (read-only health check). |
-| `watcher.py` | `run_watcher()`. Uses `watchdog.observers.Observer` on Windows (real-time), `PollingObserver` on Linux/WSL (10 s poll). |
-| `index_queue.py` | Deduplicated batch queue for all Typesense writes. |
-| `start_server.py` | Downloads Typesense binary (`--install`), stops it (`--stop`). |
+| `tsquery_server.py` | Cross-platform management daemon. HTTP + watcher + queue + syncer threads. Opens one `Backend` per root at startup. |
+| `mcp_server.py` | FastMCP server. Exposes `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `wait_for_sync`. Calls `tsquery_server.start_daemon()` at startup. `--daemon` runs as a standalone daemon. |
 
-### Scripts / infra
+### Query (AST)
 
 | File | Responsibility |
 |------|---------------|
-| `scripts/entrypoint.sh` | Full Typesense lifecycle for both Docker and WSL. WSL flags: `--background [--disown]` start, `--stop` stop, `--background --disown --resethard` wipe+restart, `--log [--indexer\|--error] [-n N]` tail logs. Docker: foreground mode (no flags). Never starts the management API. |
-| `ts.mjs` | Management CLI. WSL mode: calls `entrypoint.sh` directly for Typesense lifecycle, spawns `tsquery_server.py --daemon` for the management API. Docker mode: `docker start` + same daemon spawn. |
-| `setup.mjs` | Creates `.client-venv`, WSL venv, `config.json`, registers MCP. |
-| `run_tests.mjs` | VS Code extension unit tests (no Typesense required). |
+| `query/cs.py`, `query/py.py`, `query/js.py`, `query/rust.py`, `query/cpp.py`, `query/sql.py` | Per-language tree-sitter AST functions and bytes-level mode handlers. |
+| `query/dispatch.py` | Pure query layer. `query_file(src_bytes, ext, mode, mode_arg, ...)`, `describe_file()`, `ALL_EXTS`. No backend dependency. |
+| `query/__main__.py` | CLI: `python -m query --mode methods --file Widget.cs`. JSON stdin mode also supported. |
+
+### Indexer
+
+| File | Responsibility |
+|------|---------------|
+| `indexserver/config.py` | Reads `config.json`. Roots and extensions. |
+| `indexserver/indexer.py` | `run_index()`, `walk_source_files()`, `index_file_list()`, `ensure_backend()`. |
+| `indexserver/verifier.py` | `run_verify()` (two-phase diff + repair), `check_ready()` (read-only health check). |
+| `indexserver/watcher.py` | `run_watcher()`. `watchdog.observers.Observer` on Windows (real-time), `PollingObserver` on Linux/WSL. |
+| `indexserver/index_queue.py` | Deduplicated batch queue. Writes go through a `BackendResolver` (`collection_name → Backend`). |
+| `indexserver/query_util.py` | Structural query CLI (`python -m indexserver.query_util ...`). `--search` opens the backend in read-only mode. |
+
+### Scripts
+
+| File | Responsibility |
+|------|---------------|
+| `scripts/search.py` | Standalone search CLI. Opens a read-only `Backend` and calls `indexserver.search.search()`. |
+| `ts.mjs` | Daemon CLI: `start`/`stop`/`restart`/`status`/`index`/`verify`/`log`/`root`. Just spawns `tsquery_server.py` and posts to its API. |
+| `setup.mjs` | Creates `.client-venv`, registers MCP, installs the VS Code extension. |
+| `run_tests.mjs` | VS Code extension unit tests (no daemon required). |
 
 ---
 
@@ -107,27 +115,28 @@ Windows side
 |---------|-------------|
 | `ts.cmd <cmd>` | `node ts.mjs %*` |
 | `mcp.cmd` | `.client-venv\Scripts\python.exe mcp_server.py` |
-| `setup.cmd [--wsl]` | `node setup.mjs` |
+| `setup.cmd` | `node setup.mjs` |
 | `run_tests.cmd` | `node run_tests.mjs` — VS Code tests |
 
 ## Venvs
 
 | Venv | Location | Packages |
 |------|----------|----------|
-| Client | `.client-venv/` (Windows) | `mcp`, `tree-sitter`, all grammar packages, `typesense`, `watchdog`, `pathspec` |
-| Indexserver | `~/.local/indexserver-venv/` (WSL) | `typesense`, `tree_sitter_c_sharp`, `tree_sitter`, `watchdog`, `pathspec`, `pytest` |
+| Client | `.client-venv/` (Windows) | `mcp`, `tree-sitter`, all grammar packages, `tantivy`, `watchdog`, `pathspec`, `pytest` |
+
+There is **no longer a WSL or indexserver venv** — Tantivy runs in-process in the same `.client-venv` Python.
 
 ## config.json
 
 ```json
 {
   "api_key": "codesearch-local",
-  "mode": "docker",
+  "port": 8108,
   "roots": { "default": "C:/myproject/src" }
 }
 ```
 
-`mode` = `"docker"` or `"wsl"`. Roots use Windows paths (`C:/...`). `collection_for_root(name)` → `"codesearch_{sanitized_name}"` (default → `codesearch_default`).
+`port` is the daemon's HTTP API port (single port, no Typesense+1). Roots use Windows paths (`C:/...`). `collection_for_root(name)` → `"codesearch_{sanitized_name}"` (default → `codesearch_default`). Each collection's index lives at `<repo>/.tantivy/<collection>/`.
 
 ---
 
@@ -138,25 +147,27 @@ Windows side
 | Exact line-level results across the codebase | `query_codebase` |
 | Inspect/enumerate one specific file | `query_single_file` |
 
-**`query_codebase`**: Typesense pre-filter → ≤50 files → tree-sitter exact lines. Returns folder breakdown (one level deeper than the current `sub=` scope) if >50 files match. Pattern-based modes only; listing modes redirect to `query_single_file`. `uses` accepts `uses_kind`: `field`, `param`, `return`, `cast`, `base`. `sub=` accepts any folder depth (`services` or `services/billing`).
+**`query_codebase`**: Tantivy pre-filter → ≤50 files → tree-sitter exact lines. Returns folder breakdown (one level deeper than the current `sub=` scope) if >50 files match. Pattern-based modes only; listing modes redirect to `query_single_file`. `uses` accepts `uses_kind`: `field`, `param`, `return`, `cast`, `base`. `sub=` accepts any folder depth (`services` or `services/billing`).
 
-**`query_single_file`**: No Typesense. Supports listing modes (`methods`, `fields`, `classes`, `usings`, `imports`). Works offline.
+**`query_single_file`**: No backend search. Supports listing modes (`methods`, `fields`, `classes`, `usings`, `imports`). Works offline.
 
-## Typesense schema — search mode mapping
+## Backend schema — search mode mapping
 
 | Mode | `query_by` field(s) | Notes |
 |------|---------------------|-------|
-| `text` | `filename`, `class/method_names`, `content` | Broad keyword |
-| `declarations` | `method_sigs`, `method_names`, `filename` | Precise [T1] |
+| `text` | `filename`, `class_names`, `method_names`, `tokens` | Broad keyword |
+| `declarations` | `member_sigs`, `method_names`, `filename` | Precise [T1] |
 | `implements` | `base_types`, `class_names`, `filename` | Precise [T1] |
 | `calls` | `call_sites`, `filename` | Precise [T1] |
-| `uses` | `type_refs`, `symbols`, `class_names`, `filename` | Broader [T2] |
-| `attrs` | `attributes`, `filename` | Broader [T2] |
+| `uses` | `type_refs`, `class_names`, `filename` | Broader [T2] |
+| `attrs` | `attr_names`, `filename` | Broader [T2] |
 | `all_refs` | `type_refs`, `call_sites`, `filename` | Broadest |
 | `accesses_on` | `type_refs`, `filename` | Member accesses on type instances |
-| `accesses_of` | `call_sites`, `filename` | Access sites of a property/field name |
+| `accesses_of` | `member_accesses`, `filename` | Access sites of a property/field name |
 
 T1 = precise tree-sitter extractions. T2 = broader, minor false positives possible.
+
+The default Tantivy tokenizer splits on whitespace and ASCII punctuation, so `Task<Widget>` → `task`, `widget` automatically — no `token_separators` configuration needed.
 
 ## tree-sitter query modes
 
@@ -192,44 +203,38 @@ T1 = precise tree-sitter extractions. T2 = broader, minor false positives possib
 
 ## Testing
 
-Tests are split into three directories:
-
-| Directory | Server needed | Contents |
-|-----------|--------------|----------|
-| `tests/unit/*.py` | **no** | Unit tests: extractors, queue, verifier diff logic, path translation, mcp_server helpers |
-| `tests/integration/*.py` | **yes** | Integration tests: indexer, verifier, watcher, search modes live, sample e2e |
+| Directory | Backend needed | Contents |
+|-----------|----------------|----------|
+| `tests/unit/*.py` | **no** (uses `_FakeBackend`) | Unit tests: extractors, queue, verifier diff, path translation, mcp_server helpers |
+| `tests/integration/*.py` | **yes** | Integration tests: indexer, verifier, watcher, search modes live, sample e2e — each opens a fresh Tantivy index in `<repo>/.tantivy/` |
 | `query/tests/*.py` | **no** | AST query unit tests for all C# modes and edge cases |
 
-`tests/integration/conftest.py` automatically starts an isolated Typesense on port 18108 (`CODESEARCH_TEST_PORT`) and writes a test config with `root1`/`root2` pointing to `sample/`. Production port 8108 is never touched.
-
 ```bash
-# Full suite (pytest discovers all three directories)
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/q/spocore/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/ query/tests/ -v"
+# Full suite (1200+ tests)
+.client-venv/Scripts/python.exe -m pytest tests/ query/tests/ -v
 
-# Filter by test name or class
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/q/spocore/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/ -k TestQCasts -v"
+# Filter by test name
+.client-venv/Scripts/python.exe -m pytest tests/ -k TestQCasts -v
 
 # Single file
-MSYS_NO_PATHCONV=1 wsl.exe bash -lc "cd /mnt/q/spocore/tscodesearch && ~/.local/indexserver-venv/bin/pytest tests/unit/test_watcher.py -v"
+.client-venv/Scripts/python.exe -m pytest tests/unit/test_watcher.py -v
 
-# VS Code extension tests (no Typesense required)
+# VS Code extension tests (no daemon required)
 node run_tests.mjs
 ```
+
+The integration `conftest.py` writes a temporary `config.json` pointing at `sample/root1` and `sample/root2` and sets `CODESEARCH_CONFIG`. No external service to start.
 
 ---
 
 ## Common gotchas
 
-**Windows paths.** `config.json` roots are Windows-style (`C:/...`). `mcp_server.py` and `tsquery_server.py` use them directly. WSL code calls `config.to_native_path()` → `/mnt/c/...`. Never convert in Windows-side code.
+**Windows paths.** `config.json` roots are Windows-style (`C:/...`). The daemon, the MCP server, and the Tantivy index all run on Windows; backslashes in any path input are normalised to forward slashes at the boundary.
 
-**Watcher observer selection.** `watcher.py` uses `watchdog.observers.Observer` on Windows (ReadDirectoryChangesW, ~1 s latency) and `PollingObserver` on Linux/WSL (inotify doesn't fire for NTFS `/mnt/` changes). Don't hardcode either.
+**Watcher observer selection.** `watcher.py` uses `watchdog.observers.Observer` on Windows (ReadDirectoryChangesW, ~1 s latency) and `PollingObserver` on Linux/WSL. Don't hardcode either.
 
-**`entrypoint.sh` manages Typesense only.** The management API (PORT+1) is always `tsquery_server.py` running on Windows. `entrypoint.sh` never starts the daemon.
+**Tantivy is single-writer.** The daemon owns one `IndexWriter` per collection. CLIs (`scripts/search.py`, `indexserver.query_util --search`) open the index read-only via `ensure_backend(..., write=False)`. Trying to open a writer while the daemon already has one will block or fail — let the daemon do the writing and search via the HTTP API.
 
-**`entrypoint.sh` WSL flags.** `--background --disown` starts Typesense and survives WSL session end (used by `ts start`). `--background` without `--disown` dies when the session ends (useful for tests). `--stop` stops Typesense. `--background --disown --resethard` stops, wipes `~/.local/typesense`, reinstalls the binary, and starts fresh — no daemon required.
+**Index location.** `<repo>/.tantivy/<collection>/`. Wipe with `ts index --resethard`, or remove the directory directly.
 
-**Running tests from the Bash tool.** For pytest, use `MSYS_NO_PATHCONV=1 wsl.exe bash -lc "..."` — the Bash tool runs in Git Bash on Windows. For VS Code tests, `node run_tests.mjs` works directly (Git Bash `node` = Windows Node.js). Don't use `wsl.exe node`.
-
-**Line endings.** `.sh` files must be LF. `.gitattributes` enforces this. Fix with `git add --renormalize .` if a script fails with `\r: command not found`.
-
-**`scripts/` vs `docker/`.** `docker/` = `Dockerfile` + `docker-compose.yml` only. All shell scripts are in `scripts/`.
+**Line endings.** `.gitattributes` enforces LF for shell scripts. Fix with `git add --renormalize .` if any cross-OS quoting goes wrong.

@@ -1,16 +1,14 @@
 """
 tsquery_server — cross-platform management server daemon.
 
-Runs under .client-venv (Windows) or indexserver-venv (Linux/WSL).
-Runs natively on Windows to avoid the 9P filesystem bottleneck for file
-scanning and watching. On Linux/WSL it works as a standalone management server.
-
-Typesense remains in WSL or Docker as a pure storage backend.
+Runs under .client-venv (Windows) or any compatible Python on Linux/macOS.
+Owns one Tantivy index per configured root and exposes an HTTP API on
+_cfg.port.
 
 Entry points
 ------------
   start_daemon() -> bool
-      Try to bind PORT+1.  Returns True if this process now owns the port,
+      Try to bind PORT.  Returns True if this process now owns the port,
       False if another instance is already running there.
 
   run_until_shutdown()
@@ -18,33 +16,28 @@ Entry points
       POST /management/shutdown).
 
   stop_daemon()
-      Signal the running daemon to stop (sets the internal shutdown event).
+      Signal the running daemon to stop.
 
 HTTP endpoints:
   GET  /health               → {"ok": true}  (no auth)
-  GET  /status               → watcher / queue / syncer / collections / TS health
+  GET  /status               → watcher / queue / syncer / collections
   POST /check-ready          → check_ready() result
   POST /verify/start         → alias for POST /index/start (resethard=False)
   POST /verify/stop          → cancel running syncer
   POST /index/start          → queue verify/index job
   POST /file-events          → accept file-change notifications
-  POST /query-codebase       → Typesense pre-filter + AST post-process
+  POST /query-codebase       → backend search + AST post-process
   POST /management/shutdown  → graceful daemon shutdown (used by ts stop)
 """
 
 from __future__ import annotations
 
-import importlib.util as _ilu
 import json
 import os
-import re
 import signal
-import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -53,41 +46,28 @@ _REPO = Path(__file__).parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from indexserver.config import load_config as _load_config
+from indexserver.config import load_config as _load_config, normalize_path
 from indexserver.index_queue import IndexQueue
-from indexserver.indexer import get_client, verify_all_schemas
+from indexserver.indexer import ensure_backend
 from indexserver.verifier import check_ready, run_verify
 from indexserver.watcher import run_watcher
+from indexserver import search as _search_mod
 
 _cfg = _load_config()
-# Module-level aliases used throughout this file and patchable by tests
 ALL_ROOTS = _cfg.roots
 
 # ── runtime paths ──────────────────────────────────────────────────────────────
-_HOME        = Path.home()
+_HOME = Path.home()
 _DEFAULT_RUN_DIR = (
-    Path(os.environ.get("LOCALAPPDATA", _HOME / "AppData" / "Local")) / "typesense"
+    Path(os.environ.get("LOCALAPPDATA", _HOME / "AppData" / "Local")) / "tscodesearch"
     if sys.platform == "win32"
-    else _HOME / ".local" / "typesense"
+    else _HOME / ".local" / "tscodesearch"
 )
-_RUN_DIR     = Path(os.environ.get("TYPESENSE_DATA", _DEFAULT_RUN_DIR))
-_DAEMON_PID  = _RUN_DIR / "mcp_daemon.pid"
+_RUN_DIR     = Path(os.environ.get("TSCODESEARCH_DATA", _DEFAULT_RUN_DIR))
+_DAEMON_PID  = _RUN_DIR / "daemon.pid"
 _INDEXER_PID = _RUN_DIR / "indexer.pid"
 
-CHECK_INTERVAL = 30    # heartbeat poll interval (seconds)
-FAIL_THRESHOLD = 3     # consecutive failures before restarting Typesense
-
 _QUERY_CODEBASE_MAX_LIMIT = 250
-
-# ── extra config (mode, docker_container) ─────────────────────────────────────
-def _load_extra_config() -> dict:
-    cfg_path = _REPO / "config.json"
-    try:
-        return json.loads(cfg_path.read_text())
-    except Exception:
-        return {}
-
-_CFG_EXTRA = _load_extra_config()
 
 # ── thread state ───────────────────────────────────────────────────────────────
 _watcher_stop:   threading.Event  = threading.Event()
@@ -100,28 +80,16 @@ _sync_pending:  list = []
 _sync_stop:     threading.Event | None = None
 _sync_progress: dict = {}
 
-_schema_status: dict = {}
 _synced_roots: dict[str, str] = {}   # root_name → ISO timestamp of last successful sync
-_ts_client = None
-_ts_healthy:      bool  = True
-_ts_last_checked: float = 0.0
-_ts_initializing: bool  = True
-_hb_stop: threading.Event = threading.Event()
+
+# Backends keyed by collection name. The daemon owns the writer for each.
+_backends: dict[str, object] = {}
 
 _index_queue = IndexQueue(max_file_bytes=_cfg.max_file_bytes)
 
 _server: HTTPServer | None = None
 _shutdown_event = threading.Event()
 
-# ── path helpers ───────────────────────────────────────────────────────────────
-
-def _win_to_wsl(p: str) -> str:
-    """Convert a Windows path (X:/...) to a WSL mount path (/mnt/x/...)."""
-    p = p.replace("\\", "/")
-    m = re.match(r"^([a-zA-Z]):(.*)", p)
-    if m:
-        return f"/mnt/{m.group(1).lower()}{m.group(2)}"
-    return p
 
 # ── Tree-sitter query helper ───────────────────────────────────────────────────
 
@@ -157,39 +125,6 @@ def _run_query(mode: str, pattern: str, files: list[Path],
     return results
 
 
-def _resolve_query_paths(raw_files: list) -> list[Path]:
-    safe: list[Path] = []
-    for file_path in raw_files:
-        if not isinstance(file_path, str):
-            raise ValueError(f"file path must be a string: {file_path!r}")
-        p = file_path.replace("\\", "/")
-        matched_root = rel = None
-        for root in ALL_ROOTS.values():
-            rp = root.path.rstrip("/")
-            if p.lower().startswith(rp.lower() + "/"):
-                rel = Path(p[len(rp) + 1:])
-                matched_root = root
-                break
-
-        if matched_root is None or rel is None:
-            raise ValueError(f"path does not match any configured root: {file_path!r}")
-
-        if rel.is_absolute() or ".." in rel.parts:
-            raise ValueError(f"invalid relative path: {file_path!r}")
-
-        local_root = os.path.realpath(matched_root.path)
-        native = os.path.realpath(os.path.join(local_root, str(rel)))
-        sep = os.sep
-        if sys.platform == "win32":
-            if not native.lower().startswith(local_root.lower() + sep):
-                raise ValueError(f"path not under a configured root: {file_path!r}")
-        else:
-            if not native.startswith(local_root + sep):
-                raise ValueError(f"path not under a configured root: {file_path!r}")
-        safe.append(Path(native))
-    return safe
-
-
 # ── Mode mapping ───────────────────────────────────────────────────────────────
 
 _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
@@ -204,6 +139,7 @@ _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
     "accesses_on":  ("uses",        "accesses_on"),
     "all_refs":     ("text",        "all_refs"),
 }
+
 
 # ── Per-component status ───────────────────────────────────────────────────────
 
@@ -235,98 +171,92 @@ def _syncer_status() -> dict:
     return result
 
 
-def _heartbeat_status() -> dict:
-    age = (time.monotonic() - _ts_last_checked) if _ts_last_checked else None
-    return {
-        "typesense_ok":               _ts_healthy,
-        "typesense_loading":          _ts_initializing,
-        "typesense_checked_ago_s":    round(age, 1) if age is not None else None,
-    }
-
-
 def _collections_status() -> dict:
     collections: dict = {}
     for root in ALL_ROOTS.values():
-        schema = _schema_status.get(root.name, {})
+        backend = _backends.get(root.collection)
         ndocs: int | None = None
-        if _ts_client is not None:
+        buffered = 0
+        if backend is not None:
             try:
-                info = _ts_client.collections[root.collection].retrieve()
-                ndocs = info.get("num_documents")
+                ndocs = backend.num_documents()
             except Exception:
                 pass
+            buffered = getattr(backend, "buffered_count", 0)
         col_live_exists = ndocs is not None
         synced_at = _synced_roots.get(root.name)
         collections[root.name] = {
             "collection":        root.collection,
             "num_documents":     ndocs,
+            "buffered":          buffered,
             "collection_exists": col_live_exists,
-            "schema_ok":         col_live_exists and schema.get("ok", False),
-            "schema_warnings":   schema.get("warnings", []) if col_live_exists else [],
+            "schema_ok":         col_live_exists,
+            "schema_warnings":   [],
             "synced":            bool(synced_at),
             "synced_at":         synced_at,
         }
     return collections
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _ts_health() -> bool:
-    try:
-        with urllib.request.urlopen(
-            f"http://{_cfg.host}:{_cfg.port}/health", timeout=5
-        ) as r:
-            return json.loads(r.read()).get("ok", False)
-    except urllib.error.HTTPError:
-        # 503 "Not Ready or Lagging" — Typesense is alive but under write load.
-        # Treat as healthy so the heartbeat does not restart it.
-        return True
-    except Exception:
-        return False
+# ── Search resolver: query_by and weights for each mode ────────────────────────
+
+def _resolve_query_params(ts_mode_flag: str, uses_kind: str, symbol_kind: str
+                         ) -> tuple[str, str]:
+    """Return (query_by, weights) for the given mode flag."""
+    if ts_mode_flag == "implements":
+        return "base_types,class_names,filename", "4,3,2"
+    if ts_mode_flag == "calls":
+        return "call_sites,filename", "4,2"
+    if ts_mode_flag == "uses":
+        k = (uses_kind or "all").lower().strip()
+        if k == "field":   return "field_types,filename", "4,2"
+        if k == "param":   return "param_types,filename", "4,2"
+        if k == "return":  return "return_types,filename", "4,2"
+        if k == "cast":    return "cast_types,filename", "4,2"
+        if k == "base":    return "base_types,class_names,filename", "4,3,2"
+        if k == "locals":  return "local_types,filename", "4,2"
+        return "type_refs,cast_types,filename", "4,3,2"
+    if ts_mode_flag == "attrs":       return "attr_names,filename", "4,2"
+    if ts_mode_flag == "casts":       return "cast_types,filename", "4,2"
+    if ts_mode_flag == "accesses_of": return "member_accesses,filename", "4,2"
+    if ts_mode_flag == "symbols":
+        from query.cs import symbol_kind_query_by
+        narrowed = symbol_kind_query_by(symbol_kind or "")
+        return (narrowed or "class_names,method_names,filename"), "4,3,2"
+    # default ("text")
+    return "filename,class_names,method_names,tokens", "5,4,4,1"
 
 
-def _restart_typesense() -> None:
-    print("[tsquery_server] Restarting Typesense…", flush=True)
-    mode       = _CFG_EXTRA.get("mode", "docker")
-    venv_py    = str(_HOME / ".local" / "indexserver-venv" / "bin" / "python3")
-    entrypoint = str(_REPO / "scripts" / "entrypoint.sh")
-    if sys.platform == "win32":
-        if mode == "wsl":
-            repo_wsl = _win_to_wsl(str(_REPO))
-            env_prefix = (
-                f"TYPESENSE_DATA=~/.local/typesense "
-                f"CONFIG_FILE={repo_wsl}/config.json "
-                f"APP_ROOT={repo_wsl} "
-                f"PYTHON3=~/.local/indexserver-venv/bin/python3 "
-                f"CODESEARCH_API_HOST=127.0.0.1"
-            )
-            cmd = f'{env_prefix} bash "{repo_wsl}/scripts/entrypoint.sh" --background --disown'
-            subprocess.Popen(
-                ["wsl.exe", "bash", "-lc", cmd],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        else:
-            container = _CFG_EXTRA.get("docker_container", "codesearch")
-            subprocess.Popen(
-                ["docker", "restart", container],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-    else:
-        # Linux / WSL: call entrypoint.sh directly
-        py = venv_py if os.path.exists(venv_py) else sys.executable
-        env = {
-            **os.environ,
-            "TYPESENSE_DATA": str(_HOME / ".local" / "typesense"),
-            "CONFIG_FILE":    str(_REPO / "config.json"),
-            "APP_ROOT":       str(_REPO),
-            "PYTHON3":        py,
-            "CODESEARCH_API_HOST": "127.0.0.1",
-        }
-        subprocess.Popen(
-            ["bash", entrypoint, "--background", "--disown"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env=env,
-        )
+def _build_filter_by(ext: str, sub: str, exclude_path: str) -> str:
+    parts = []
+    if ext:
+        exts = {e.lstrip(".") for e in ext.split(",") if e.strip()}
+        _CPP_SRC = {"cpp", "cc", "cxx", "c"}
+        _CPP_HDR = {"h", "hpp", "hxx"}
+        if exts & _CPP_SRC:
+            exts |= _CPP_HDR
+        if len(exts) == 1:
+            parts.append(f"extension:={next(iter(exts))}")
+        elif exts:
+            parts.append(f"extension:=[{','.join(sorted(exts))}]")
+    if sub:
+        included = [normalize_path(p).strip("/") for p in sub.split(",")]
+        included = [p for p in included if p]
+        if len(included) == 1:
+            parts.append(f"path_segments:={included[0]}")
+        elif included:
+            parts.append(f"path_segments:=[{','.join(included)}]")
+    if exclude_path:
+        excluded = [normalize_path(p).strip("/") for p in exclude_path.split(",")]
+        excluded = [p for p in excluded if p]
+        if len(excluded) == 1:
+            parts.append(f"path_segments:!={excluded[0]}")
+        elif excluded:
+            parts.append(f"path_segments:!=[{','.join(excluded)}]")
+    return " && ".join(parts)
 
+
+# ── Watcher ────────────────────────────────────────────────────────────────────
 
 def _start_watcher() -> None:
     global _watcher_thread, _watcher_stop
@@ -344,40 +274,11 @@ def _start_watcher() -> None:
         _watcher_thread.start()
         print("[tsquery_server] Watcher thread started.", flush=True)
 
-# ── Heartbeat ──────────────────────────────────────────────────────────────────
-
-def _heartbeat_loop(stop_event: threading.Event) -> None:
-    global _ts_healthy, _ts_last_checked
-    failures = 0
-    if stop_event.wait(10):
-        return
-
-    while not stop_event.is_set():
-        if _ts_health():
-            if failures:
-                print(f"[heartbeat] Recovered after {failures} failure(s).", flush=True)
-            failures = 0
-            _ts_healthy = True
-        else:
-            failures += 1
-            _ts_healthy = False
-            print(f"[heartbeat] Health check failed ({failures}/{FAIL_THRESHOLD}).", flush=True)
-            if failures >= FAIL_THRESHOLD:
-                _restart_typesense()
-                failures = 0
-
-        _ts_last_checked = time.monotonic()
-
-        if _ts_health() and (_watcher_thread is None or not _watcher_thread.is_alive()):
-            print("[heartbeat] Watcher thread dead — reviving…", flush=True)
-            _start_watcher()
-
-        stop_event.wait(CHECK_INTERVAL)
 
 # ── Syncer ─────────────────────────────────────────────────────────────────────
 
 def _drain_sync_queue() -> None:
-    global _sync_stop, _schema_status
+    global _sync_stop
 
     while True:
         with _sync_lock:
@@ -408,27 +309,19 @@ def _drain_sync_queue() -> None:
                 extensions=extensions,
                 on_complete=lambda: None,
                 on_progress=lambda p: _sync_progress.update(p),
+                backend=_backends.get(collection),
             )
         except Exception as e:
             print(f"[syncer] ERROR for {collection}: {e}", flush=True)
         else:
-            # Mark root as synced and refresh schema status if not cancelled.
             if _sync_progress.get("status") != "cancelled":
                 _synced_roots[root_name] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                if resethard and _ts_client is not None:
-                    from indexserver.indexer import verify_schema
-                    ok, warnings = verify_schema(_ts_client, collection)
-                    _schema_status[root_name] = {
-                        "ok":               ok and not warnings,
-                        "collection_exists": ok,
-                        "warnings":         warnings,
-                        "collection":       collection,
-                    }
         finally:
             if _INDEXER_PID.exists():
                 _INDEXER_PID.unlink()
 
     _sync_stop = None
+
 
 # ── File-event handler ─────────────────────────────────────────────────────────
 
@@ -440,7 +333,7 @@ def _enqueue_file_events(events: list) -> dict:
 
     n_new = n_dedup = 0
     for ev in events:
-        raw_path = ev.get("path", "").replace("\\", "/")
+        raw_path = normalize_path(ev.get("path", ""))
         action   = ev.get("action", "upsert")
         ext      = os.path.splitext(raw_path)[1].lower()
 
@@ -469,39 +362,34 @@ def _enqueue_file_events(events: list) -> dict:
 
     return {"queued": n_new, "deduped": n_dedup}
 
-# ── Typesense init ─────────────────────────────────────────────────────────────
 
-def _ts_init_loop(stop_event: threading.Event) -> None:
-    global _ts_client, _schema_status, _ts_initializing, _sync_thread
+# ── Daemon initialization ──────────────────────────────────────────────────────
 
-    print("[tsquery_server] Waiting for Typesense to become ready…", flush=True)
-    while not stop_event.is_set():
-        if _ts_health():
-            break
-        stop_event.wait(2)
-
-    if stop_event.is_set():
-        return
-
-    # /health returning ok doesn't guarantee the collections API is ready yet
-    # (Typesense returns 503 "Not Ready or Lagging" while loading RocksDB).
-    # Wait until a lightweight collections call succeeds before starting the queue.
-    print("[tsquery_server] Waiting for Typesense API to become ready…", flush=True)
-    while not stop_event.is_set():
+def _init_backends() -> None:
+    """Open one Tantivy backend per configured root and log its doc count."""
+    for root in ALL_ROOTS.values():
         try:
-            get_client(_cfg).collections.retrieve()
-            break
-        except Exception:
-            stop_event.wait(2)
+            backend = ensure_backend(_cfg, root.collection)
+            _backends[root.collection] = backend
+            try:
+                ndocs = backend.num_documents()
+            except Exception:
+                ndocs = -1
+            print(
+                f"[tsquery_server] Opened backend {root.collection} "
+                f"({ndocs:,} docs on disk) at {root.index_dir}",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"[tsquery_server] WARNING: could not open backend {root.collection}: {e}", flush=True)
 
-    if stop_event.is_set():
-        return
 
-    print("[tsquery_server] Typesense ready — finishing initialization.", flush=True)
+def _initialize_async(stop_event: threading.Event) -> None:
+    """Open backends, start the queue, queue the initial sync, start the watcher."""
+    global _sync_thread
 
-    _ts_client = get_client(_cfg)
-    _index_queue.start(_ts_client)
-    _schema_status = verify_all_schemas(_ts_client, _cfg)
+    _init_backends()
+    _index_queue.start(lambda c: _backends.get(c))
 
     with _sync_lock:
         for root in ALL_ROOTS.values():
@@ -519,14 +407,8 @@ def _ts_init_loop(stop_event: threading.Event) -> None:
             _sync_thread.start()
 
     _start_watcher()
-
-    _hb_thread = threading.Thread(
-        target=_heartbeat_loop, args=(_hb_stop,), name="heartbeat", daemon=True
-    )
-    _hb_thread.start()
-
-    _ts_initializing = False
     print("[tsquery_server] Initialization complete.", flush=True)
+
 
 # ── HTTP handler ───────────────────────────────────────────────────────────────
 
@@ -572,24 +454,22 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(401, {"error": "unauthorized"})
             return
 
-        # GET /status
         if method == "GET" and path == "/status":
             result = {
                 "watcher":     _watcher_status(),
                 "queue":       _index_queue.stats(),
                 "syncer":      _syncer_status(),
                 "collections": _collections_status(),
-                **_heartbeat_status(),
+                # Compat: clients still inspect these keys; backend is in-process
+                # so it's always "ok" once the daemon is up.
+                "typesense_ok":            True,
+                "typesense_loading":       False,
+                "typesense_checked_ago_s": 0.0,
             }
             self._send_json(200, result)
             return
 
-        # POST /check-ready
         if method == "POST" and path == "/check-ready":
-            if _ts_initializing:
-                self._send_json(200, {"ready": False, "loading": True,
-                                      "error": "Typesense is still loading"})
-                return
             body = self._read_body()
             try:
                 root = _cfg.get_root(body.get("root", ""))
@@ -601,11 +481,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, result)
             return
 
-        # POST /verify/start alias
         if method == "POST" and path == "/verify/start":
             path = "/index/start"
 
-        # POST /verify/stop
         if method == "POST" and path == "/verify/stop":
             if not (_sync_thread and _sync_thread.is_alive()):
                 self._send_json(404, {"error": "no sync job is running"})
@@ -615,7 +493,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"stopped": True})
             return
 
-        # POST /file-events
         if method == "POST" and path == "/file-events":
             body   = self._read_body()
             events = body.get("events", [])
@@ -623,11 +500,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, result)
             return
 
-        # POST /index/start
         if method == "POST" and path == "/index/start":
-            if _ts_initializing:
-                self._send_json(503, {"error": "Typesense is still loading", "loading": True})
-                return
             body = self._read_body()
             try:
                 root = _cfg.get_root(body.get("root", ""))
@@ -658,16 +531,12 @@ class _Handler(BaseHTTPRequestHandler):
             })
             return
 
-        # POST /query-codebase
         if method == "POST" and path == "/query-codebase":
-            if _ts_initializing:
-                self._send_json(503, {"error": "Typesense is still loading", "loading": True})
-                return
-            body    = self._read_body()
+            body = self._read_body()
             mode         = body.get("mode", "")
             pattern      = body.get("pattern", "")
-            sub          = body.get("sub", "") or None
-            ext          = body.get("ext", "") or None
+            sub          = body.get("sub", "") or ""
+            ext          = body.get("ext", "") or ""
             try:
                 limit = int(body.get("limit", 50))
             except (TypeError, ValueError):
@@ -698,50 +567,34 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             collection = root.collection
 
-            _search_spec = _ilu.spec_from_file_location(
-                "scripts.search",
-                str(_REPO / "scripts" / "search.py"),
-            )
-            _search_mod = _ilu.module_from_spec(_search_spec)
-            _search_spec.loader.exec_module(_search_mod)
-
-            import io as _io
-            import sys as _sys
-            _buf = _io.StringIO()
-            _old_stdout = _sys.stdout
-            _sys.stdout = _buf
-            try:
-                ts_result, _ = _search_mod.search(
-                    query        = pattern,
-                    ext          = ext,
-                    sub          = sub,
-                    limit        = 250,
-                    symbols_only  = (ts_mode_flag == "symbols"),
-                    implements    = (ts_mode_flag == "implements"),
-                    calls         = (ts_mode_flag == "calls"),
-                    uses          = (ts_mode_flag == "uses"),
-                    attrs         = (ts_mode_flag == "attrs"),
-                    casts         = (ts_mode_flag == "casts"),
-                    accesses_of   = (ts_mode_flag == "accesses_of"),
-                    collection   = collection,
-                    symbol_kind  = symbol_kind,
-                    uses_kind    = uses_kind,
-                    exclude_path = exclude_path,
-                )
-            except SystemExit:
-                detail = _buf.getvalue().strip()
-                self._send_json(503, {"error": "Typesense search failed", "detail": detail})
+            backend = _backends.get(collection)
+            if backend is None:
+                self._send_json(503, {"error": "backend not yet available", "loading": True})
                 return
-            finally:
-                _sys.stdout = _old_stdout
+
+            query_by, weights = _resolve_query_params(ts_mode_flag, uses_kind, symbol_kind)
+            filter_by         = _build_filter_by(ext, sub, exclude_path)
+
+            try:
+                ts_result = _search_mod.search(
+                    backend,
+                    q=pattern,
+                    query_by=query_by,
+                    weights=weights,
+                    per_page=250,
+                    num_typos=1,
+                    filter_by=filter_by,
+                    facet_by="path_segments,language,extension",
+                    max_facet_values=200,
+                )
+            except Exception as e:
+                self._send_json(503, {"error": "backend search failed", "detail": str(e)})
+                return
 
             found  = ts_result.get("found", 0)
             hits   = ts_result.get("hits", [])
             facets = ts_result.get("facet_counts", [])
 
-            # Tier 1 — too many candidate files: skip AST, let the client emit
-            # a folder drill-down from facet_counts. This is what makes a
-            # broad query cheap; the AST step is the expensive part.
             if found > _QUERY_CODEBASE_MAX_LIMIT:
                 self._send_json(200, {
                     "overflow":     True,
@@ -793,7 +646,6 @@ class _Handler(BaseHTTPRequestHandler):
             })
             return
 
-        # POST /management/shutdown
         if method == "POST" and path == "/management/shutdown":
             self._send_json(200, {"ok": True})
             threading.Thread(target=_shutdown_event.set, daemon=True).start()
@@ -826,38 +678,34 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    daemon_threads    = True
-    allow_reuse_address = False   # Don't set SO_REUSEADDR; let bind() fail fast if port is taken
+    daemon_threads      = True
+    allow_reuse_address = False
+
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def start_daemon() -> bool:
-    """Try to bind PORT+1 and start all daemon threads.
-
-    Returns True if this call owns the port (daemon started),
-    False if another instance is already running there.
-    """
+    """Try to bind PORT and start all daemon threads."""
     global _server
 
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
-
     _sync_progress.clear()
 
     try:
-        _server = _ThreadedHTTPServer(("127.0.0.1", _cfg.api_port), _Handler)
+        _server = _ThreadedHTTPServer(("127.0.0.1", _cfg.port), _Handler)
     except OSError:
-        return False   # already bound by another instance
+        return False
 
     _DAEMON_PID.write_text(str(os.getpid()))
-    print(f"[tsquery_server] === STARTED pid={os.getpid()} port={_cfg.api_port} ===", flush=True)
+    print(f"[tsquery_server] === STARTED pid={os.getpid()} port={_cfg.port} ===", flush=True)
 
     srv_thread = threading.Thread(target=_server.serve_forever, name="http", daemon=True)
     srv_thread.start()
-    print(f"[tsquery_server] Listening on http://127.0.0.1:{_cfg.api_port}", flush=True)
+    print(f"[tsquery_server] Listening on http://127.0.0.1:{_cfg.port}", flush=True)
 
     _init_stop = threading.Event()
     _init_thread = threading.Thread(
-        target=_ts_init_loop, args=(_init_stop,), name="ts-init", daemon=True
+        target=_initialize_async, args=(_init_stop,), name="ts-init", daemon=True
     )
     _init_thread.start()
 
@@ -865,7 +713,6 @@ def start_daemon() -> bool:
 
 
 def run_until_shutdown() -> None:
-    """Block until shutdown is signalled (SIGTERM, SIGINT, or POST /management/shutdown)."""
     def _on_signal(sig, frame):
         print(f"[tsquery_server] Signal {sig} — shutting down…", flush=True)
         _shutdown_event.set()
@@ -874,26 +721,46 @@ def run_until_shutdown() -> None:
     try:
         signal.signal(signal.SIGINT, _on_signal)
     except (OSError, ValueError):
-        pass  # SIGINT may not be available in all contexts
+        pass
 
     _shutdown_event.wait()
     stop_daemon()
 
 
 def stop_daemon() -> None:
-    """Gracefully stop all threads and the HTTP server."""
+    """Graceful shutdown: stop producers, drain+commit the queue, close backends.
+
+    The order matters: the syncer feeds the queue, the queue worker commits to
+    the backends. We stop them in that order so each layer finishes flushing
+    before the next layer goes away.
+    """
     global _server
 
-    _hb_stop.set()
     _watcher_stop.set()
 
     if _sync_thread and _sync_thread.is_alive():
         if _sync_stop:
             _sync_stop.set()
-        _sync_thread.join(timeout=5)
+        _sync_thread.join(timeout=30)
 
-    if _ts_client is not None:
-        _index_queue.stop(timeout=5)
+    # Give the queue worker enough time to finalize its commit; once it
+    # returns, all buffered work is durable on disk.
+    _index_queue.stop(timeout=60)
+
+    for collection, backend in _backends.items():
+        try:
+            backend.close()
+            try:
+                ndocs = backend.num_documents()
+            except Exception:
+                ndocs = -1
+            print(
+                f"[tsquery_server] Closed backend {collection} ({ndocs:,} docs on disk)",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"[tsquery_server] backend.close error ({collection}): {e}", flush=True)
+    _backends.clear()
 
     if _server is not None:
         _srv_stop = threading.Thread(target=_server.shutdown, daemon=True)

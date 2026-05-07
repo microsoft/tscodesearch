@@ -1,5 +1,4 @@
 // Fixture for testing accesses_on with foreach iteration variables.
-// No SPO code — generic types only.
 using System.Collections.Generic;
 
 namespace Sample

@@ -80,17 +80,17 @@ class TestPySemanticFields(unittest.TestCase):
         self.assertIsNotNone(foo)
         self.assertIn("os", foo.get("usings", []))
 
-    def test_py_base_types_searchable_via_typesense(self):
+    def test_py_base_types_searchable_via_index(self):
         hits = _search(self.coll, "IFoo", query_by="base_types,class_names,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("foo.py", names)
 
-    def test_py_call_sites_searchable_via_typesense(self):
+    def test_py_call_sites_searchable_via_index(self):
         hits = _search(self.coll, "process", query_by="call_sites,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("bar.py", names)
 
-    def test_py_member_sigs_searchable_via_typesense(self):
+    def test_py_member_sigs_searchable_via_index(self):
         hits = _search(self.coll, "process", query_by="member_sigs,method_names,filename")
         names = [h["filename"] for h in hits]
         self.assertIn("foo.py", names)

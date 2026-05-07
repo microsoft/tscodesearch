@@ -1,5 +1,4 @@
 // Fixture for testing accesses_on with object initializer syntax.
-// No SPO code — generic types only.
 // Covers: object initializer { Prop = value }, multi-member, negative case.
 namespace Sample
 {

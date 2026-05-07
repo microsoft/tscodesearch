@@ -16,10 +16,7 @@ export interface RootEntry {
 export interface CodesearchConfig {
     api_key: string;
     port: number;
-    mode?: 'docker' | 'wsl';
     roots: Record<string, RootEntry>;
-    docker_container?: string;
-    docker_image?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -27,11 +24,11 @@ export interface CodesearchConfig {
 // ---------------------------------------------------------------------------
 
 /**
- * Search modes.  All modes go through the server's /query-codebase endpoint,
- * which runs Typesense pre-filter + tree-sitter AST in one call and returns
+ * Search modes.  All modes go through the daemon's /query-codebase endpoint,
+ * which runs an index pre-filter + tree-sitter AST in one call and returns
  * exact line numbers for every result.
  *
- * astMode: kept for backwards compat; server owns the Typesense→AST mapping.
+ * astMode: server owns the index-mode → AST-mode mapping.
  */
 export const MODES: Array<{
     key: string; label: string; queryBy: string; weights: string; desc: string;
@@ -165,7 +162,7 @@ export interface PipelineHit {
     };
     _matches: MatchItem[];
     /** True (default) = AST was run and these are exact match lines.
-     *  False = Typesense matched the file but AST was not run (too many results). */
+     *  False = the index matched the file but AST was not run (too many results). */
     ast_expanded?: boolean;
 }
 
@@ -183,8 +180,8 @@ export interface PipelineResult {
 }
 
 /**
- * Call the indexserver's /query-codebase endpoint, which performs
- * Typesense pre-filter + AST post-filter in one call on the server.
+ * Call the daemon's /query-codebase endpoint, which performs
+ * index pre-filter + AST post-filter in one call on the server.
  */
 export async function doQueryCodebase(
     config: CodesearchConfig,
@@ -198,7 +195,7 @@ export async function doQueryCodebase(
 ): Promise<{ found: number; overflow: boolean; hits: PipelineHit[]; facet_counts: FacetCounts | undefined }> {
     const modeEntry = MODES.find((m) => m.key === mode);
     const serverMode = modeEntry?.astMode ?? mode;
-    const port   = config.port + 1;
+    const port   = config.port;
     const apiKey = config.api_key;
     const bodyObj: Record<string, unknown> = { mode: serverMode, pattern: query, sub, ext, root: rootName, limit };
     if (modeEntry?.uses_kind) { bodyObj['uses_kind'] = modeEntry.uses_kind; }
@@ -276,7 +273,7 @@ export async function doQuerySingleFile(
 ): Promise<MatchItem[]> {
     const modeEntry  = MODES.find((m) => m.key === modeKey);
     const serverMode = modeEntry?.astMode ?? modeKey;
-    const port   = config.port + 1;
+    const port   = config.port;
     const apiKey = config.api_key;
     const bodyObj: Record<string, unknown> = { mode: serverMode, pattern, files: [absolutePath] };
     if (modeEntry?.uses_kind) { bodyObj['uses_kind'] = modeEntry.uses_kind; }
@@ -325,8 +322,8 @@ export async function doQuerySingleFile(
 }
 
 /**
- * Run a full search using the server's /query-codebase endpoint.
- * The server handles Typesense pre-filter + AST post-filter in one call.
+ * Run a full search using the daemon's /query-codebase endpoint.
+ * The server handles the index pre-filter + AST post-filter in one call.
  */
 export async function runSearchPipeline(
     config: CodesearchConfig,
@@ -400,8 +397,5 @@ export function resolveFilePath(rootPath: string, relativePath: string): string 
     // If already absolute (e.g. "q:/myproject/src/foo.cs"), return as-is
     if (/^[a-zA-Z]:\//.test(rel) || rel.startsWith('/')) { return rel; }
     const root = rootPath.replace(/\\/g, '/').replace(/\/$/, '');
-    // WSL path on Windows: /mnt/c/foo -> C:/foo
-    const wslMatch = root.match(/^\/mnt\/([a-z])\/(.*)/i);
-    const winRoot = wslMatch ? `${wslMatch[1].toUpperCase()}:/${wslMatch[2]}` : root;
-    return `${winRoot}/${rel}`;
+    return `${root}/${rel}`;
 }

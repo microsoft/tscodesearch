@@ -732,7 +732,7 @@ input.filter-input::placeholder{color:var(--vscode-input-placeholderForeground);
       statusEl.textContent = 'Error: ' + msg.message;
       statusEl.className = 'status-bar error';
       _setMode('empty');
-      _msgEl.innerHTML = 'Search failed \u2014 is the Typesense server running?<br><small>Run: ts start</small>';
+      _msgEl.innerHTML = 'Search failed \u2014 is the codesearch daemon running?<br><small>Run: ts start</small>';
     } else if (msg.type === 'configError') { showConfigError(msg.message); }
     } catch (err) { vscode.postMessage({ type: 'jsError', message: 'message handler: ' + (err instanceof Error ? err.message : String(err)) }); }
   });
@@ -1037,7 +1037,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 'Restart Now',
             );
             if (choice === 'Restart Now') {
-                void vscode.commands.executeCommand('tscodesearch.restartContainer');
+                void vscode.commands.executeCommand('tscodesearch.restartDaemon');
             }
         }),
     );
@@ -1059,7 +1059,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Restart the server
     context.subscriptions.push(
-        vscode.commands.registerCommand('tscodesearch.restartContainer', () => {
+        vscode.commands.registerCommand('tscodesearch.restartDaemon', () => {
             out.show(true);
             void vscode.window.withProgress(
                 { location: vscode.ProgressLocation.Notification, title: 'TsCodeSearch: Restarting…', cancellable: false },
@@ -1081,7 +1081,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Stop the server
     context.subscriptions.push(
-        vscode.commands.registerCommand('tscodesearch.stopContainer', () => {
+        vscode.commands.registerCommand('tscodesearch.stopDaemon', () => {
             void docker.stop()
                 .then(() => {
                     treeProvider.refresh();

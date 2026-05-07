@@ -1,5 +1,4 @@
 // Fixture for testing uses_kind=cast with C# cast forms.
-// No SPO code — generic types only.
 // Covers: explicit cast (Type)expr, as-expression obj as Type.
 namespace Sample
 {

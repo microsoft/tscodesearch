@@ -4,19 +4,17 @@ Python MCP server for tscodesearch.
 Runs on Windows via .client-venv/Scripts/python.exe (stdio transport).
 
 Tools:
-  query_codebase     - Typesense pre-filter + tree-sitter AST (via indexserver /query-codebase)
-  query_single_file  - Tree-sitter AST on one file (direct import — no indexserver required)
+  query_codebase     - Tantivy pre-filter + tree-sitter AST (via daemon /query-codebase)
+  query_single_file  - Tree-sitter AST on one file (direct import — no daemon required)
   ready              - Quick index health snapshot
   wait_for_sync      - Block until index has caught up to all pending file events
   verify_index       - Start/stop/monitor index repair scan
-  service_status     - Typesense + indexserver status
-  manage_service     - Docker container lifecycle (start/stop/restart/rebuild)
+  service_status     - Daemon status
 """
 
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 import urllib.error
@@ -28,6 +26,7 @@ sys.path.insert(0, str(_REPO))
 
 from mcp.server.fastmcp import FastMCP
 from query.dispatch import query_file
+from indexserver.config import normalize_path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -40,17 +39,15 @@ def _load_config() -> dict:
     if "port" not in raw:
         raise RuntimeError(f"'port' is required in {cfg_path}")
     return {
-        "api_key":          raw.get("api_key", "codesearch-local"),
-        "port":             int(raw["port"]),
-        "roots":            raw.get("roots", {}),
-        "docker_container": raw.get("docker_container", "codesearch"),
+        "api_key": raw.get("api_key", "codesearch-local"),
+        "port":    int(raw["port"]),
+        "roots":   raw.get("roots", {}),
     }
 
-_cfg             = _load_config()
-_API_PORT        = _cfg["port"] + 1
-_API_KEY         = _cfg["api_key"]
-_ROOTS           = _cfg["roots"]
-_DOCKER          = _cfg["docker_container"]
+_cfg      = _load_config()
+_API_PORT = _cfg["port"]
+_API_KEY  = _cfg["api_key"]
+_ROOTS    = _cfg["roots"]
 
 _MAX_OUTPUT_CHARS     = 40_000
 _QUERY_CODEBASE_LIMIT = 250
@@ -102,18 +99,19 @@ def _get_root(name: str) -> tuple[str, str]:
     return _collection_for_root(effective), ext_path
 
 def _to_windows_path(file_path: str) -> str:
+    """Resolve a tool-input file path to an absolute Windows-style path.
+
+    Accepts an absolute drive path (``C:/...``) or a path relative to the
+    default root (with optional ``${SRC_ROOT}`` / ``$SRC_ROOT`` prefix).
+    """
     default_entry  = _ROOTS.get("default") or (next(iter(_ROOTS.values()), None))
     default_root   = ""
     if default_entry:
         ep = default_entry.get("path", "") if isinstance(default_entry, dict) else default_entry
-        default_root = ep.replace("\\", "/").rstrip("/")
+        default_root = normalize_path(ep).rstrip("/")
 
-    p = file_path.replace("\\", "/")
+    p = normalize_path(file_path)
     p = p.replace("${SRC_ROOT}", default_root).replace("$SRC_ROOT", default_root)
-
-    m = re.match(r"^/mnt/([a-zA-Z])/(.*)", p)
-    if m:
-        return f"{m.group(1).upper()}:/{m.group(2)}"
 
     if re.match(r"^[A-Za-z]:", p):
         return p
@@ -124,8 +122,8 @@ def _to_windows_path(file_path: str) -> str:
     return p
 
 def _rel_path(file_path: str, src_root: str) -> str:
-    norm = file_path.replace("\\", "/")
-    root = src_root.replace("\\", "/").rstrip("/")
+    norm = normalize_path(file_path)
+    root = normalize_path(src_root).rstrip("/")
     if norm.lower().startswith(root.lower() + "/"):
         return norm[len(root) + 1:]
     return norm
@@ -151,16 +149,12 @@ def _queue_warning() -> str:
 def _sync_state(data: dict) -> tuple[bool, str]:
     """Inspect a /status response. Returns (is_synced, human_state).
 
-    Synced means: Typesense is up, the index queue is empty, and the syncer
-    (verifier walk) is idle with no pending jobs. Watcher activity alone does
-    not block — events flow through the queue, which we already check.
+    Synced means: index queue is empty and the syncer is idle with no pending
+    jobs. Watcher activity alone does not block — events flow through the
+    queue, which we already check.
     """
     if not isinstance(data, dict):
         return False, "no status response"
-    if data.get("typesense_loading"):
-        return False, "typesense starting up"
-    if data.get("typesense_ok") is False:
-        return False, "typesense not healthy"
     queue          = data.get("queue") or {}
     syncer         = data.get("syncer") or {}
     depth          = int(queue.get("depth", 0) or 0)
@@ -203,11 +197,11 @@ def query_codebase(
     uses_kind: str = "",
     exclude_path: str = "",
 ) -> str:
-    """Typesense pre-filter + tree-sitter AST. Returns one of three response shapes
+    """Index pre-filter + tree-sitter AST. Returns one of three response shapes
 depending on result size, picked to keep the response compact and paged-friendly:
 
   Tier 1 — more than 250 candidate files: a folder drill-down derived from
-           Typesense facets (no AST runs at all). Re-issue with a deeper or
+           index facets (no AST runs at all). Re-issue with a deeper or
            different sub= to narrow.
   Tier 2 — 20-250 files with AST matches: filenames + hit counts only,
            sorted by hits desc. Use query_single_file on a specific file
@@ -302,7 +296,7 @@ Examples:
     warn = _queue_warning()
 
     if status == 503 and isinstance(data, dict) and data.get("loading"):
-        return "Typesense is still starting up — retry in a few seconds.\nUse service_status() to check when it is ready."
+        return "Daemon is still starting up — retry in a few seconds.\nUse service_status() to check when it is ready."
     if status >= 400:
         err    = data.get("error", json.dumps(data)) if isinstance(data, dict) else str(data)
         detail = data.get("detail", "") if isinstance(data, dict) else ""
@@ -316,7 +310,7 @@ Examples:
     facets = data.get("facet_counts", [])
 
     if data.get("overflow"):
-        scopes = [s.strip("/") for s in (sub or "").replace("\\", "/").split(",")]
+        scopes = [s.strip("/") for s in normalize_path(sub or "").split(",")]
         scopes = [s for s in scopes if s]
 
         counts: list[tuple[str, int]] = []
@@ -362,7 +356,7 @@ Examples:
             lines.append("No deeper folder breakdown available — try a more specific pattern.")
         return warn + "\n".join(lines)
 
-    # AST-confirmed files only — drop Typesense false positives.
+    # AST-confirmed files only — drop index false positives.
     files_with_matches: list[tuple[str, list]] = []
     total_matches = 0
     for hit in hits:
@@ -374,7 +368,7 @@ Examples:
         total_matches += len(matches)
 
     n_files = len(files_with_matches)
-    header  = (f"[Typesense: {found} files | files with matches: {n_files} | "
+    header  = (f"[Index: {found} files | files with matches: {n_files} | "
                f"total matches: {total_matches}]\n")
     if not files_with_matches:
         return warn + header + "No AST matches found."
@@ -453,7 +447,7 @@ def query_single_file(
     head_limit: int = 250,
     offset: int = 0,
 ) -> str:
-    """Run a tree-sitter AST query on a single file. No Typesense search.
+    """Run a tree-sitter AST query on a single file. No index search.
 
 Supports all modes including listing modes (methods, fields, classes, usings, imports).
 Works well on large source files — tree-sitter parses the whole file and returns only matching nodes.
@@ -477,8 +471,8 @@ Args:
              role you're after. Do NOT pass a multi-word pattern to text — it
              will return zero matches; reach for grep instead.
   pattern: Type/method/name to search for. Omit for listing modes.
-  file:    Absolute path to the file. Accepts Windows paths (C:/…), /mnt/c/… paths,
-           or $SRC_ROOT-prefixed paths. Relative paths are NOT supported.
+  file:    Absolute path to the file. Accepts Windows paths (C:/…) or
+           $SRC_ROOT-prefixed paths. Relative paths are NOT supported.
   context_lines: Surrounding source lines per match.
   root:    Named source root (empty = default).
   include_body: For declarations — include full body. Default false.
@@ -548,7 +542,7 @@ def ready(root: str = "") -> str:
     """Check whether the code search index is fully up to date with the file system.
 
 Returns a quick status snapshot (no filesystem walk — returns immediately).
-Shows Typesense health, document count, watcher state, queue depth, and last verifier scan.
+Shows daemon health, document count, watcher state, queue depth, and last verifier scan.
 
 To trigger a full repair scan use verify_index(action='start'), then poll
 ready() or verify_index(action='status') until complete.
@@ -571,13 +565,6 @@ Args:
     col_info  = (st.get("collections") or {}).get(root_name, {})
     ndocs     = col_info.get("num_documents")
     lines     = []
-
-    ts_line = ("starting up — retry in a few seconds" if st.get("typesense_loading")
-               else "ok" if st.get("typesense_ok") is not False
-               else "NOT OK")
-    lines.append(f"Typesense  : {ts_line}")
-    if st.get("typesense_loading"):
-        return "\n".join(lines)
 
     lines.append(f"Docs       : {ndocs:,}  (collection: {collection})"
                  if ndocs is not None else f"Collection : {collection} — not found")
@@ -625,8 +612,8 @@ Use this between editing files and querying the index, to make sure your
 recent edits are reflected in query_codebase results. Without it, results
 can be a second or two stale on Windows (watcher latency + queue drain).
 
-Polls the indexserver's /status endpoint every 0.5 s, and returns once
-Typesense is healthy AND the index queue is empty AND the syncer is idle.
+Polls the daemon's /status endpoint every 0.5 s, and returns once
+the index queue is empty AND the syncer is idle.
 A small initial delay (~1 s) is built in so events from a just-completed
 edit have time to reach the watcher before the first poll.
 
@@ -661,10 +648,9 @@ Returns:
 
     while True:
         try:
-            # /status touches Typesense to fetch live doc counts — under load
-            # that round-trip can spike past a couple of seconds, so use a
-            # generous per-call timeout and retry transient failures rather
-            # than bailing on the first hiccup.
+            # /status touches every backend to fetch live doc counts — under
+            # load that round-trip can spike, so use a generous timeout and
+            # retry transient failures rather than bailing on the first hiccup.
             status, data = _get("/status", timeout=10)
         except Exception as e:
             if time.monotonic() >= deadline:
@@ -776,8 +762,8 @@ Args:
 
 @mcp.tool()
 def service_status(root: str = "") -> str:
-    """Check whether the Typesense code search service is running.
-Returns server health, document count per root, and watcher state.
+    """Check whether the code search daemon is running.
+Returns daemon health, document count per root, and watcher state.
 If not running, returns instructions to start it.
 
 Args:
@@ -787,15 +773,11 @@ Args:
         if status != 200:
             raise RuntimeError(f"HTTP {status}")
     except Exception as e:
-        return f"Indexserver is NOT running.\nStart it with: ts start\nError: {e}"
+        return f"Daemon is NOT running.\nStart it with: ts start\nError: {e}"
 
     root_names      = [root] if root else list(_ROOTS)
     indexer_running = (st.get("syncer") or {}).get("running", False)
-    ts_line         = ("starting up — retry in a few seconds" if st.get("typesense_loading")
-                       else "ok" if st.get("typesense_ok") is not False else "NOT OK")
-    lines = [f"Typesense  : {ts_line}"]
-    if st.get("typesense_loading"):
-        return "\n".join(lines)
+    lines = []
 
     for root_name in root_names:
         try:
@@ -806,85 +788,14 @@ Args:
         info   = (st.get("collections") or {}).get(root_name, {})
         ndocs  = info.get("num_documents")
         exists = info.get("collection_exists", ndocs is not None)
-        warns  = info.get("schema_warnings") or []
         if not exists:
             lines.append(f"Root '{root_name}' ({coll_name}): " +
                          ("indexing in progress" if indexer_running else "not yet indexed — run: ts index"))
-        elif warns:
-            lines.append(f"Root '{root_name}' ({coll_name}): {ndocs:,} docs  [SCHEMA OUTDATED — {'; '.join(warns)}]")
         else:
             lines.append(f"Root '{root_name}' ({coll_name}): {ndocs:,} docs")
 
     return "\n".join(lines)
 
-# ── manage_service ────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def manage_service(action: str = "status") -> str:
-    """Start, stop, restart, check status, or rebuild the code search service.
-
-Manages the Docker container running the Python indexserver + Typesense.
-
-Args:
-  action: One of:
-          "start"   — Start the Docker container.
-          "stop"    — Stop the Docker container.
-          "restart" — Restart the Docker container.
-          "status"  — Show service status (document counts, watcher state).
-          "rebuild" — Wipe the index and re-index everything from scratch.
-                      Runs in the background; monitor with action='status'."""
-    VALID = {"start", "stop", "restart", "status", "rebuild"}
-    act   = action.lower().strip()
-    if act not in VALID:
-        return f"Unknown action: '{action}'. Valid: {', '.join(sorted(VALID))}"
-
-    if act == "status":
-        try:
-            status, data = _get("/status")
-            if status != 200:
-                raise RuntimeError(f"HTTP {status}")
-            lines = ["Service status:"]
-            for name, info in (data.get("collections") or {}).items():
-                ndocs  = info.get("num_documents")
-                exists = info.get("collection_exists", True)
-                warns  = info.get("schema_warnings") or []
-                if not exists:
-                    lines.append(f"  Root '{name}': not yet indexed — run manage_service(action='rebuild')")
-                elif warns:
-                    lines.append(f"  Root '{name}': {ndocs:,} docs  [SCHEMA OUTDATED — {'; '.join(warns)}]")
-                else:
-                    lines.append(f"  Root '{name}': {ndocs:,} docs  OK")
-            w = data.get("watcher", {})
-            lines.append(f"Watcher: {w.get('state', 'unknown')}  queue depth: {(data.get('queue') or {}).get('depth', 0)}")
-            syncer = data.get("syncer", {})
-            if syncer.get("running"):
-                lines.append(f"Syncer: running  phase={(syncer.get('progress') or {}).get('phase', '?')}")
-            return "\n".join(lines)
-        except Exception as e:
-            return f"Indexserver not reachable: {e}\nTry: manage_service(action='start')"
-
-    if act == "rebuild":
-        results = []
-        for root_name in _ROOTS:
-            try:
-                status, data = _post("/index/start", {"root": root_name, "resethard": True})
-                if status == 200:
-                    results.append(f"Root '{root_name}': re-indexing started ({data.get('collection', '')})")
-                else:
-                    err = data.get("error", data) if isinstance(data, dict) else data
-                    results.append(f"Root '{root_name}': failed ({status}) — {err}")
-            except Exception as e:
-                results.append(f"Root '{root_name}': error — {e}")
-        results.append("\nRe-indexing is running in the background. Use action='status' to monitor.")
-        return "\n".join(results)
-
-    # start / stop / restart — Docker CLI
-    res = subprocess.run(["docker", act, _DOCKER],
-                         capture_output=True, text=True, timeout=30)
-    out = (res.stdout + res.stderr).strip()
-    if res.returncode != 0:
-        return f"docker {act} failed (exit {res.returncode}): {out}"
-    return out or f"Service '{act}' completed."
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -892,17 +803,14 @@ if __name__ == "__main__":
     if "--daemon" in sys.argv:
         from tsquery_server import start_daemon, run_until_shutdown
         if not start_daemon():
-            # Another instance already owns the port — nothing to do.
             sys.exit(0)
         run_until_shutdown()
         sys.exit(0)
 
-    # Normal MCP mode: try to start the management server in-process.
-    # If the port is already bound (daemon running separately), this is a no-op.
     try:
         from tsquery_server import start_daemon as _start_daemon
-        _start_daemon()   # returns False silently if already running
+        _start_daemon()
     except Exception:
-        pass   # never let a daemon startup error kill the MCP server
+        pass
 
     mcp.run()

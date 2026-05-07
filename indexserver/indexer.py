@@ -1,5 +1,5 @@
 """
-Index source files into Typesense.
+Index source files into the Tantivy backend.
 Uses tree-sitter to extract class/interface/method/property symbols.
 
 Usage:
@@ -7,23 +7,21 @@ Usage:
     python indexer.py --src /path/to/src --collection my_collection --resethard
 """
 
-import json
 import os
 import re
 import sys
 import time
 import hashlib
 import argparse
-import urllib.request
 from dataclasses import dataclass
 
-# Allow running as a standalone script: add claudeskills/ to path
+# Allow running as a standalone script.
 _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-import typesense
-
+from indexserver.backend import Backend, drop as drop_index
+from indexserver.config import normalize_path
 from query.dispatch import describe_file
 
 
@@ -37,53 +35,6 @@ class SourceFile:
     full_path: str
     rel: str
     mtime: int
-
-
-# ---------------------------------------------------------------------------
-# Schema
-# ---------------------------------------------------------------------------
-
-_SCHEMA_FIELDS = [
-    {"name": "id",               "type": "string"},
-    {"name": "relative_path",    "type": "string"},
-    {"name": "filename",         "type": "string"},
-    {"name": "extension",        "type": "string", "facet": True},
-    {"name": "language",         "type": "string", "facet": True},
-    {"name": "path_segments",    "type": "string[]", "facet": True},
-    {"name": "namespace",        "type": "string", "optional": True, "facet": True},
-    {"name": "class_names",      "type": "string[]", "optional": True},
-    {"name": "method_names",     "type": "string[]", "optional": True},
-    {"name": "tokens",           "type": "string"},
-    {"name": "mtime",            "type": "int64"},
-    # Declaration fields
-    {"name": "member_sigs",      "type": "string[]", "optional": True},
-    # Type reference fields (each serves a specific uses_kind)
-    {"name": "base_types",       "type": "string[]", "optional": True},
-    {"name": "field_types",      "type": "string[]", "optional": True},
-    {"name": "local_types",      "type": "string[]", "optional": True},
-    {"name": "param_types",      "type": "string[]", "optional": True},
-    {"name": "return_types",     "type": "string[]", "optional": True},
-    {"name": "cast_types",       "type": "string[]", "optional": True},
-    {"name": "type_refs",        "type": "string[]", "optional": True},
-    # Call and access site fields
-    {"name": "call_sites",       "type": "string[]", "optional": True},
-    {"name": "member_accesses",  "type": "string[]", "optional": True},
-    # Other
-    {"name": "attr_names",       "type": "string[]", "optional": True, "facet": True},
-    {"name": "usings",           "type": "string[]", "optional": True},
-]
-
-
-def build_schema(collection_name: str) -> dict:
-    return {
-        "name": collection_name,
-        "fields": _SCHEMA_FIELDS,
-        # Split tokens on C# syntax characters so that parameter types and
-        # generic type arguments are individually searchable.
-        # e.g. "Task<Widget> GetAsync(int id)"  →  Task  Widget  GetAsync  int  id
-        # Requires ts index --resethard to recreate the collection with the new schema.
-        "token_separators": ["(", ")", "<", ">", "[", "]", ",", ".",",","+","-","/","*","?"],
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +124,6 @@ def flat_from_fd(fd) -> dict:
     }
 
 
-
-
 def extract_metadata(src_bytes: bytes, ext: str) -> dict:
     """Extract semantic metadata from source bytes for the given file extension."""
     return flat_from_fd(describe_file(src_bytes, ext))
@@ -185,7 +134,7 @@ def extract_metadata(src_bytes: bytes, ext: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def file_id(relative_path: str) -> str:
-    return hashlib.md5(relative_path.replace("\\", "/").encode()).hexdigest()
+    return hashlib.md5(normalize_path(relative_path).encode()).hexdigest()
 
 
 def path_segments_from_path(relative_path: str) -> list[str]:
@@ -194,7 +143,7 @@ def path_segments_from_path(relative_path: str) -> list[str]:
     "a/b/c/Foo.cs" -> ["a", "a/b", "a/b/c"]
     "Foo.cs"       -> []
     """
-    parts = [p for p in relative_path.replace("\\", "/").split("/") if p]
+    parts = [p for p in normalize_path(relative_path).split("/") if p]
     if len(parts) < 2:
         return []
     out, acc = [], []
@@ -205,60 +154,34 @@ def path_segments_from_path(relative_path: str) -> list[str]:
 
 
 _LANGUAGE: dict[str, str] = {
-    # C#
     ".cs":    "csharp",
-    # Python
     ".py":    "python",
-    # TypeScript
     ".ts":    "typescript",  ".tsx":   "typescript",
-    # JavaScript
     ".js":    "javascript",  ".jsx":   "javascript",
     ".mjs":   "javascript",  ".cjs":   "javascript",
-    # Java
     ".java":  "java",
-    # C / C++
     ".c":     "cpp",  ".h":     "cpp",
     ".cpp":   "cpp",  ".cc":    "cpp",  ".cxx":   "cpp",
     ".hpp":   "cpp",  ".hxx":   "cpp",
-    # Go
     ".go":    "go",
-    # Rust
     ".rs":    "rust",
-    # SQL
     ".sql":   "sql",
-    # Kotlin
     ".kt":    "kotlin",  ".kts":   "kotlin",
-    # Swift
     ".swift": "swift",
-    # PHP
     ".php":   "php",
-    # Ruby
     ".rb":    "ruby",
-    # Scala
     ".scala": "scala",
-    # R
     ".r":     "r",
-    # Dart
     ".dart":  "dart",
-    # Lua
     ".lua":   "lua",
-    # Haskell
     ".hs":    "haskell",
-    # F#
     ".fs":    "fsharp",  ".fsx":   "fsharp",  ".fsi":   "fsharp",
-    # Visual Basic
     ".vb":    "vb",
-    # Objective-C
     ".m":     "objc",  ".mm":    "objc",
-    # Elixir
     ".ex":    "elixir",  ".exs":  "elixir",
-    # Shell
     ".sh":    "shell",  ".bash":  "shell",
-    # PowerShell
     ".ps1":   "powershell",  ".psm1":  "powershell",  ".psd1":  "powershell",
-    # Batch
     ".cmd":   "batch",  ".bat":   "batch",
-    # IDL
     ".idl":   "idl",
 }
 
@@ -269,7 +192,6 @@ def _file_language(ext: str) -> str:
 
 def should_skip_dir(dirname: str, exclude_dirs) -> bool:
     return dirname in exclude_dirs or dirname.startswith(".")
-
 
 
 def build_document(full_path: str, relative_path: str) -> dict:
@@ -285,7 +207,7 @@ def build_document(full_path: str, relative_path: str) -> dict:
 
     _raw = src_bytes.decode("utf-8", errors="replace")
     tokens = " ".join(dict.fromkeys(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', _raw)))
-    relative_path_norm = relative_path.replace("\\", "/")
+    relative_path_norm = normalize_path(relative_path)
 
     return {
         "id":               file_id(relative_path_norm),
@@ -315,135 +237,28 @@ def build_document(full_path: str, relative_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Collection management
+# Backend management
 # ---------------------------------------------------------------------------
 
-def get_client(cfg):
-    return typesense.Client(cfg.typesense_client_config)
+def ensure_backend(cfg, collection: str, resethard: bool = False, write: bool = True) -> Backend:
+    """Open (or create) the Tantivy backend for `collection`.
 
-
-# ---------------------------------------------------------------------------
-# Schema verification
-# ---------------------------------------------------------------------------
-
-_EXPECTED_TOKEN_SEPARATORS = set(build_schema("_")["token_separators"])
-
-def verify_schema(client, collection: str) -> tuple[bool, list[str]]:
-    """Check a Typesense collection against the expected schema.
-
-    Returns (exists, warnings):
-      exists=False — collection not found (not yet indexed); warnings is empty.
-      exists=True  — collection found; warnings lists any field/type mismatches.
-    Does not raise; callers should log the warnings.
+    With resethard=True the on-disk directory is wiped before opening.
     """
-    try:
-        info = client.collections[collection].retrieve()
-    except Exception as e:
-        err_str = str(e).lower()
-        if "404" in err_str or "not found" in err_str:
-            return False, []   # collection simply doesn't exist yet
-        return False, [f"could not retrieve collection {collection!r}: {e}"]
-
-    warnings = []
-
-    # ── field checks ──────────────────────────────────────────────────────────
-    # Typesense treats 'id' as a built-in field and never returns it in the
-    # collection's fields list — skip it to avoid a spurious warning.
-    actual_fields = {f["name"]: f for f in info.get("fields", [])}
-    for expected in _SCHEMA_FIELDS:
-        name = expected["name"]
-        if name == "id":
-            continue
-        if name not in actual_fields:
-            warnings.append(f"field {name!r} missing from collection")
-            continue
-        actual = actual_fields[name]
-        if actual.get("type") != expected.get("type"):
-            warnings.append(
-                f"field {name!r} type: expected {expected['type']!r}, "
-                f"got {actual.get('type')!r}"
-            )
-        if bool(expected.get("facet")) != bool(actual.get("facet")):
-            warnings.append(
-                f"field {name!r} facet: expected {expected.get('facet', False)}, "
-                f"got {actual.get('facet', False)}"
-            )
-
-    # ── token_separators check ────────────────────────────────────────────────
-    actual_seps = set(info.get("token_separators", []))
-    missing_seps = _EXPECTED_TOKEN_SEPARATORS - actual_seps
-    extra_seps   = actual_seps - _EXPECTED_TOKEN_SEPARATORS
-    if missing_seps:
-        warnings.append(f"token_separators missing: {sorted(missing_seps)}")
-    if extra_seps:
-        warnings.append(f"token_separators unexpected: {sorted(extra_seps)}")
-
-    return True, warnings
-
-
-def verify_all_schemas(client, cfg) -> dict:
-    """Verify schema for every configured root; print results to stdout.
-
-    Returns a dict keyed by root name:
-        {"ok": bool, "warnings": [str, ...], "collection": str}
-    """
-    results = {}
-    for root in cfg.roots.values():
-        exists, warnings = verify_schema(client, root.collection)
-        results[root.name] = {
-            "ok":                 exists and not warnings,
-            "collection_exists":  exists,
-            "warnings":           warnings,
-            "collection":         root.collection,
-        }
-        if not exists:
-            print(f"[schema] MISSING {root.collection} (not yet indexed)", flush=True)
-        elif warnings:
-            for w in warnings:
-                print(f"[schema] WARN  {root.collection}: {w}", flush=True)
-        else:
-            print(f"[schema] OK    {root.collection}", flush=True)
-    return results
-
-
-def ensure_collection(client, collection: str, resethard: bool = False):
-    coll_name = collection
-    schema = build_schema(coll_name)
-
-    # Typesense can return 503 "Not Ready" briefly after startup even after
-    # /health reports OK.  After a hard reset the server may also refuse
-    # connections until fully initialized.  Retry on any transient error.
-    exists = True
-    for attempt in range(8):
-        try:
-            client.collections[coll_name].retrieve()
-            break
-        except Exception as e:
-            err_str = str(e).lower()
-            is_transient = (
-                "503" in err_str
-                or "connection" in err_str
-                or "timeout" in err_str
-                or "not ready" in err_str
-            )
-            if is_transient and attempt < 7:
-                print(f"  Typesense not ready yet (attempt {attempt + 1}/8), retrying in 5s...")
-                time.sleep(5)
-            else:
-                exists = False
-                break
-
-    if exists and resethard:
-        print(f"Dropping existing collection '{coll_name}'...")
-        client.collections[coll_name].delete()
-        exists = False
-
-    if not exists:
-        print(f"Creating collection '{coll_name}'...")
-        client.collections.create(schema)
-        print("Collection created.")
+    root = next((r for r in cfg.roots.values() if r.collection == collection), None)
+    if root is None:
+        # Test paths sometimes use a collection that isn't tied to a root.
+        from indexserver.config import index_root
+        index_dir = str(index_root() / collection)
     else:
-        print(f"Collection '{coll_name}' already exists.")
+        index_dir = root.index_dir
+
+    if resethard:
+        print(f"Wiping existing index '{collection}' at {index_dir}…", flush=True)
+        drop_index(index_dir)
+
+    print(f"Opening index '{collection}' at {index_dir}", flush=True)
+    return Backend(index_dir, write=write)
 
 
 # ---------------------------------------------------------------------------
@@ -451,28 +266,17 @@ def ensure_collection(client, collection: str, resethard: bool = False):
 # ---------------------------------------------------------------------------
 
 def walk_source_files(src_root: str, cfg, extensions=None):
-    """Yield SourceFile for all source files under src_root, respecting .gitignore.
-
-    Uses os.scandir for traversal so that mtime and size come from the DirEntry
-    stat cache rather than a separate os.stat() call per file.
-    extensions: set of lowercase extensions to include (e.g. {".cs", ".py"}).
-                When None, cfg.include_extensions is used.
-    """
-    from indexserver.config import to_native_path
+    """Yield SourceFile for all source files under src_root, respecting .gitignore."""
     import pathspec
 
     exts = extensions if extensions is not None else cfg.include_extensions
-    src_root = to_native_path(src_root)
+    src_root = normalize_path(src_root)
 
-    # Per-directory accumulated gitignore specs: {dirpath: [(base_dir, PathSpec), ...]}.
-    # Parent directories are always processed before their children (stack order
-    # guarantees this), so inherited specs are always present when needed.
     _dir_specs: dict = {}
 
     def _get_specs(dirpath: str, entries: list) -> list:
         parent = os.path.dirname(dirpath)
         inherited = _dir_specs.get(parent, [])
-        # Detect .gitignore from the already-scanned entries — no extra stat call.
         for e in entries:
             if e.name == ".gitignore":
                 try:
@@ -483,14 +287,14 @@ def walk_source_files(src_root: str, cfg, extensions=None):
                         _dir_specs[dirpath] = result
                         return result
                 except OSError:
-                    pass  # .gitignore is unreadable — skip it, no patterns applied
+                    pass
                 break
         _dir_specs[dirpath] = inherited
         return inherited
 
     def _is_ignored(path: str, specs: list) -> bool:
         for base_dir, spec in specs:
-            rel = os.path.relpath(path, base_dir).replace("\\", "/")
+            rel = normalize_path(os.path.relpath(path, base_dir))
             if spec.match_file(rel):
                 return True
         return False
@@ -522,7 +326,7 @@ def walk_source_files(src_root: str, cfg, extensions=None):
                     mtime = int(st.st_mtime)
                 except OSError:
                     continue
-                rel = os.path.relpath(entry.path, src_root).replace("\\", "/")
+                rel = normalize_path(os.path.relpath(entry.path, src_root))
                 yield SourceFile(entry.path, rel, mtime)
 
 
@@ -534,22 +338,17 @@ def _fmt_time(seconds: float) -> str:
     return f"{m}m{s:02d}s"
 
 
-def _flush(client, docs, verbose, collection: str):
-    coll_name = collection
-    try:
-        results = client.collections[coll_name].documents.import_(
-            docs, {"action": "upsert"}
-        )
-        if verbose:
-            failed = [r for r in results if not r.get("success")]
-            for f in failed:
-                print(f"  WARN: {f}")
-    except Exception as e:
-        print(f"  ERROR during batch import: {e}")
+def _flush(backend: Backend, docs: list, verbose: bool) -> tuple[int, int]:
+    if not docs:
+        return 0, 0
+    n_ok, n_failed = backend.upsert_many(docs)
+    if verbose and n_failed:
+        print(f"  WARN: {n_failed} of {len(docs)} failed", flush=True)
+    return n_ok, n_failed
 
 
 def index_file_list(
-    client,
+    backend: Backend,
     file_pairs,
     coll_name: str,
     batch_size: int = 50,
@@ -557,22 +356,7 @@ def index_file_list(
     on_progress=None,
     stop_event=None,
 ) -> tuple[int, int]:
-    """Shared batch-upsert pipeline used by both the full indexer and the verifier.
-
-    Args:
-        client:      Typesense client.
-        file_pairs:  Iterable of (full_path, relative_path) tuples.
-        coll_name:   Typesense collection name.
-        batch_size:  Documents per import batch.
-        verbose:     Print per-document warnings on import failure.
-        on_progress: Optional callable(n_indexed: int, n_errors: int) invoked
-                     after every flushed batch.
-        stop_event:  Optional threading.Event; when set the pipeline flushes
-                     the current batch and returns early.
-
-    Returns:
-        (total_indexed, total_errors)
-    """
+    """Shared batch-upsert pipeline used by the full indexer and the verifier."""
     docs_batch: list[dict] = []
     total = 0
     errors = 0
@@ -589,50 +373,26 @@ def index_file_list(
         docs_batch.append(doc)
 
         if len(docs_batch) >= batch_size:
-            _flush(client, docs_batch, verbose, coll_name)
-            total += len(docs_batch)
+            n_ok, n_fail = _flush(backend, docs_batch, verbose)
+            total  += n_ok
+            errors += n_fail
             docs_batch = []
             if on_progress:
                 on_progress(total, errors)
 
     if docs_batch:
-        _flush(client, docs_batch, verbose, coll_name)
-        total += len(docs_batch)
+        n_ok, n_fail = _flush(backend, docs_batch, verbose)
+        total  += n_ok
+        errors += n_fail
         if on_progress:
             on_progress(total, errors)
 
     return total, errors
 
 
-def export_index_map(collection: str, cfg) -> dict[str, int]:
-    """Fetch {doc_id: mtime} for every document in *collection*.
-
-    Uses the streaming export endpoint with include_fields=id,mtime so
-    Typesense serialises only those two fields per line, keeping the
-    response compact for large collections.  Returns an empty dict on
-    any error (caller treats the index as empty and re-indexes everything).
-    """
-    url = (
-        f"http://{cfg.host}:{cfg.port}/collections/{collection}/documents/export"
-        "?include_fields=id,mtime"
-    )
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": cfg.api_key})
-    id_mtime: dict[str, int] = {}
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            for raw_line in r:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                try:
-                    doc = json.loads(line)
-                    if "id" in doc:
-                        id_mtime[doc["id"]] = int(doc.get("mtime", 0))
-                except (json.JSONDecodeError, ValueError):
-                    pass
-    except Exception as e:
-        print(f"[indexer] WARNING: index export failed: {e}", flush=True)
-    return id_mtime
+def export_index_map(backend: Backend) -> dict[str, int]:
+    """Return {doc_id: mtime} for every document in *backend*."""
+    return backend.export_id_mtime()
 
 
 def walk_and_enqueue(
@@ -644,23 +404,14 @@ def walk_and_enqueue(
     stop_event=None,
     extensions=None,
 ) -> tuple[int, int, int]:
-    """Walk *src_root*, enqueue changed files, and delete orphans from the index.
-
-    1. Exports {doc_id: mtime} from the current index (skipped when resethard
-       is True since the collection is dropped and recreated first).
-    2. Walks the filesystem.  Files whose mtime already matches the index are
-       skipped — no parse, no queue entry.
-    3. After the walk, any doc_id that was in the index but not seen on disk is
-       deleted synchronously (orphan cleanup).
+    """Walk *src_root*, enqueue changed files, delete orphans from the index.
 
     Returns (new_entries, deduped_entries, orphans_deleted).
     """
-    from indexserver.config import to_native_path
-    src_root = to_native_path(src_root)
-    client = get_client(cfg)
-    ensure_collection(client, collection, resethard=resethard)
+    src_root = normalize_path(src_root)
+    backend = ensure_backend(cfg, collection, resethard=resethard)
 
-    index_map: dict[str, int] = {} if resethard else export_index_map(collection, cfg)
+    index_map: dict[str, int] = {} if resethard else export_index_map(backend)
     remaining = set(index_map)
     n_new = n_dedup = 0
 
@@ -670,39 +421,30 @@ def walk_and_enqueue(
         doc_id = file_id(sf.rel)
         remaining.discard(doc_id)
         if index_map.get(doc_id) == sf.mtime:
-            continue  # already indexed at this mtime
+            continue
         if queue.enqueue(sf.full_path, sf.rel, collection, mtime=sf.mtime):
             n_new += 1
         else:
             n_dedup += 1
 
-    n_deleted = 0
-    for doc_id in remaining:
-        try:
-            client.collections[collection].documents[doc_id].delete()
-            n_deleted += 1
-        except Exception:
-            pass
-
+    n_deleted = backend.delete_many(list(remaining)) if remaining else 0
     return n_new, n_dedup, n_deleted
 
 
 def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False, collection=None):
-    from indexserver.config import to_native_path
     coll_name = collection or cfg.collection
     root_exts = None
     if src_root is None:
         for root in cfg.roots.values():
             if root.collection == coll_name:
-                src_root = root.native_path
+                src_root = root.path
                 root_exts = root.extensions
                 break
         if src_root is None:
-            src_root = to_native_path(cfg.src_root)
-    src_root = to_native_path(src_root)
+            src_root = cfg.src_root
+    src_root = normalize_path(src_root)
     exts = root_exts if root_exts is not None else cfg.include_extensions
-    client = get_client(cfg)
-    ensure_collection(client, coll_name, resethard=resethard)
+    backend = ensure_backend(cfg, coll_name, resethard=resethard)
 
     t0 = time.time()
     last_report_t = t0
@@ -716,10 +458,9 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
     print()
 
     def _tracked_files():
-        """Yield (full_path, rel) from walk_source_files with top-folder progress logging."""
         nonlocal current_sub
         for sf in walk_source_files(src_root, cfg, extensions=exts):
-            parts = sf.rel.replace("\\", "/").split("/", 1)
+            parts = normalize_path(sf.rel).split("/", 1)
             top = parts[0] if len(parts) > 1 else ""
             if top != current_sub:
                 current_sub = top
@@ -744,10 +485,11 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
             last_report_n = n
 
     total_indexed, total_errors = index_file_list(
-        client, _tracked_files(), coll_name,
+        backend, _tracked_files(), coll_name,
         batch_size=batch_size, verbose=verbose,
         on_progress=_rate_report,
     )
+    backend.close()
 
     elapsed = time.time() - t0
     rate = total_indexed / elapsed if elapsed > 0 else 0
@@ -764,9 +506,9 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
 if __name__ == "__main__":
     from indexserver.config import load_config
     _cfg = load_config()
-    ap = argparse.ArgumentParser(description="Index source files into Typesense")
+    ap = argparse.ArgumentParser(description="Index source files into the Tantivy backend")
     ap.add_argument("--resethard", action="store_true",
-                    help="Drop and recreate the collection first")
+                    help="Drop and recreate the index first")
     ap.add_argument("--src", default=None,
                     help="Root directory to index (default: derived from --collection via config)")
     ap.add_argument("--collection", default=None,
@@ -778,13 +520,8 @@ if __name__ == "__main__":
 
     coll = args.collection or _cfg.collection
     if args.status:
-        client = get_client(_cfg)
-        try:
-            info = client.collections[coll].retrieve()
-            n = info.get("num_documents", "?")
-            print(f"Collection '{coll}': {n:,} documents indexed")
-        except Exception as e:
-            print(f"Cannot retrieve index stats: {e}")
+        backend = ensure_backend(_cfg, coll, resethard=False, write=False)
+        print(f"Collection '{coll}': {backend.num_documents():,} documents indexed")
     else:
         run_index(_cfg, src_root=args.src, resethard=args.resethard, verbose=args.verbose,
                   collection=coll)

@@ -114,7 +114,6 @@ export class RootsTreeProvider implements vscode.TreeDataProvider<CodesearchTree
     private _buildServerNode(): CodesearchTreeItem {
         const running  = this._serverRunning;
         const name     = this._server.displayName;
-        const nodeKind = this._server.mode === 'docker' ? 'Container' : 'Indexserver';
         let icon: string;
         let desc: string;
 
@@ -137,8 +136,8 @@ export class RootsTreeProvider implements vscode.TreeDataProvider<CodesearchTree
         node.iconPath    = new vscode.ThemeIcon(icon);
 
         if (running) {
-            const portInfo = `MCP :${this._server.mcpPort}  Typesense :${this._server.typesensePort}  API :${this._server.apiPort}`;
-            node.tooltip = `${nodeKind}: ${name}\nPorts: ${portInfo}`;
+            const portInfo = `MCP :${this._server.mcpPort}  API :${this._server.port}`;
+            node.tooltip = `${name}\nPorts: ${portInfo}`;
         } else {
             node.tooltip = `${name} is not running.\nRun "TsCodeSearch: Set Up" or "TsCodeSearch: Restart".`;
         }

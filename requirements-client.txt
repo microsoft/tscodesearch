@@ -1,5 +1,5 @@
-# MCP server + query/ package dependencies — client venv (.client-venv)
-# Installed by setup.mjs step [3]. Used by mcp_server.py.
+# MCP server + query/ + indexserver/ + tsquery_server.py — client venv (.client-venv)
+# Installed by setup.mjs step [2]. Used by mcp_server.py and the management daemon.
 mcp
 tree-sitter
 tree-sitter-c-sharp
@@ -9,7 +9,7 @@ tree-sitter-javascript
 tree-sitter-typescript
 tree-sitter-cpp
 tree-sitter-sql
-typesense
+tantivy
 watchdog
 pathspec
 pytest

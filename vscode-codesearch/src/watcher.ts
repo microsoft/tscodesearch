@@ -18,7 +18,7 @@ export class FileWatcher {
     get isActive(): boolean { return false; }
 
     constructor(config: CodesearchConfig, _out: unknown) {
-        this.apiPort = (config.port ?? 8108) + 1;
+        this.apiPort = config.port ?? 8108;
         this.apiKey  = config.api_key;
     }
 

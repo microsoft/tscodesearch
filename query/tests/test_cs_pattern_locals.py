@@ -16,7 +16,7 @@ Replicates bug discovered in Round 12 of guided testing:
       mirroring the same node type already handled in `_add_typed_vars` for
       `accesses_on` (Round 5/6).
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_pattern_locals.py -v
 """
 from __future__ import annotations

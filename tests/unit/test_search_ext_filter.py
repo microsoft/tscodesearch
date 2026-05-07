@@ -1,58 +1,24 @@
 """
-Tests for the extension filter expansion in scripts/search.py.
+Tests for the extension filter expansion used by both scripts/search.py and
+tsquery_server.py /query-codebase.
 
-Bug fixed: passing ext="cpp" to search() only filtered for .cpp files,
-excluding .h/.hpp/.hxx headers where C++ class declarations (and therefore
-all class hierarchies for `implements` queries) typically live.
+When any C/C++ source extension is requested, headers (.h/.hpp/.hxx) are
+automatically included so `implements`/`uses` queries find class declarations
+that live in headers.
 
-Fix: when any C/C++ source extension is requested, headers are automatically
-included in the Typesense filter.
-
-Run (no Typesense):
+Run (no daemon):
     pytest tests/unit/test_search_ext_filter.py -v
 """
 from __future__ import annotations
 
-import importlib.util
 import unittest
 
-from tests import REPO_ROOT
-
-# Load scripts/search.py (not a package)
-_spec = importlib.util.spec_from_file_location(
-    "scripts.search",
-    str(REPO_ROOT / "scripts" / "search.py"),
-)
-_search_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_search_mod)
-
-# Reach into search() to capture the filter_by that would be sent to Typesense
-# without actually hitting a live server.  We do this by monkey-patching the
-# typesense client call.
+from tsquery_server import _build_filter_by
 
 
 def _build_filter(ext=None, sub=None, exclude_path=None):
-    """Return the filter_by string production search() actually sends to Typesense.
-
-    Monkey-patches _ts_search (the real HTTP entry point in scripts/search.py),
-    captures params['filter_by'], and returns it verbatim.
-    """
-    captured = {}
-
-    def _fake_ts_search(coll, params):
-        captured["filter_by"] = params.get("filter_by", "")
-        return {"hits": [], "found": 0, "facet_counts": []}
-
-    import unittest.mock as _mock
-    with _mock.patch.object(_search_mod, "_ts_search", _fake_ts_search):
-        _search_mod.search(
-            query="Widget",
-            ext=ext,
-            sub=sub,
-            exclude_path=exclude_path,
-            collection="codesearch_default",
-        )
-    return captured.get("filter_by", "")
+    """Return the filter_by string production code emits for the given args."""
+    return _build_filter_by(ext or "", sub or "", exclude_path or "")
 
 
 class TestExtFilterExpansion(unittest.TestCase):

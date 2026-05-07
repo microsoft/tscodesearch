@@ -82,9 +82,9 @@ before(
 
 after(() => new Promise<void>((resolve) => mockServer.close(() => resolve())));
 
-// doQueryCodebase uses config.port + 1, so set port = mockPort - 1
+// doQueryCodebase uses config.port directly.
 function makeCfg(): CodesearchConfig {
-    return { api_key: 'test-key', port: mockPort - 1, mode: 'wsl', roots: { default: { path: 'C:/src' } } };
+    return { api_key: 'test-key', port: mockPort, roots: { default: { path: 'C:/src' } } };
 }
 
 beforeEach(() => {
@@ -100,16 +100,15 @@ beforeEach(() => {
 
 describe('loadConfig', () => {
     it('reads config', () => {
-        const p = writeTempConfig({ api_key: 'mk', port: 8108, mode: 'wsl', roots: { default: { path: 'C:/src' } } });
+        const p = writeTempConfig({ api_key: 'mk', port: 8108, roots: { default: { path: 'C:/src' } } });
         const cfg = loadConfig(p);
         assert.equal(cfg.api_key, 'mk');
         assert.equal(cfg.port, 8108);
-        assert.equal(cfg.mode, 'wsl');
         assert.deepEqual(cfg.roots, { default: { path: 'C:/src' } });
     });
 
     it('reads multiple roots', () => {
-        const p = writeTempConfig({ api_key: 'mk', port: 8108, mode: 'docker', roots: { default: { path: 'C:/src' }, other: { path: 'C:/other' } } });
+        const p = writeTempConfig({ api_key: 'mk', port: 8108, roots: { default: { path: 'C:/src' }, other: { path: 'C:/other' } } });
         const cfg = loadConfig(p);
         assert.deepEqual(cfg.roots, { default: { path: 'C:/src' }, other: { path: 'C:/other' } });
     });
@@ -132,12 +131,12 @@ describe('loadConfig', () => {
 
 describe('getRoots', () => {
     it('returns the roots map', () => {
-        const cfg: CodesearchConfig = { api_key: 'x', port: 8108, mode: 'wsl', roots: { default: { path: 'C:/src' }, foo: { path: 'C:/foo' } } };
+        const cfg: CodesearchConfig = { api_key: 'x', port: 8108, roots: { default: { path: 'C:/src' }, foo: { path: 'C:/foo' } } };
         assert.deepEqual(getRoots(cfg), { default: 'C:/src', foo: 'C:/foo' });
     });
 
     it('returns empty object for no roots', () => {
-        const cfg: CodesearchConfig = { api_key: 'x', port: 8108, mode: 'docker', roots: {} };
+        const cfg: CodesearchConfig = { api_key: 'x', port: 8108, roots: {} };
         assert.deepEqual(getRoots(cfg), {});
     });
 });
@@ -254,19 +253,10 @@ describe('resolveFilePath', () => {
         assert.equal(resolveFilePath('C:/myproject/src/', 'Foo/Bar.cs'), 'C:/myproject/src/Foo/Bar.cs');
     });
 
-    it('returns absolute WSL path (/...) as-is without prepending root', () => {
-        // A leading-slash path is treated as absolute (e.g. /mnt/c/... from WSL).
-        // It is returned unchanged — the caller is responsible for further conversion.
-        assert.equal(resolveFilePath('C:/myproject/src', '/mnt/c/myproject/src/Foo/Bar.cs'), '/mnt/c/myproject/src/Foo/Bar.cs');
+    it('returns absolute leading-slash path as-is without prepending root', () => {
+        assert.equal(resolveFilePath('C:/myproject/src', '/abs/Foo/Bar.cs'), '/abs/Foo/Bar.cs');
     });
 
-    it('converts WSL /mnt/c/... root to C:/...', () => {
-        assert.equal(resolveFilePath('/mnt/c/myproject/src', 'Foo/Bar.cs'), 'C:/myproject/src/Foo/Bar.cs');
-    });
-
-    it('handles lowercase drive letter in WSL path', () => {
-        assert.equal(resolveFilePath('/mnt/c/code', 'src/main.cs'), 'C:/code/src/main.cs');
-    });
 
     it('preserves deeply nested relative paths', () => {
         assert.equal(resolveFilePath('C:/src', 'a/b/c/d/e.cs'), 'C:/src/a/b/c/d/e.cs');
@@ -398,7 +388,7 @@ describe('doQueryCodebase', () => {
     });
 
     it('rejects when server is unreachable', async () => {
-        const cfg: CodesearchConfig = { api_key: 'k', port: 1, mode: 'wsl', roots: { default: { path: 'C:/src' } } };
+        const cfg: CodesearchConfig = { api_key: 'k', port: 1, roots: { default: { path: 'C:/src' } } };
         await assert.rejects(() => doQueryCodebase(cfg, 'x', 'uses', '', '', '', 10));
     });
 });
@@ -672,7 +662,7 @@ describe('doQuerySingleFile', () => {
     });
 
     it('rejects when server is unreachable', async () => {
-        const cfg: CodesearchConfig = { api_key: 'k', port: 1, mode: 'wsl', roots: { default: { path: 'C:/src' } } };
+        const cfg: CodesearchConfig = { api_key: 'k', port: 1, roots: { default: { path: 'C:/src' } } };
         await assert.rejects(() => doQuerySingleFile(cfg, 'calls', 'Foo', 'C:/src/foo.cs'));
     });
 

@@ -1,5 +1,4 @@
 // Fixture for testing accesses_on with C# pattern matching.
-// No SPO code — generic types only.
 // Covers: is-pattern (if), switch-case pattern, negated is, combined && condition.
 namespace Sample
 {

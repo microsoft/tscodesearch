@@ -2,13 +2,15 @@
 /**
  * setup.mjs — one-time codesearch setup.
  *
- * Installs everything and starts the service so you can open VS Code
- * and immediately add source roots via the TsCodeSearch extension.
+ * 1. Registers the MCP server with Claude Code
+ * 2. Sets the VS Code tscodesearch.repoPath setting
+ * 3. Creates a .client-venv with all Python deps (incl. tantivy)
+ * 4. Creates config.json if absent
+ * 5. Builds and installs the VS Code extension
  *
  * Usage:
- *   node setup.mjs              Docker mode (default; requires Docker Desktop)
- *   node setup.mjs --wsl        WSL mode (installs venv + Typesense binary in WSL)
- *   node setup.mjs --uninstall  Unregister MCP server and stop service
+ *   node setup.mjs
+ *   node setup.mjs --uninstall
  */
 
 import { spawnSync }                                    from 'node:child_process';
@@ -22,9 +24,6 @@ const REPO = dirname(fileURLToPath(import.meta.url));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// On Windows, npm/claude/code etc. are .cmd batch wrappers that must be run
-// via cmd.exe — they can't be spawned directly as executables, and using
-// shell:true triggers a Node 22+ deprecation warning when args are an array.
 const WIN_SCRIPTS = new Set(['npm', 'npx', 'claude', 'code', 'vsce']);
 
 function resolveSpawn(cmd, args) {
@@ -60,32 +59,15 @@ function commandExists(cmd) {
   return capture(checker, [cmd]) !== null;
 }
 
-const toWslPath = p =>
-  p.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
-
-// ── Config ────────────────────────────────────────────────────────────────────
-
-function readConfig() {
-  const f = join(REPO, 'config.json');
-  if (!existsSync(f)) return null;
-  try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; }
-}
-
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
 const argv      = process.argv.slice(2);
 const uninstall = argv.includes('--uninstall');
-const wslFlag   = argv.includes('--wsl');
-
-// Existing config.json mode wins over CLI flag
-const existingCfg = readConfig();
-const mode        = existingCfg?.mode ?? (wslFlag ? 'wsl' : 'docker');
-const isWsl       = mode === 'wsl';
 
 // ── Uninstall ─────────────────────────────────────────────────────────────────
 
 if (uninstall) {
-  console.log('Stopping service...');
+  console.log('Stopping daemon...');
   run('node', [join(REPO, 'ts.mjs'), 'stop'], { stdio: 'pipe' });
   console.log('Removing codesearch MCP server...');
   if (run('claude', ['mcp', 'remove', '--scope', 'user', 'tscodesearch']) !== 0)
@@ -96,8 +78,6 @@ if (uninstall) {
 }
 
 // ── Main setup ────────────────────────────────────────────────────────────────
-
-console.log(`Mode: ${mode}`);
 
 // [1] Register MCP
 step(1, 'Registering MCP server with Claude Code');
@@ -122,7 +102,7 @@ try {
   console.log(`  Set tscodesearch.repoPath manually to ${REPO}`);
 }
 
-// [2] Client venv — mcp_server.py + query_single_file (managed Python via uv, no system Python required)
+// [2] Client venv (managed Python via uv)
 step(2, 'Creating client venv (.client-venv)');
 {
   const clientVenv = join(REPO, '.client-venv');
@@ -157,26 +137,18 @@ step(2, 'Creating client venv (.client-venv)');
   console.log('  Done.');
 }
 
-// [3] WSL environment (wsl mode only)
-if (isWsl) {
-  step(3, 'Setting up WSL environment (venv + Typesense binary)');
-  const wslRepo = toWslPath(REPO);
-  runOrDie('wsl.exe', ['bash', '-lc', `bash '${wslRepo}/scripts/wsl-setup.sh'`], 'WSL setup');
-  console.log('  Done.');
-}
-
-// [4] Create config.json if absent
-step(4, 'config.json');
+// [3] Create config.json if absent
+step(3, 'config.json');
 if (existsSync(join(REPO, 'config.json'))) {
   console.log('  Already exists, skipping.');
 } else {
-  const config = { api_key: randomBytes(20).toString('hex'), port: 8108, mode, roots: {} };
+  const config = { api_key: randomBytes(20).toString('hex'), port: 8108, roots: {} };
   writeFileSync(join(REPO, 'config.json'), JSON.stringify(config, null, 2) + '\n', 'utf8');
-  console.log(`  Created with mode=${mode} (api_key auto-generated).`);
+  console.log('  Created (api_key auto-generated).');
 }
 
-// [5] VS Code extension
-step(5, 'Installing VS Code extension');
+// [4] VS Code extension
+step(4, 'Installing VS Code extension');
 const vscodeDir = join(REPO, 'vscode-codesearch');
 if (!existsSync(join(vscodeDir, 'package.json'))) {
   console.log('  SKIPPED: vscode-codesearch directory not found.');
@@ -201,8 +173,8 @@ if (!existsSync(join(vscodeDir, 'package.json'))) {
 // ── Done ─────────────────────────────────────────────────────────────────────
 
 console.log('\n── Setup complete! ──────────────────────────────────────────────────────────\n');
-console.log('Next: start the service:');
-console.log(isWsl ? '  ts start' : '  ts start  (builds Docker image on first run — may take a few minutes)');
+console.log('Next: start the daemon:');
+console.log('  ts start');
 console.log('\nThen open VS Code (or reload: Ctrl+Shift+P > Reload Window) and:');
 console.log('  TsCodeSearch: Add Root  — to add source directories to index');
-console.log('\nService management:  ts start / ts stop / ts restart / ts status');
+console.log('\nDaemon management:  ts start / ts stop / ts restart / ts status');

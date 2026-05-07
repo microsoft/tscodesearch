@@ -1,5 +1,4 @@
 // Fixture for testing uses_kind=locals with various local variable declaration forms.
-// No SPO code — generic types only.
 // Covers: plain locals, using-statement, for-statement, foreach-statement.
 using System;
 

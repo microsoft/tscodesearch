@@ -7,7 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  # ── Job 3: CodeQL analysis ─────────────────────────────────────────────────
   codeql:
     name: CodeQL analysis
     runs-on: ubuntu-latest
@@ -32,10 +31,8 @@ jobs:
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
 
-  # ── Job 1: full native test suite ──────────────────────────────────────────
-  # Downloads Typesense, creates a venv, runs all tests directly on the runner.
-  native:
-    name: Native tests
+  tests:
+    name: Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -43,7 +40,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - uses: actions/setup-node@v4
         with:
@@ -51,45 +48,14 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m venv ~/.local/indexserver-venv
-          ~/.local/indexserver-venv/bin/pip install -q -r requirements-dev.txt
+          python3 -m venv .client-venv
+          .client-venv/bin/pip install -q -r requirements-dev.txt
 
       - name: Write config.json
         run: echo '{"api_key":"ci-test-key","port":8108,"roots":{}}' > config.json
 
-      - name: Run tests
-        run: node run_tests.mjs --linux --print-logs
+      - name: Run Python tests
+        run: .client-venv/bin/pytest tests/ query/tests/ -v
 
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-logs
-          path: /tmp/codesearch-run-*
-          if-no-files-found: ignore
-
-  # ── Job 2: Docker E2E ───────────────────────────────────────────────────────
-  # Builds the codesearch-mcp image, starts a container with sample/root1 and
-  # sample/root2 mounted, waits for indexing, then runs pytest inside the
-  # container and VS Code extension pipeline tests from the host.
-  docker-e2e:
-    name: Docker E2E tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Run Docker E2E tests
-        run: node run_tests.mjs --docker --print-logs
-
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-e2e-logs
-          path: /tmp/codesearch-run-*
-          if-no-files-found: ignore
+      - name: Run VS Code extension tests
+        run: node run_tests.mjs

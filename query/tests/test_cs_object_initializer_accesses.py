@@ -5,7 +5,6 @@ Replicates bug discovered in Round 14 of guided testing:
 
   Round 14 — accesses_on missed members set via object initializers:
 
-        new AbsBlobInfo { AbsInfo = absInfo }
         new Widget { Value = 5, Name = "test" }
 
       `q_accesses_on` only walked `member_access_expression` and
@@ -20,7 +19,7 @@ Replicates bug discovered in Round 14 of guided testing:
       Members bypass the `seen_rows` dedup so that multiple members on the
       same line are all reported.
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_object_initializer_accesses.py -v
 """
 from __future__ import annotations
