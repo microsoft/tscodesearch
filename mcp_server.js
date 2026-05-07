@@ -203,11 +203,32 @@ per-folder breakdown — repeat with a deeper sub= to narrow further.
 
 For listing modes (methods, fields, classes, usings, imports) use query_single_file.
 
+All modes are identifier-based AST queries. The pattern must be a single
+identifier name (e.g. "BlobStore", "SaveChanges") — no whitespace, operators,
+punctuation, generic brackets, or quoted strings. Matches are restricted to
+identifier occurrences in code; strings and comments are never matched.
+
+If you need a multi-word phrase, an operator-bearing fragment like
+"using X =", a literal substring inside a string/comment, or an arbitrary
+regex, this tool cannot help — fall back to grep/ripgrep over the source
+tree. Do NOT call query_codebase("text", ...) with a multi-word pattern;
+it will silently return zero matches.
+
 Args:
-  mode:         text, declarations, calls, implements, uses, casts, attrs,
-                accesses_of, accesses_on, all_refs (C#);
-                calls, implements, ident, declarations, params, decorators (Python)
-  pattern:      Type/method/name to search for.
+  mode:         AST query mode. All take a single identifier as \`pattern\`.
+                C#:     text, declarations, calls, implements, uses, casts,
+                        attrs, accesses_of, accesses_on, all_refs
+                Python: text, calls, implements, ident, declarations, params,
+                        decorators
+                text is an alias for all_refs — every identifier occurrence of
+                the given name. Use it when you don't yet know which structural
+                role (call vs declaration vs cast vs param type) you're after.
+                Prefer a more specific mode (calls, declarations, uses, etc.)
+                when you do.
+  pattern:      A single identifier. Examples that DO work: "BlobStore",
+                "SaveChanges", "IDataStore". Examples that do NOT work:
+                "using BlobStore", "(BlobStore)", "Save Changes",
+                "List<Foo>", "// TODO". Use grep for those.
   sub:          Narrow to an ancestor folder. Accepts any depth, e.g.
                 "services" or "services/billing". On overflow the response
                 suggests deeper paths to drill into.

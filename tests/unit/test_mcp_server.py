@@ -779,12 +779,41 @@ class TestWaitForSync(unittest.TestCase):
         assert "verify_index" in result  # hint included
 
     def test_unreachable_indexserver(self):
+        """Persistent _get failures across the deadline → 'unreachable' message.
+
+        wait_for_sync retries transient errors (a slow /status round-trip is
+        not the same as a dead daemon), so the loop must run until our deadline
+        elapses before reporting unreachable.
+        """
         def _boom(path, timeout=10):
+            self._t[0] += 0.5  # advance clock so the deadline is reachable
             raise OSError("connection refused")
         _ms._get = _boom
-        result = _ms.wait_for_sync(timeout_s=5)
-        assert "NOT running" in result
+        result = _ms.wait_for_sync(timeout_s=2)
+        assert "unreachable" in result.lower(), f"got: {result!r}"
         assert "ts start" in result
+        # The old "Indexserver is NOT running" phrasing was misleading because
+        # it fired on the first transient blip — must not appear anymore.
+        assert "Indexserver is NOT running" not in result
+
+    def test_transient_error_retried_then_succeeds(self):
+        """A single /status timeout must NOT be reported as 'not running' —
+        wait_for_sync should retry and surface a successful sync on the next poll.
+        Regression test for the user-reported bug where a slow Typesense
+        round-trip in /status caused an immediate 'NOT running' return."""
+        calls = {"n": 0}
+        def _flaky(path, timeout=10):
+            self._t[0] += 0.5
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise TimeoutError("timed out")
+            return (200, {"typesense_ok": True,
+                          "queue":  {"depth": 0},
+                          "syncer": {"running": False, "pending": 0}})
+        _ms._get = _flaky
+        result = _ms.wait_for_sync(timeout_s=10)
+        assert "Index synced" in result, f"expected sync after retry, got: {result!r}"
+        assert calls["n"] >= 2, "must have retried after the first failure"
 
     def test_status_http_error_returned(self):
         self._set_responses([(503, {"error": "loading"})])
