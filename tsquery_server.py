@@ -717,7 +717,15 @@ def run_until_shutdown() -> None:
         pass
 
     _shutdown_event.wait()
+
+    # Hard-exit timer: if stop_daemon() blocks for any reason (e.g. Tantivy merge
+    # threads in a destructor), this fires and kills the process after 10s.
+    _hard_exit = threading.Timer(10.0, lambda: os._exit(0))
+    _hard_exit.daemon = True
+    _hard_exit.start()
+
     stop_daemon()
+    os._exit(0)  # Normal path: exit cleanly once stop_daemon() finishes.
 
 
 def stop_daemon() -> None:
@@ -729,42 +737,56 @@ def stop_daemon() -> None:
     """
     global _server
 
+    t0 = time.monotonic()
+    def _elapsed() -> str:
+        return f"{time.monotonic() - t0:.1f}s"
+
+    print("[tsquery_server] Stopping — signalling watcher…", flush=True)
     _watcher_stop.set()
 
     if _sync_thread and _sync_thread.is_alive():
+        print("[tsquery_server] Waiting for syncer thread…", flush=True)
         if _sync_stop:
             _sync_stop.set()
         _sync_thread.join(timeout=30)
+        if _sync_thread.is_alive():
+            print(f"[tsquery_server] WARNING: syncer still alive after 30s ({_elapsed()})", flush=True)
+        else:
+            print(f"[tsquery_server] Syncer done ({_elapsed()})", flush=True)
 
-    # Give the queue worker enough time to finalize its commit; once it
-    # returns, all buffered work is durable on disk.
-    _index_queue.stop(timeout=60)
+    print(f"[tsquery_server] Draining index queue… ({_elapsed()})", flush=True)
+    # Queue worker stops pulling new items, runs one final commit to flush
+    # already-buffered work, then exits. The hard-exit timer in
+    # run_until_shutdown() is the backstop if anything blocks longer.
+    _index_queue.stop(timeout=5)
+    print(f"[tsquery_server] Queue drained ({_elapsed()})", flush=True)
 
     for collection, backend in _backends.items():
+        print(f"[tsquery_server] Closing backend {collection}… ({_elapsed()})", flush=True)
         try:
-            backend.close()
-            try:
-                ndocs = backend.num_documents()
-            except Exception:
-                ndocs = -1
+            # quick=True: skip merge-thread wait and uncommitted-work commit.
+            # Any buffered work is dropped; the verifier re-indexes on next startup.
+            backend.close(quick=True)
             print(
-                f"[tsquery_server] Closed backend {collection} ({ndocs:,} docs on disk)",
+                f"[tsquery_server] Closed backend {collection} ({_elapsed()})",
                 flush=True,
             )
         except Exception as e:
-            print(f"[tsquery_server] backend.close error ({collection}): {e}", flush=True)
+            print(f"[tsquery_server] backend.close error ({collection}): {e} ({_elapsed()})", flush=True)
     _backends.clear()
 
     if _server is not None:
+        print(f"[tsquery_server] Shutting down HTTP server… ({_elapsed()})", flush=True)
         _srv_stop = threading.Thread(target=_server.shutdown, daemon=True)
         _srv_stop.start()
         _srv_stop.join(timeout=5)
         _server = None
+        print(f"[tsquery_server] HTTP server down ({_elapsed()})", flush=True)
 
     if _DAEMON_PID.exists():
         _DAEMON_PID.unlink()
 
-    print("[tsquery_server] Stopped.", flush=True)
+    print(f"[tsquery_server] Stopped. total={_elapsed()}", flush=True)
 
 
 # ── Daemon entry point ─────────────────────────────────────────────────────────
