@@ -15,7 +15,7 @@
 
 import { spawnSync }                                    from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync,
-         unlinkSync }                                   from 'node:fs';
+         unlinkSync, linkSync, copyFileSync }           from 'node:fs';
 import { join, dirname }                               from 'node:path';
 import { fileURLToPath }                               from 'node:url';
 import { randomBytes }                                 from 'node:crypto';
@@ -135,6 +135,20 @@ step(2, 'Creating client venv (.client-venv)');
   runOrDie('uv', ['pip', 'install', '--quiet', '--upgrade', '-r', reqs],
     'uv pip install', { env: { ...process.env, VIRTUAL_ENV: clientVenv } });
   console.log('  Done.');
+
+  // Create tscodesearch.exe as a hard link to python.exe so the daemon
+  // shows a descriptive process name in Task Manager instead of "python.exe".
+  const tsExe = join(clientVenv, 'Scripts', 'tscodesearch.exe');
+  if (needsCreate || !existsSync(tsExe)) {
+    if (existsSync(tsExe)) unlinkSync(tsExe);
+    try {
+      linkSync(pyExe, tsExe);
+      console.log('  Created tscodesearch.exe (hard link for daemon process name).');
+    } catch {
+      copyFileSync(pyExe, tsExe);
+      console.log('  Copied tscodesearch.exe (daemon process name alias).');
+    }
+  }
 }
 
 // [3] Create config.json if absent
