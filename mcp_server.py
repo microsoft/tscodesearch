@@ -786,7 +786,7 @@ Args:
         exists = info.get("collection_exists", ndocs is not None)
         if not exists:
             lines.append(f"Root '{root_name}' ({coll_name}): " +
-                         ("indexing in progress" if indexer_running else "not yet indexed — run: ts index"))
+                         ("indexing in progress" if indexer_running else "not yet indexed — run: ts verify"))
         else:
             lines.append(f"Root '{root_name}' ({coll_name}): {ndocs:,} docs")
 

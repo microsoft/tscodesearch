@@ -87,12 +87,11 @@ ts status                          show daemon health, doc count, watcher state
 ts start                           start the daemon (auto-indexes on first run)
 ts stop                            stop the daemon
 ts restart                         stop then start
-ts index                           re-index in background (incremental)
-ts index --resethard               wipe the on-disk index and reindex from scratch
-ts index --root <name>             index a specific named root
 ts verify                          scan FS + repair index: add missing, re-index stale, remove orphans
 ts verify --root <name>            verify a specific named root
 ts verify --no-delete-orphans      repair without removing deleted-file entries
+ts recreate                        stop daemon, wipe the on-disk index, restart (full reindex)
+ts recreate --root <name>          recreate a specific named root's index
 ts log [-n N]                      tail the daemon log (default: last 40 lines)
 ```
 
@@ -190,7 +189,7 @@ Typical flow: Tantivy narrows the haystack to ~50 candidate files → tree-sitte
 │    • HTTP server   (management API on PORT)                  │
 │    • watcher       (ReadDirectoryChangesW)                   │
 │    • IndexQueue    (batch Tantivy writes)                    │
-│    • syncer        (on-demand, via POST /index/start)        │
+│    • syncer        (on-demand, via POST /verify/start)       │
 │    • Tantivy indexes  (one per root, on disk in .tantivy/)   │
 └──────────────────────────────────────────────────────────────┘
 ```

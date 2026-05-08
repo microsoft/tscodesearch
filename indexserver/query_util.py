@@ -143,7 +143,7 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
         backend = ensure_backend(_cfg, coll_name, write=False)
     except Exception as e:
         print(f"Index open error: {e}", file=sys.stderr)
-        print("Run: ts index --resethard", file=sys.stderr)
+        print("Run: ts recreate", file=sys.stderr)
         return []
 
     try:

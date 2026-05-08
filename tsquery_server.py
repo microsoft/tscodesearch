@@ -22,9 +22,8 @@ HTTP endpoints:
   GET  /health               → {"ok": true}  (no auth)
   GET  /status               → watcher / queue / syncer / collections
   POST /check-ready          → check_ready() result
-  POST /verify/start         → alias for POST /index/start (resethard=False)
+  POST /verify/start         → queue a verify/repair job
   POST /verify/stop          → cancel running syncer
-  POST /index/start          → queue verify/index job
   POST /file-events          → accept file-change notifications
   POST /query-codebase       → backend search + AST post-process
   POST /management/shutdown  → graceful daemon shutdown (used by ts stop)
@@ -290,7 +289,6 @@ def _drain_sync_queue() -> None:
         root_name  = job.get("root_name", "")
         src_root   = job["src_root"]
         collection = job["collection"]
-        resethard  = job["resethard"]
         extensions = job.get("extensions")
 
         stop = threading.Event()
@@ -305,7 +303,6 @@ def _drain_sync_queue() -> None:
                 collection=collection,
                 queue=_index_queue,
                 delete_orphans=True,
-                resethard=resethard,
                 stop_event=stop,
                 extensions=extensions,
                 on_complete=lambda: None,
@@ -398,7 +395,6 @@ def _initialize_async(stop_event: threading.Event) -> None:
                 "root_name":  root.name,
                 "src_root":   root.path,
                 "collection": root.collection,
-                "resethard":  False,
                 "extensions": root.extensions,
             })
         if _sync_pending:
@@ -482,9 +478,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, result)
             return
 
-        if method == "POST" and path == "/verify/start":
-            path = "/index/start"
-
         if method == "POST" and path == "/verify/stop":
             if not (_sync_thread and _sync_thread.is_alive()):
                 self._send_json(404, {"error": "no sync job is running"})
@@ -501,18 +494,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, result)
             return
 
-        if method == "POST" and path == "/index/start":
+        if method == "POST" and path == "/verify/start":
             body = self._read_body()
             try:
                 root = _cfg.get_root(body.get("root", ""))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
-            resethard = bool(body.get("resethard", False))
 
             with _sync_lock:
                 job = {"root_name": root.name, "src_root": root.path,
-                       "collection": root.collection, "resethard": resethard,
+                       "collection": root.collection,
                        "extensions": root.extensions}
                 _sync_pending.append(job)
                 queued_pos = len(_sync_pending)

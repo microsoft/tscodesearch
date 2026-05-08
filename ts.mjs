@@ -13,10 +13,9 @@
  *   stop                   Stop the daemon
  *   restart                Stop then start the daemon
  *   status                 Show daemon health and index statistics
- *   index [--resethard]    Run indexer (--resethard wipes and reindexes)
- *         [--root NAME]
  *   verify [--root NAME]   Scan filesystem and repair stale/missing entries
  *          [--no-delete-orphans]
+ *   recreate [--root NAME] Stop daemon, wipe index dir, restart (full reindex)
  *   log [-n N] [-f]        Show daemon log
  *   root                   List configured roots
  *   root --add NAME PATH   Add (or update) a root in config.json
@@ -106,6 +105,15 @@ function apiPost(urlPath, body, timeoutMs = 10000) {
 
 function clientVenvPython() {
     return path.join(__dirname, '.client-venv', 'Scripts', 'python.exe');
+}
+
+// Mirrors indexserver.config.collection_for_root: lowercase, then [^a-z0-9_] → _.
+function collectionForRoot(name) {
+    return `codesearch_${name.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`;
+}
+
+function indexDirForRoot(name) {
+    return path.join(__dirname, '.tantivy', collectionForRoot(name));
 }
 
 async function pollHealth(port, timeoutMs = 60_000, label = 'daemon') {
@@ -245,7 +253,7 @@ function printStatus(apiBody) {
         let badge, detail;
         if (!exists || ndocs == null) {
             badge  = '[--]';
-            detail = 'not yet indexed — run: ts index';
+            detail = 'not yet indexed — run: ts verify';
         } else if (isCurrent && (syncerRunning || isQueued)) {
             const total = prog.total_to_update ?? 0;
             const done  = total > 0 ? Math.max(0, total - qDepth) : qUpserted;
@@ -254,7 +262,7 @@ function printStatus(apiBody) {
             detail = `${fmtNum(ndocs)} docs${buffStr}  indexing  ${fmtNum(done)}/${fmtNum(total)}${pct}`;
         } else if (!synced) {
             badge  = '[~~]';
-            detail = `${fmtNum(ndocs)} docs${buffStr}  incomplete sync — run: ts index --root ${rootName}`;
+            detail = `${fmtNum(ndocs)} docs${buffStr}  incomplete sync — run: ts verify --root ${rootName}`;
         } else {
             const when = syncedAt ? `  synced ${fmtTs(syncedAt)}` : '';
             badge  = '[OK]';
@@ -358,20 +366,22 @@ async function cmdStatus() {
     console.log(`----------------------------------------------------------------------`);
 }
 
-async function cmdIndex(args) {
+async function cmdRecreate(args) {
     const rootName = args.root || Object.keys(ROOTS)[0] || 'default';
+    const indexDir = indexDirForRoot(rootName);
 
-    try {
-        const { status, body } = await apiPost('/index/start', {
-            root: rootName, resethard: !!args.resethard,
-        });
-        if (status === 409) { log('Indexer already running. Monitor with: ts status'); return; }
-        if (status !== 200) die(`daemon returned ${status}: ${body?.error ?? JSON.stringify(body)}`);
-        const reset = args.resethard ? ' (resethard)' : '';
-        log(`Indexer started for root '${rootName}'${reset}. Monitor with: ts status`);
-    } catch (e) {
-        die(`Cannot reach daemon: ${e.message}`);
+    log(`Recreate for root '${rootName}': stopping daemon, wiping ${indexDir}, restarting.`);
+    await shutdownDaemon();
+    if (fs.existsSync(indexDir)) {
+        fs.rmSync(indexDir, { recursive: true, force: true });
+        log(`Removed ${indexDir}`);
+    } else {
+        log(`Index directory did not exist: ${indexDir}`);
     }
+    startDaemon();
+    log(`Waiting for daemon on port ${PORT}...`);
+    await pollHealth(PORT, 30_000, 'daemon');
+    log(`Daemon restarted. Full reindex in progress — monitor with: ts status`);
 }
 
 async function cmdVerify(args) {
@@ -461,12 +471,11 @@ Commands:
   stop                   Stop the daemon
   restart                Stop then start
   status                 Show daemon health and index stats
-  index                  Run the indexer
-    --resethard          Wipe all data and reindex from scratch
-    --root NAME          Root to index (default: first configured root)
   verify                 Scan filesystem and repair index
     --root NAME          Root to verify (default: first configured root)
     --no-delete-orphans  Keep entries for deleted files
+  recreate               Stop daemon, wipe index dir, restart (full reindex)
+    --root NAME          Root to recreate (default: first configured root)
   log                    Show daemon log
     -n N                 Number of lines (default: 40)
   root                   List configured roots
@@ -480,14 +489,13 @@ Commands:
 function parseArgs(argv) {
     const [cmd, ...rest] = argv;
     const args = {
-        cmd, root: null, resethard: false, noDeleteOrphans: false,
+        cmd, root: null, noDeleteOrphans: false,
         lines: 40, follow: false,
         addName: null, addPath: null, removeName: null,
         extensions: null,
     };
     for (let i = 0; i < rest.length; i++) {
         switch (rest[i]) {
-            case '--resethard':           args.resethard = true; break;
             case '--root':                args.root = rest[++i]; break;
             case '--no-delete-orphans':   args.noDeleteOrphans = true; break;
             case '-f': case '--follow':   args.follow = true; break;
@@ -525,14 +533,14 @@ if (!rawArgs.length || rawArgs[0] === '--help' || rawArgs[0] === '-h') usage();
 const args = parseArgs(rawArgs);
 
 const commands = {
-    start:   cmdStart,
-    stop:    cmdStop,
-    restart: cmdRestart,
-    status:  cmdStatus,
-    index:   cmdIndex,
-    verify:  cmdVerify,
-    log:     cmdLog,
-    root:    cmdRoot,
+    start:    cmdStart,
+    stop:     cmdStop,
+    restart:  cmdRestart,
+    status:   cmdStatus,
+    verify:   cmdVerify,
+    recreate: cmdRecreate,
+    log:      cmdLog,
+    root:     cmdRoot,
 };
 
 if (!commands[args.cmd]) {
