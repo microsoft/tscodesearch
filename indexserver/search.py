@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from typing import Iterable
 
 import tantivy
 
@@ -58,6 +57,8 @@ def search(
             try:
                 field_boosts[f] = float(weight_list[i])
             except ValueError:
+                # Non-numeric weight tokens are ignored — caller stays in the
+                # default (unweighted) regime for that field.
                 pass
     fuzzy_fields = (
         {f: (False, max(0, int(num_typos)), True) for f in fields}
@@ -156,13 +157,13 @@ def _tokenize(q: str) -> list[str]:
 #
 # Values are treated as literal strings against `raw`-tokenized fields.
 
+# Strict format: ``field:=value`` or ``field:!=value`` (no internal whitespace).
+# Each clause is stripped before matching, so leading/trailing space is gone;
+# avoiding ``\s*`` here keeps the regex linear (CodeQL polynomial-redos guard).
 _TOKEN_RE = re.compile(
     r"""
-        \s*
         (?P<field>[A-Za-z_][A-Za-z0-9_]*)
-        \s*:\s*
-        (?P<negate>!?)=
-        \s*
+        :(?P<negate>!?)=
         (?P<value>
               \[[^\]]*\]
             | [^\s&|]+
@@ -179,7 +180,7 @@ def _parse_filter_by(schema: tantivy.Schema, expr: str) -> list[tuple]:
         return []
 
     out: list[tuple] = []
-    for clause in re.split(r"\s*&&\s*", expr):
+    for clause in expr.split("&&"):
         clause = clause.strip()
         if not clause:
             continue

@@ -6,7 +6,7 @@ The test class spawns the daemon in-process via tsquery_server.start_daemon()
 on a free port; no external service is required.
 """
 from __future__ import annotations
-import os, sys, time, unittest, json, urllib.request
+import os, sys, unittest
 
 _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _root not in sys.path:

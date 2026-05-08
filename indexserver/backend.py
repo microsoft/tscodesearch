@@ -22,7 +22,6 @@ import os
 import re
 import shutil
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -142,12 +141,14 @@ class Backend:
             try:
                 self.commit()
             except Exception:
+                # Already logged by commit(); close() must not raise.
                 pass
         with self._lock:
             if self._writer is not None:
                 try:
                     self._writer.wait_merging_threads()
                 except Exception:
+                    # Best-effort cleanup; closing the writer below is what matters.
                     pass
                 self._writer = None
 
@@ -214,6 +215,9 @@ class Backend:
                 try:
                     self._writer.rollback()
                 except Exception:
+                    # Rollback failure is not actionable; the original commit_err
+                    # below is the one we surface, and _reopen_writer() recovers
+                    # the writer from any in-between state.
                     pass
                 self._dirty = False
                 self._buffered = 0
@@ -230,6 +234,8 @@ class Backend:
         try:
             self._writer.wait_merging_threads()
         except Exception:
+            # The writer is already in an undefined state (we're recovering from
+            # a commit failure); skip the wait and rebuild from disk below.
             pass
         self._writer = None
         gc.collect()
