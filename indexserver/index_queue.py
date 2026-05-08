@@ -194,7 +194,10 @@ class IndexQueue:
                     if not self._items and not self._stop.is_set():
                         self._cond.wait(timeout=COMMIT_INTERVAL_S)
 
-        # Shutdown: best-effort final commit of buffered work.
+        # Shutdown: flush already-buffered work so it's durable on disk.
+        # No new chunks are pulled (loop exited), no new adds happen — the
+        # commit just writes what's already in the writer. backend.close()
+        # will skip wait_merging_threads(); merges complete after os._exit.
         if dirty:
             self._commit_all(dirty)
 

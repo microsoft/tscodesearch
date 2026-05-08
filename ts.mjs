@@ -143,6 +143,8 @@ async function pollHealth(port, timeoutMs = 60_000, label = 'daemon') {
     die(`${label} did not become healthy within ${timeoutMs / 1000}s`);
 }
 
+/** Poll until the port stops responding. Returns true if it closed within the
+ *  timeout, false if the timeout elapsed and the port is still up. */
 async function waitForPortClosed(port, timeoutMs = 10_000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -151,13 +153,16 @@ async function waitForPortClosed(port, timeoutMs = 10_000) {
                 { host: 'localhost', port, path: '/health', method: 'GET' },
                 res => { res.resume(); resolve(true); }
             );
+            // error = connection refused/reset = port is gone
             req.on('error', () => resolve(false));
-            req.setTimeout(500, () => { req.destroy(); resolve(false); });
+            // timeout = server slow (GIL contention) = still up; don't false-positive
+            req.setTimeout(2000, () => { req.destroy(); resolve(true); });
             req.end();
         });
-        if (!still_up) return;
+        if (!still_up) return true;
         await new Promise(r => setTimeout(r, 200));
     }
+    return false;  // timed out — port still up
 }
 
 async function shutdownDaemon() {
@@ -179,19 +184,9 @@ async function shutdownDaemon() {
     // The daemon's stop_daemon() does up to 5s syncer join + 5s queue stop +
     // backend close (waits for merge threads) + 5s server shutdown — so allow
     // up to 30s before assuming it's stuck.
-    await waitForPortClosed(PORT, 30_000);
+    const closed = await waitForPortClosed(PORT, 30_000);
 
-    const stillUp = await new Promise(resolve => {
-        const req = http.request(
-            { host: 'localhost', port: PORT, path: '/health', method: 'GET' },
-            res => { res.resume(); resolve(true); }
-        );
-        req.on('error', () => resolve(false));
-        req.setTimeout(500, () => { req.destroy(); resolve(false); });
-        req.end();
-    });
-
-    if (stillUp && daemonPid) {
+    if (!closed && daemonPid) {
         log(`Daemon did not exit after 30s — force-killing pid ${daemonPid}...`);
         if (process.platform === 'win32') {
             spawnSync('taskkill', ['/F', '/PID', daemonPid], { stdio: 'pipe' });

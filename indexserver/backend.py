@@ -134,11 +134,17 @@ class Backend:
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
-    def close(self) -> None:
+    def close(self, quick: bool = False) -> None:
+        """Release the writer.
+
+        quick=True skips the merge-thread wait so the caller can exit fast.
+        Any uncommitted buffered work is dropped; the verifier re-indexes on
+        the next startup.
+        """
         if self._writer is None:
             return
-        # Commit any pending work; failures are logged inside commit().
-        if self._dirty:
+        if not quick and self._dirty:
+            # Commit any pending work; failures are logged inside commit().
             try:
                 self.commit()
             except Exception:
@@ -146,11 +152,12 @@ class Backend:
                 pass
         with self._lock:
             if self._writer is not None:
-                try:
-                    self._writer.wait_merging_threads()
-                except Exception:
-                    # Best-effort cleanup; closing the writer below is what matters.
-                    pass
+                if not quick:
+                    try:
+                        self._writer.wait_merging_threads()
+                    except Exception:
+                        # Best-effort cleanup; closing the writer below is what matters.
+                        pass
                 self._writer = None
 
     @property
