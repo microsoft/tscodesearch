@@ -1,9 +1,8 @@
 @echo off
 :: One-time codesearch setup.
 :: Usage:
-::   setup.cmd              Docker mode (default; requires Docker Desktop)
-::   setup.cmd --wsl        WSL mode
-::   setup.cmd --uninstall  Unregister MCP server and stop service
+::   setup.cmd              Install MCP server, .client-venv, VS Code extension
+::   setup.cmd --uninstall  Unregister MCP server and stop the daemon
 
 :: -- Ensure Node.js 20+ ----------------------------------------------------------
 node -e "process.exit(parseInt(process.version.slice(1)) >= 20 ? 0 : 1)" 2>nul

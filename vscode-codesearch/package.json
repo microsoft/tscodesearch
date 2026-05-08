@@ -59,12 +59,12 @@
         "icon": "$(remove)"
       },
       {
-        "command": "tscodesearch.restartContainer",
+        "command": "tscodesearch.restartDaemon",
         "title": "TsCodeSearch: Restart",
         "icon": "$(debug-restart)"
       },
       {
-        "command": "tscodesearch.stopContainer",
+        "command": "tscodesearch.stopDaemon",
         "title": "TsCodeSearch: Stop",
         "icon": "$(debug-stop)"
       },
@@ -93,25 +93,10 @@
             "default": 3000,
             "description": "Port for the MCP SSE endpoint."
           },
-          "tscodesearch.typesensePort": {
+          "tscodesearch.port": {
             "type": "number",
             "default": 8108,
-            "description": "Port for the Typesense server."
-          }
-        }
-      },
-      {
-        "title": "TsCodeSearch — Docker Mode",
-        "properties": {
-          "tscodesearch.dockerImage": {
-            "type": "string",
-            "default": "codesearch-mcp",
-            "description": "Docker image name."
-          },
-          "tscodesearch.dockerContainer": {
-            "type": "string",
-            "default": "codesearch",
-            "description": "Docker container name."
+            "description": "Port for the codesearch daemon HTTP API."
           }
         }
       }
@@ -129,8 +114,8 @@
         { "command": "tscodesearch.setup" },
         { "command": "tscodesearch.addRoot" },
         { "command": "tscodesearch.removeRoot" },
-        { "command": "tscodesearch.restartContainer" },
-        { "command": "tscodesearch.stopContainer" },
+        { "command": "tscodesearch.restartDaemon" },
+        { "command": "tscodesearch.stopDaemon" },
         { "command": "tscodesearch.refreshRoots" }
       ],
       "view/title": [
@@ -145,7 +130,7 @@
           "group": "navigation"
         },
         {
-          "command": "tscodesearch.restartContainer",
+          "command": "tscodesearch.restartDaemon",
           "when": "view == tscodesearch.roots",
           "group": "navigation"
         }
@@ -170,7 +155,7 @@
     "prewatch": "npm run prebuild",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "node --require tsx/cjs --test src/test/client.test.ts src/test/pipeline.test.ts",
+    "test": "node --require tsx/cjs --test src/test/client.test.ts src/test/webview.test.ts src/test/pipeline.test.ts",
     "test:pipeline": "node --require tsx/cjs --test src/test/pipeline.test.ts",
     "package": "vsce package --no-dependencies --allow-missing-repository"
   },

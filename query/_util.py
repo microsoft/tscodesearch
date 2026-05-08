@@ -56,6 +56,10 @@ class FileDescription:
     local_var_infos:     list = dc_field(default_factory=list)  # list[LocalVarInfo]
     member_access_infos: list = dc_field(default_factory=list)  # list[MemberAccessInfo]
 
+    # ── Identifier bag (drives the broad `tokens` pre-filter field) ───────────
+    # Deduped identifier texts excluding tokens inside literal nodes.
+    all_refs:            set  = dc_field(default_factory=set)
+
 
 @dataclass
 class ClassInfo:

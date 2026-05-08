@@ -17,7 +17,7 @@ Replicates behavior discovered in Round 5 of guided testing:
       Fix: added a declaration_pattern loop in q_accesses_on, mirroring the
       foreach_statement loop added in Round 4.
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_pattern_match_accesses.py -v
 """
 from __future__ import annotations

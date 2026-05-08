@@ -20,7 +20,7 @@ Replicates behavior discovered in Round 6 of guided testing:
       `out var entry` (var-inferred) is NOT tracked — the type is `implicit_type`
       and cannot be resolved without type inference.
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_out_var_accesses.py -v
 """
 from __future__ import annotations

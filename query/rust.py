@@ -322,6 +322,19 @@ def rust_q_all_refs(src, tree, lines, name):
     return results
 
 
+def _collect_all_refs(src: bytes, tree) -> set[str]:
+    """Deduped set of identifier/type-identifier texts from a parsed Rust tree,
+    excluding tokens inside literal nodes (strings, comments, char literals)."""
+    out: set[str] = set()
+    for node in _find_all(tree.root_node,
+                          lambda n: n.type in ("identifier", "type_identifier")):
+        if _in_literal(node):
+            continue
+        out.add(_text(node, src).strip())
+    out.discard("")
+    return out
+
+
 def rust_q_imports(src, tree, lines):
     """List use declarations."""
     results = []
@@ -437,4 +450,5 @@ def describe_rust_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         methods=methods,
         imports=imports_list,
         call_site_infos=[CallSiteInfo(name=n) for n in call_sites_raw],
+        all_refs=_collect_all_refs(src_bytes, tree),
     )

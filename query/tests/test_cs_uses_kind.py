@@ -12,7 +12,7 @@ Replicates behavior observed in Round 2 of guided testing:
                       "returns" field, not "type"; and delegate_declaration was
                       absent from the node list.  Both gaps are now fixed.
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_uses_kind.py -v
 """
 from __future__ import annotations

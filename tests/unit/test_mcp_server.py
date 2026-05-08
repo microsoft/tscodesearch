@@ -142,9 +142,6 @@ class TestToWindowsPath(unittest.TestCase):
     def test_backslash_normalized(self):
         assert _ms._to_windows_path("C:\\myproject\\src\\Widget.cs") == "C:/myproject/src/Widget.cs"
 
-    def test_mnt_path_converted(self):
-        assert _ms._to_windows_path("/mnt/c/myproject/src/Widget.cs") == "C:/myproject/src/Widget.cs"
-
     def test_src_root_dollar_expanded(self):
         result = _ms._to_windows_path("$SRC_ROOT/services/Widget.cs")
         assert result == "C:/myproject/src/services/Widget.cs"
@@ -671,25 +668,6 @@ class TestSyncState(unittest.TestCase):
         assert "syncer running" in state
         assert "pending=1" in state
 
-    def test_typesense_loading_blocks(self):
-        """Even if queue+syncer look clear, loading TS is not synced."""
-        synced, state = _ms._sync_state({
-            "typesense_loading": True,
-            "queue":  {"depth": 0},
-            "syncer": {"running": False, "pending": 0},
-        })
-        assert synced is False
-        assert "starting up" in state
-
-    def test_typesense_unhealthy_blocks(self):
-        synced, state = _ms._sync_state({
-            "typesense_ok": False,
-            "queue":  {"depth": 0},
-            "syncer": {"running": False, "pending": 0},
-        })
-        assert synced is False
-        assert "not healthy" in state
-
     def test_missing_fields_treated_as_idle(self):
         """A status response with no queue/syncer keys is not 'unsynced' on its own."""
         synced, _ = _ms._sync_state({"typesense_ok": True})
@@ -757,16 +735,6 @@ class TestWaitForSync(unittest.TestCase):
         result = _ms.wait_for_sync(timeout_s=10)
         assert "Index synced" in result
         assert "was: queue=3" in result
-
-    def test_typesense_loading_then_ready(self):
-        self._set_responses([
-            (200, {"typesense_loading": True}),
-            (200, {"typesense_loading": True}),
-            (200, {"typesense_ok": True, "queue": {"depth": 0}, "syncer": {"running": False}}),
-        ])
-        result = _ms.wait_for_sync(timeout_s=10)
-        assert "Index synced" in result
-        assert "starting up" in result  # initial state should mention TS loading
 
     def test_timeout_with_remaining_work(self):
         """All polls return queue=5 — must time out and surface what's pending."""

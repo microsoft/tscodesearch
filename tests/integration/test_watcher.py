@@ -1,7 +1,7 @@
 """
 Integration tests for the file watcher.
 
-TestSourceChangeHandlerIntegration — requires Typesense; uses a real IndexQueue.
+TestSourceChangeHandlerIntegration — uses a real IndexQueue against a Tantivy backend.
 """
 from __future__ import annotations
 import os, sys, shutil, time, unittest, subprocess, tempfile
@@ -10,32 +10,32 @@ _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from tests.helpers import _assert_server_ok, _search, _delete_collection
+from tests.helpers import _search, _delete_collection
 from indexserver.index_queue import IndexQueue
-from indexserver.indexer import build_schema
+from indexserver.indexer import ensure_backend
 
 
 class TestSourceChangeHandlerIntegration(unittest.TestCase):
-    """Integration tests: SourceChangeHandler → IndexQueue → real Typesense collection."""
+    """Integration tests: SourceChangeHandler → IndexQueue → real Tantivy collection."""
 
     @classmethod
     def setUpClass(cls):
-        _assert_server_ok()
-        import typesense as _ts
         from indexserver.config import load_config as _load_config
         _cfg = _load_config()
         stamp = int(time.time())
         cls.coll = f"test_watcher_{stamp}"
-        cls.client = _ts.Client(_cfg.typesense_client_config)
-        cls.client.collections.create(build_schema(cls.coll))
+        # Wipe any leftover index from a previous run, then create fresh.
+        _delete_collection(cls.coll)
+        cls.backend = ensure_backend(_cfg, cls.coll, resethard=False)
         cls.tmpdir = tempfile.mkdtemp(prefix="ts_wint_test_")
         subprocess.run(["git", "-C", cls.tmpdir, "init", "-q"], check=True)
         cls.queue = IndexQueue(max_file_bytes=_cfg.max_file_bytes)
-        cls.queue.start(cls.client)
+        cls.queue.start(lambda c: cls.backend if c == cls.coll else None)
 
     @classmethod
     def tearDownClass(cls):
         cls.queue.stop()
+        cls.backend.close()
         _delete_collection(cls.coll)
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
@@ -52,7 +52,7 @@ class TestSourceChangeHandlerIntegration(unittest.TestCase):
         return path
 
     def _drain(self, timeout: float = 5.0) -> None:
-        """Wait until the queue is drained and Typesense has settled."""
+        """Wait until the queue is drained and Tantivy has settled."""
         t0 = time.time()
         while self.queue.depth > 0 and time.time() - t0 < timeout:
             time.sleep(0.05)
@@ -96,7 +96,7 @@ class TestSourceChangeHandlerIntegration(unittest.TestCase):
                             for h in _search(self.coll, "Ephemeral")),
                         "File should be indexed before deletion")
 
-        handler._pending[path] = "delete"
+        handler._pending[path] = "deleted"
         handler._flush()
         self._drain()
         self.assertFalse(any(h["filename"] == "Ephemeral.cs"

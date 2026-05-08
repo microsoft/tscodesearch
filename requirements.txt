@@ -1,5 +1,5 @@
-# Indexserver (indexserver/ → ~/.local/indexserver-venv)
-typesense
+# Indexserver dependencies — installed into .client-venv by setup.mjs.
+tantivy
 tree-sitter
 tree-sitter-c-sharp
 tree-sitter-python

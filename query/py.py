@@ -227,6 +227,17 @@ def py_q_ident(src, tree, lines, name):
     return results
 
 
+def _collect_all_refs(src: bytes, tree) -> set[str]:
+    """Deduped set of identifier texts from a parsed Python tree, excluding
+    identifiers inside literal nodes (strings, comments)."""
+    out: set[str] = set()
+    for node in _find_all(tree.root_node, lambda n: n.type == "identifier"):
+        if _py_in_literal(node):
+            continue
+        out.add(_text(node, src))
+    return out
+
+
 def py_q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None):
     results = []
     for node in _find_all(tree.root_node,
@@ -352,4 +363,5 @@ def describe_py_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         imports=_py_q_imports_data(src_bytes, tree),
         attrs=_py_q_attrs_data(src_bytes, tree),
         call_site_infos=[CallSiteInfo(name=n) for n in _py_q_all_call_sites_data(src_bytes, tree)],
+        all_refs=_collect_all_refs(src_bytes, tree),
     )

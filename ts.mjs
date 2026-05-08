@@ -2,27 +2,25 @@
 /**
  * ts.mjs — codesearch management CLI
  *
+ * The daemon is a single Python process (.client-venv) that owns the local
+ * Tantivy index. There is no longer a Typesense server, WSL bridge, or
+ * Docker container to manage — start/stop manage the daemon itself.
+ *
  * Usage: ts <command> [options]
  *
  * Commands:
- *   start                  Start the server (Docker: create/start container; WSL: start services)
- *   stop                   Stop the server
- *   restart                Restart the management daemon only (Typesense keeps running)
- *   status                 Show service health and index statistics
- *   index [--resethard]    Run indexer (--resethard: wipe and reindex from scratch)
+ *   start                  Start the daemon
+ *   stop                   Stop the daemon
+ *   restart                Stop then start the daemon
+ *   status                 Show daemon health and index statistics
+ *   index [--resethard]    Run indexer (--resethard wipes and reindexes)
  *         [--root NAME]
- *   verify [--root NAME]   Scan file system and repair stale/missing index entries
+ *   verify [--root NAME]   Scan filesystem and repair stale/missing entries
  *          [--no-delete-orphans]
- *   log [-n N]             Show server log (Docker: container logs; WSL: server log)
- *       [--indexer]        WSL only: show indexer log
- *       [--error]          WSL only: show server error log
+ *   log [-n N] [-f]        Show daemon log
  *   root                   List configured roots
  *   root --add NAME PATH   Add (or update) a root in config.json
  *   root --remove NAME     Remove a root from config.json
- *   build                  Docker only: build the Docker image
- *   setup                  Docker: build image if needed + start container
- *   diag                   WSL only: run startup diagnostics (binary, config,
- *                          port, RocksDB lock, HTTP health)
  */
 
 import fs from 'fs';
@@ -50,32 +48,22 @@ function saveConfig(updated) {
     fs.writeFileSync(f, JSON.stringify(updated, null, 2) + '\n', 'utf-8');
 }
 
-const cfg       = readConfig();
-const API_KEY   = cfg.api_key   ?? 'codesearch-local';
-const TS_PORT   = cfg.port      ?? 8108;
-const API_PORT  = TS_PORT + 1;
-const MODE      = (cfg.mode     ?? 'docker');   // 'docker' | 'wsl'
-const CONTAINER = cfg.docker_container ?? 'codesearch';
-const IMAGE     = cfg.docker_image     ?? 'codesearch-mcp';
-const DATA_VOL  = `${CONTAINER}_data`;
-const ROOTS     = cfg.roots ?? {};
+const cfg     = readConfig();
+const API_KEY = cfg.api_key ?? 'codesearch-local';
+const PORT    = cfg.port    ?? 8108;
+const ROOTS   = cfg.roots   ?? {};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function log(msg)  { console.log(`[ts] ${msg}`); }
 function die(msg)  { console.error(`[ts] ERROR: ${msg}`); process.exit(1); }
 
-/** Windows path → WSL /mnt/<drive>/... */
-function winToWsl(p) {
-    return p.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
-}
-
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 function apiGet(urlPath, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
         const req = http.request({
-            host: 'localhost', port: API_PORT, path: urlPath, method: 'GET',
+            host: 'localhost', port: PORT, path: urlPath, method: 'GET',
             headers: { 'X-TYPESENSE-API-KEY': API_KEY },
         }, res => {
             let data = '';
@@ -95,7 +83,7 @@ function apiPost(urlPath, body, timeoutMs = 10000) {
     return new Promise((resolve, reject) => {
         const data = JSON.stringify(body);
         const req = http.request({
-            host: 'localhost', port: API_PORT, path: urlPath, method: 'POST',
+            host: 'localhost', port: PORT, path: urlPath, method: 'POST',
             headers: {
                 'X-TYPESENSE-API-KEY': API_KEY,
                 'Content-Type': 'application/json',
@@ -116,162 +104,11 @@ function apiPost(urlPath, body, timeoutMs = 10000) {
     });
 }
 
-/** Read the last Typesense log entry for queued_writes progress during startup. */
-function tsLoadingProgress() {
-    try {
-        if (MODE === 'wsl') {
-            // Read via WSL — the log lives inside the WSL filesystem
-            const r = spawnSync('wsl.exe', ['bash', '-lc',
-                "grep -o 'queued_writes: [0-9]*' ~/.local/typesense/typesense.log | tail -1"
-            ], { encoding: 'utf-8', stdio: 'pipe' });
-            const m = r.stdout?.trim().match(/queued_writes: (\d+)/);
-            if (m) return `replaying raft log, queued_writes=${m[1]}`;
-        } else {
-            // Docker: check container log
-            const r = dockerCapture(['logs', '--tail', '50', CONTAINER]);
-            const lines = (r.stdout || '') + (r.stderr || '');
-            const m = lines.match(/queued_writes: (\d+)/g);
-            if (m) {
-                const last = m[m.length - 1].match(/queued_writes: (\d+)/);
-                if (last) return `replaying raft log, queued_writes=${last[1]}`;
-            }
-        }
-    } catch {}
-    return null;
-}
-
-// ── Docker helpers ────────────────────────────────────────────────────────────
-
-function docker(args, opts = {}) {
-    return spawnSync('docker', args, {
-        stdio: opts.silent ? 'pipe' : 'inherit',
-        encoding: 'utf-8',
-        ...opts,
-    });
-}
-
-function dockerCapture(args) {
-    return spawnSync('docker', args, { encoding: 'utf-8', stdio: 'pipe' });
-}
-
-function containerExists() {
-    return dockerCapture(['inspect', '--format', '{{.Name}}', CONTAINER]).status === 0;
-}
-
-function containerIsRunning() {
-    const r = dockerCapture(['inspect', '--format', '{{.State.Running}}', CONTAINER]);
-    return r.status === 0 && r.stdout.trim() === 'true';
-}
-
-/**
- * Write a minimal config for the container (api_key + port only).
- * The container runs Typesense only — source files stay on Windows, so no
- * roots or source volume mounts are needed inside the container.
- */
-function writeContainerConfig() {
-    const content = JSON.stringify({ api_key: API_KEY, port: TS_PORT }, null, 2);
-    const dest = path.join(__dirname, 'config.container.json');
-    fs.writeFileSync(dest, content, 'utf-8');
-    return dest;
-}
-
-/** Build docker run args and create + start the container. */
-function dockerCreate(configFile) {
-    const args = [
-        'run', '-d',
-        '--name', CONTAINER,
-        '-p', `${API_PORT}:8109`,
-        '-e', 'CODESEARCH_API_HOST=0.0.0.0',
-        '-v', `${configFile}:/app/config.json:ro`,
-        '-v', `${DATA_VOL}:/typesensedata`,
-        '-v', `${__dirname}/scripts:/app/scripts:ro`,
-    ];
-    args.push(IMAGE);
-    return docker(args);
-}
-
-/** Stream container logs until "Ready for connections" or timeout.
- *  On failure or timeout, dumps the full container log to a local file. */
-function waitForReady() {
-    return new Promise(resolve => {
-        log('Streaming logs until ready...');
-        const proc = spawn('docker', ['logs', '-f', CONTAINER], { stdio: 'pipe' });
-        let done = false;
-        let allText = '';
-
-        const dumpLogsOnFailure = (reason) => {
-            const logFile = path.join(__dirname, 'codesearch-start-failure.log');
-            const fullLogs = dockerCapture(['logs', CONTAINER]);
-            const content = [
-                `=== ts start failure: ${reason} ===`,
-                `=== timestamp: ${new Date().toISOString()} ===`,
-                '',
-                '=== container logs ===',
-                (fullLogs.stdout || '') + (fullLogs.stderr || ''),
-            ].join('\n');
-            fs.writeFileSync(logFile, content, 'utf-8');
-            log(`Logs saved to: ${logFile}`);
-        };
-
-        const finish = (msg, failed = false) => {
-            if (done) return;
-            done = true;
-            clearTimeout(timer);
-            proc.kill('SIGTERM');
-            if (failed) dumpLogsOnFailure(msg);
-            if (msg) log(msg);
-            resolve();
-        };
-
-        const timer = setTimeout(
-            () => finish(`Server did not reach ready state within 5 min — check 'docker logs ${CONTAINER}'.`, true),
-            300_000
-        );
-
-        const onData = (data) => {
-            const text = data.toString();
-            allText += text;
-            process.stdout.write(text);
-            if (text.includes('Ready for connections')) {
-                finish('Management API is up. Typesense may still be loading — run: ts status');
-            } else if (text.includes('[entrypoint] ERROR:')) {
-                finish(`Entrypoint reported an error — see codesearch-start-failure.log`, true);
-            }
-        };
-
-        proc.stdout.on('data', onData);
-        proc.stderr.on('data', onData);
-        proc.on('close', () => finish(''));
-    });
-}
-
-// ── WSL mode helper ───────────────────────────────────────────────────────────
-
-/** Invoke entrypoint.sh inside WSL with the required environment variables. */
-function wslRun(flags) {
-    const repoWsl    = winToWsl(__dirname);
-    const entrypoint = `${repoWsl}/scripts/entrypoint.sh`;
-    const env = [
-        `TYPESENSE_DATA=~/.local/typesense`,
-        `CONFIG_FILE=${repoWsl}/config.json`,
-        `APP_ROOT=${repoWsl}`,
-        `PYTHON3=~/.local/indexserver-venv/bin/python3`,
-        `CODESEARCH_API_HOST=127.0.0.1`,
-    ].join(' ');
-    const cmdLine = `${env} bash "${entrypoint}" ${flags.join(' ')}`;
-    const r = spawnSync('wsl.exe', ['bash', '-lc', cmdLine], {
-        stdio: 'inherit', encoding: 'utf-8',
-    });
-    if (r.status !== 0) process.exit(r.status ?? 1);
-}
-
-/** Resolve .client-venv Python interpreter (Windows-side). */
 function clientVenvPython() {
     return path.join(__dirname, '.client-venv', 'Scripts', 'python.exe');
 }
 
-/** Poll GET /health on the given port until it returns 200 or we time out. */
-async function pollHealth(port, timeoutMs = 60_000, label = 'server') {
+async function pollHealth(port, timeoutMs = 60_000, label = 'daemon') {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
         try {
@@ -291,7 +128,6 @@ async function pollHealth(port, timeoutMs = 60_000, label = 'server') {
     die(`${label} did not become healthy within ${timeoutMs / 1000}s`);
 }
 
-/** Poll until the given port stops accepting connections or we time out. */
 async function waitForPortClosed(port, timeoutMs = 10_000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -309,31 +145,30 @@ async function waitForPortClosed(port, timeoutMs = 10_000) {
     }
 }
 
-/** Gracefully stop the tsquery_server daemon, force-killing if needed. */
 async function shutdownDaemon() {
-    // Read PID before sending shutdown so we can force-kill if needed
     const pidFile = path.join(
         process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? '', 'AppData', 'Local'),
-        'typesense', 'mcp_daemon.pid'
+        'tscodesearch', 'daemon.pid'
     );
     let daemonPid = null;
     try { daemonPid = fs.readFileSync(pidFile, 'utf-8').trim() || null; } catch { /* no pid file */ }
 
     try {
         await apiPost('/management/shutdown', {}, 5000);
-        log('Daemon shutdown sent.');
+        log('Shutdown sent.');
     } catch {
         log('Daemon not reachable (already stopped?).');
         return;
     }
 
-    // Wait up to 5s for graceful exit
-    await waitForPortClosed(API_PORT, 5_000);
+    // The daemon's stop_daemon() does up to 5s syncer join + 5s queue stop +
+    // backend close (waits for merge threads) + 5s server shutdown — so allow
+    // up to 30s before assuming it's stuck.
+    await waitForPortClosed(PORT, 30_000);
 
-    // If still alive, force-kill
     const stillUp = await new Promise(resolve => {
         const req = http.request(
-            { host: 'localhost', port: API_PORT, path: '/health', method: 'GET' },
+            { host: 'localhost', port: PORT, path: '/health', method: 'GET' },
             res => { res.resume(); resolve(true); }
         );
         req.on('error', () => resolve(false));
@@ -342,21 +177,23 @@ async function shutdownDaemon() {
     });
 
     if (stillUp && daemonPid) {
-        log(`Daemon did not exit — force-killing pid ${daemonPid}...`);
-        spawnSync('taskkill', ['/F', '/PID', daemonPid], { stdio: 'pipe' });
-        await waitForPortClosed(API_PORT, 5_000);
+        log(`Daemon did not exit after 30s — force-killing pid ${daemonPid}...`);
+        if (process.platform === 'win32') {
+            spawnSync('taskkill', ['/F', '/PID', daemonPid], { stdio: 'pipe' });
+        } else {
+            spawnSync('kill', ['-9', daemonPid], { stdio: 'pipe' });
+        }
+        await waitForPortClosed(PORT, 5_000);
     }
 }
 
-/** Absolute path to the daemon log file (%LOCALAPPDATA%\typesense\tsquery_server.log). */
 function daemonLogFile() {
     const base = process.env.LOCALAPPDATA
         ?? path.join(process.env.USERPROFILE ?? '', 'AppData', 'Local');
-    return path.join(base, 'typesense', 'tsquery_server.log');
+    return path.join(base, 'tscodesearch', 'daemon.log');
 }
 
-/** Start the tsquery_server daemon on Windows, detached, logging to daemonLogFile(). */
-function startTsqueryDaemon() {
+function startDaemon() {
     const py = clientVenvPython();
     if (!fs.existsSync(py)) {
         die(`.client-venv not found at ${py} — run setup.cmd first`);
@@ -364,7 +201,7 @@ function startTsqueryDaemon() {
     const logPath = daemonLogFile();
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
     const logFd = fs.openSync(logPath, 'a');
-    const child = spawn(py, [path.join(__dirname, 'tsquery_server.py'), '--daemon'], {
+    const child = spawn(py, [path.join(__dirname, 'tsquery_server.py')], {
         detached: true,
         stdio: ['ignore', logFd, logFd],
         windowsHide: true,
@@ -372,15 +209,15 @@ function startTsqueryDaemon() {
     });
     child.unref();
     fs.closeSync(logFd);
-    log(`tsquery_server daemon started (detached). Log: ${logPath}`);
+    log(`Daemon started (detached). Log: ${logPath}`);
 }
 
-// ── Status display (Docker mode) ──────────────────────────────────────────────
+// ── Status display ────────────────────────────────────────────────────────────
 
 function fmtNum(n)  { return n == null ? '?' : Number(n).toLocaleString(); }
 function fmtTs(ts)  { return ts ? ts.replace('T', ' ').substring(0, 16) : ''; }
 
-function printDockerStatus(apiBody) {
+function printStatus(apiBody) {
     const collections = apiBody?.collections ?? {};
     const syncer      = apiBody?.syncer      ?? {};
     const watcher     = apiBody?.watcher     ?? {};
@@ -388,51 +225,44 @@ function printDockerStatus(apiBody) {
     const prog        = syncer.progress      ?? {};
     const syncerRunning = syncer.running ?? false;
 
-    // queue is actively indexing if syncer placed files and queue worker is writing
     const qDepth    = queue.depth    ?? 0;
     const qEnqueued = queue.enqueued ?? 0;
     const qUpserted = queue.upserted ?? 0;
     const qDeduped  = queue.deduped  ?? 0;
-    const qSkipped  = queue.skipped  ?? 0;
     const qDeleted  = queue.deleted  ?? 0;
     const qErrors   = queue.errors   ?? 0;
     const isQueued  = prog.status === 'queued' && qDepth > 0;
 
-    // ── Per-root index status ────────────────────────────────────────────────
     for (const [rootName, info] of Object.entries(collections)) {
         const ndocs    = info?.num_documents;
-        const warnings = info?.schema_warnings ?? [];
+        const buffered = info?.buffered ?? 0;
         const exists   = info?.collection_exists;
         const synced   = info?.synced;
         const syncedAt = info?.synced_at;
         const isCurrent = prog.collection && prog.collection === info?.collection;
+        const buffStr = buffered > 0 ? `  +${fmtNum(buffered)} buffered` : '';
 
         let badge, detail;
         if (!exists || ndocs == null) {
             badge  = '[--]';
             detail = 'not yet indexed — run: ts index';
-        } else if (warnings.length > 0) {
-            badge  = '[!!]';
-            detail = `schema outdated (${fmtNum(ndocs)} docs) — run: ts index --root ${rootName} --resethard`;
         } else if (isCurrent && (syncerRunning || isQueued)) {
             const total = prog.total_to_update ?? 0;
             const done  = total > 0 ? Math.max(0, total - qDepth) : qUpserted;
             const pct   = total > 0 ? ` ${Math.floor(done * 100 / total)}%` : '';
             badge  = '[>>]';
-            detail = `${fmtNum(ndocs)} docs  indexing  ${fmtNum(done)}/${fmtNum(total)}${pct}`;
+            detail = `${fmtNum(ndocs)} docs${buffStr}  indexing  ${fmtNum(done)}/${fmtNum(total)}${pct}`;
         } else if (!synced) {
             badge  = '[~~]';
-            detail = `${fmtNum(ndocs)} docs  incomplete sync — run: ts index --root ${rootName}`;
+            detail = `${fmtNum(ndocs)} docs${buffStr}  incomplete sync — run: ts index --root ${rootName}`;
         } else {
             const when = syncedAt ? `  synced ${fmtTs(syncedAt)}` : '';
             badge  = '[OK]';
-            detail = `${fmtNum(ndocs)} docs${when}`;
+            detail = `${fmtNum(ndocs)} docs${buffStr}${when}`;
         }
         console.log(`  [${rootName}] Index  : ${badge} ${detail}`);
-        for (const w of warnings) console.log(`               ${w}`);
     }
 
-    // ── Syncer / indexer progress ────────────────────────────────────────────
     if (syncerRunning || isQueued || (syncer.pending ?? 0) > 0) {
         const phase     = prog.phase    ?? 'starting';
         const fsFiles   = prog.fs_files ?? 0;
@@ -441,7 +271,6 @@ function printDockerStatus(apiBody) {
         const stale     = prog.stale    ?? 0;
         const orphaned  = prog.orphaned ?? 0;
         const total     = prog.total_to_update ?? 0;
-        // done = files flushed from this sync job (total queued minus still in queue)
         const done      = total > 0 ? Math.max(0, total - qDepth) : qUpserted;
         const deleted   = qDeleted + (prog.deleted ?? 0);
         const errors    = qErrors;
@@ -465,14 +294,12 @@ function printDockerStatus(apiBody) {
         console.log(`  Syncer  : [OK] last sync complete${when}  upserted=${fmtNum(qUpserted)}  errors=${errors}`);
     }
 
-    // ── Queue stats ──────────────────────────────────────────────────────────
     if (qEnqueued > 0 || qDepth > 0) {
         const errStr = qErrors > 0 ? `  errors=${qErrors}` : '';
         const throttle = queue.throttle_s > 0 ? `  throttle=${queue.throttle_s.toFixed(1)}s` : '';
-        console.log(`  Queue   : depth=${fmtNum(qDepth)}  enqueued=${fmtNum(qEnqueued)}  upserted=${fmtNum(qUpserted)}  skipped=${fmtNum(qSkipped)}  deduped=${fmtNum(qDeduped)}  deleted=${fmtNum(qDeleted)}${errStr}${throttle}`);
+        console.log(`  Queue   : depth=${fmtNum(qDepth)}  enqueued=${fmtNum(qEnqueued)}  upserted=${fmtNum(qUpserted)}  deduped=${fmtNum(qDeduped)}  deleted=${fmtNum(qDeleted)}${errStr}${throttle}`);
     }
 
-    // ── Watcher ──────────────────────────────────────────────────────────────
     const state  = watcher.state ?? (watcher.running ? 'watching' : 'stopped');
     const watchQD = watcher.queue_depth ?? 0;
     if (state === 'watching') {
@@ -484,249 +311,93 @@ function printDockerStatus(apiBody) {
     } else {
         console.log(`  Watcher : [--] stopped`);
     }
-
-    // ── Typesense health ─────────────────────────────────────────────────────
-    const tsOk      = apiBody?.typesense_ok;
-    const tsLoading = apiBody?.typesense_loading;
-    if (tsLoading) {
-        const progress = tsLoadingProgress();
-        console.log(`  Typesense: [..] loading${progress ? `  (${progress})` : ''}`);
-    } else if (tsOk === false) console.log(`  Typesense: [!!] unhealthy`);
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 async function cmdStart() {
-    if (MODE === 'wsl') {
-        log('Starting Typesense (WSL)...');
-        wslRun(['--background', '--disown']);
-        startTsqueryDaemon();
-        log(`Waiting for management API on port ${API_PORT}...`);
-        await pollHealth(API_PORT, 30_000, 'management API');
-        log('Service is starting. Typesense may still be initializing — use \'ts status\' to check progress.');
-        return;
-    }
-
-    const info = dockerCapture(['info', '--format', '{{.ID}}']);
-    if (info.status !== 0) die('Docker is not running. Start Docker Desktop and try again.');
-
-    ensureImage();
-
-    if (containerExists()) {
-        if (containerIsRunning()) {
-            log(`Container '${CONTAINER}' is already running.`);
+    // Idempotent — if already up, just report.
+    try {
+        const { status } = await apiGet('/health', 1500);
+        if (status === 200) {
+            log('Daemon already running.');
             await cmdStatus();
             return;
-        } else {
-            log(`Starting existing container '${CONTAINER}'...`);
-            const r = docker(['start', CONTAINER]);
-            if (r.status !== 0) die('docker start failed.');
-            startTsqueryDaemon();
-            log(`Waiting for management API on port ${API_PORT}...`);
-            await pollHealth(API_PORT, 30_000, 'management API');
-            log('Service is starting. Typesense may still be initializing — use \'ts status\' to check progress.');
-            return;
         }
-    }
-
-    log(`Creating container '${CONTAINER}'...`);
-    const configFile = writeContainerConfig();
-    const r = dockerCreate(configFile);
-    if (r.status !== 0) die('docker run failed.');
-    startTsqueryDaemon();
-    log(`Waiting for management API on port ${API_PORT}...`);
-    await pollHealth(API_PORT, 30_000, 'management API');
-    log('Service is starting. Typesense may still be initializing — use \'ts status\' to check progress.');
+    } catch { /* not running */ }
+    startDaemon();
+    log(`Waiting for daemon on port ${PORT}...`);
+    await pollHealth(PORT, 30_000, 'daemon');
+    log('Daemon is up. Indexing may still be in progress — use \'ts status\' to monitor.');
 }
 
 async function cmdStop() {
-    if (MODE === 'wsl') {
-        await shutdownDaemon();
-        wslRun(['--stop']);
-        return;
-    }
     await shutdownDaemon();
-    log(`Stopping container '${CONTAINER}'...`);
-    docker(['stop', CONTAINER], { silent: true });
-    docker(['rm',   CONTAINER], { silent: true });
-    log('Done.');
 }
 
 async function cmdRestart() {
-    // Restart the management daemon. Typesense is left running if it is already up.
-    // In WSL mode we also ensure Typesense is started if it went down (e.g. after a
-    // WSL session restart), so the new daemon does not get stuck in its loading loop.
     await shutdownDaemon();
-    if (MODE === 'wsl') {
-        wslRun(['--background', '--disown']);
-    }
-    startTsqueryDaemon();
-    log(`Waiting for management API on port ${API_PORT}...`);
-    await pollHealth(API_PORT, 30_000, 'management API');
+    startDaemon();
+    log(`Waiting for daemon on port ${PORT}...`);
+    await pollHealth(PORT, 30_000, 'daemon');
     log('Daemon restarted.');
 }
 
 async function cmdStatus() {
-    const modeLabel = MODE === 'wsl' ? 'WSL' : 'Docker';
-    console.log(`-- Codesearch Status (${modeLabel}) ----------------------------------------`);
-
-    if (MODE === 'wsl') {
-        try {
-            const { status, body } = await apiGet('/status');
-            if (status === 200 && typeof body === 'object') {
-                printDockerStatus(body);
-            } else {
-                console.log('  Management API: not responding');
-            }
-        } catch {
-            console.log('  Management API: not responding (tsquery_server may not be running)');
-        }
-        console.log(`----------------------------------------------------------------------`);
-        return;
-    }
-
-    const running = containerIsRunning();
-    console.log(`  Container: ${running ? '[OK]  running' : '[--] stopped'}  (${CONTAINER})`);
-
-    if (!running) {
-        console.log(`----------------------------------------------------------------------`);
-        return;
-    }
-
+    console.log(`-- Codesearch Status -------------------------------------------------`);
     try {
         const { status, body } = await apiGet('/status');
         if (status === 200 && typeof body === 'object') {
-            printDockerStatus(body);
+            printStatus(body);
         } else {
-            console.log('  API     : not responding');
+            console.log('  Daemon: not responding');
         }
     } catch {
-        console.log('  API     : not responding (indexserver may still be starting)');
+        console.log('  Daemon: not responding (start with: ts start)');
     }
     console.log(`----------------------------------------------------------------------`);
 }
 
 async function cmdIndex(args) {
-
     const rootName = args.root || Object.keys(ROOTS)[0] || 'default';
-
-    if (args.resethard) {
-        if (MODE === 'docker') {
-            // Wipe the Typesense data volume and restart from scratch.
-            // The daemon's startup loop auto-queues the initial index job once
-            // Typesense is ready, so no POST /index/start is needed here.
-            log('Hard reset: stopping container...');
-            docker(['stop', CONTAINER], { silent: true });
-            docker(['rm',   CONTAINER], { silent: true });
-            log('Removing data volume...');
-            docker(['volume', 'rm', DATA_VOL], { silent: true });
-            log('Starting fresh...');
-            await cmdStart();
-        } else {
-            // WSL: stop the daemon first, then delegate to service.py which stops
-            // Typesense (releasing RocksDB locks), wipes the data directory, and
-            // restarts Typesense. We then start a fresh daemon which auto-queues
-            // the initial index job once Typesense is ready.
-            log('Hard reset: shutting down daemon...');
-            await shutdownDaemon();
-            log('Wiping Typesense data and restarting...');
-            wslRun(['--background', '--disown', '--resethard']);
-            log('Starting management daemon...');
-            startTsqueryDaemon();
-            log(`Waiting for management API on port ${API_PORT}...`);
-            await pollHealth(API_PORT, 30_000, 'management API');
-        }
-        log('Hard reset complete. The daemon will reindex automatically — monitor with: ts status');
-        return;
-    }
 
     try {
         const { status, body } = await apiPost('/index/start', {
-            root: rootName, resethard: false,
+            root: rootName, resethard: !!args.resethard,
         });
         if (status === 409) { log('Indexer already running. Monitor with: ts status'); return; }
-        if (status !== 200) die(`indexserver returned ${status}: ${body?.error ?? JSON.stringify(body)}`);
-        log(`Indexer started for root '${rootName}'. Monitor with: ts status`);
+        if (status !== 200) die(`daemon returned ${status}: ${body?.error ?? JSON.stringify(body)}`);
+        const reset = args.resethard ? ' (resethard)' : '';
+        log(`Indexer started for root '${rootName}'${reset}. Monitor with: ts status`);
     } catch (e) {
-        die(`Cannot reach indexserver: ${e.message}`);
+        die(`Cannot reach daemon: ${e.message}`);
     }
 }
 
 async function cmdVerify(args) {
-
     const rootName = args.root || Object.keys(ROOTS)[0] || 'default';
     try {
         const { status, body } = await apiPost('/verify/start', {
             root: rootName, delete_orphans: !args.noDeleteOrphans,
         });
         if (status === 409) { log('Verifier already running. Monitor with: ts status'); return; }
-        if (status !== 200) die(`indexserver returned ${status}: ${body?.error ?? JSON.stringify(body)}`);
+        if (status !== 200) die(`daemon returned ${status}: ${body?.error ?? JSON.stringify(body)}`);
         log(`Verification started for root '${rootName}'. Monitor with: ts status`);
     } catch (e) {
-        die(`Cannot reach indexserver: ${e.message}`);
+        die(`Cannot reach daemon: ${e.message}`);
     }
 }
 
 function cmdLog(args) {
-    if (MODE === 'wsl') {
-        const n = args.lines ?? 40;
-        if (!args.indexer && !args.error) {
-            // Show the Windows daemon log (tsquery_server + index-queue output).
-            const logPath = daemonLogFile();
-            if (fs.existsSync(logPath)) {
-                const lines = fs.readFileSync(logPath, 'utf-8').split('\n');
-                const tail  = lines.slice(-n).join('\n');
-                console.log(`=== daemon log (${logPath}) ===`);
-                console.log(tail);
-            } else {
-                console.log(`(daemon log not found — run 'ts restart' to start logging)`);
-            }
-        }
-        // Also show Typesense / indexer log from WSL via entrypoint.sh.
-        const flags = ['--log'];
-        if (args.indexer)  flags.push('--indexer');
-        if (args.error)    flags.push('--error');
-        flags.push('-n', String(n));
-        console.log('\n=== WSL / Typesense log ===');
-        wslRun(flags);
+    const n = args.lines ?? 40;
+    const logPath = daemonLogFile();
+    if (!fs.existsSync(logPath)) {
+        log('Daemon log not found — start it with: ts start');
         return;
     }
-
-    const dockerArgs = ['logs', '--tail', String(args.lines ?? 40)];
-    if (args.follow) dockerArgs.push('-f');
-    dockerArgs.push(CONTAINER);
-    docker(dockerArgs);
-}
-
-async function cmdDiag() {
-    if (MODE !== 'wsl') {
-        log('diag is only available in WSL mode.');
-        return;
-    }
-    wslRun(['--diag']);
-}
-
-function cmdBuild() {
-    const dockerfile = path.join(__dirname, 'docker', 'Dockerfile');
-    if (!fs.existsSync(dockerfile)) die(`Dockerfile not found: ${dockerfile}`);
-    log(`Building image '${IMAGE}'...`);
-    const r = docker(['build', '-t', IMAGE, '-f', dockerfile, __dirname]);
-    if (r.status !== 0) die('docker build failed.');
-    log('Image built.');
-}
-
-/** Build the image if it does not exist locally. */
-function ensureImage() {
-    const r = dockerCapture(['images', '-q', IMAGE]);
-    if (!r.stdout.trim()) {
-        log(`Image '${IMAGE}' not found — building...`);
-        cmdBuild();
-    }
-}
-
-async function cmdSetup() {
-    // setup = ensure image + start; ensureImage() is called inside cmdStart
-    await cmdStart();
+    const lines = fs.readFileSync(logPath, 'utf-8').split('\n');
+    console.log(`=== daemon log (${logPath}) ===`);
+    console.log(lines.slice(-n).join('\n'));
 }
 
 function cmdRoot(args) {
@@ -736,13 +407,12 @@ function cmdRoot(args) {
     if (args.addName) {
         if (!args.addPath) die('--add requires NAME and PATH');
         const p = args.addPath.replace(/\\/g, '/').replace(/\/+$/, '');
-        // Preserve any existing fields (e.g. extensions) not specified in this call.
         const existing = (roots[args.addName] && typeof roots[args.addName] === 'object')
             ? roots[args.addName] : {};
         const entry = { ...existing, path: p };
         if (args.extensions !== null) {
             if (args.extensions.length === 0) {
-                delete entry.extensions;  // clear per-root filter, use global default
+                delete entry.extensions;
             } else {
                 entry.extensions = args.extensions;
             }
@@ -752,7 +422,7 @@ function cmdRoot(args) {
         saveConfig(current);
         log(`Root '${args.addName}' = ${p}`);
         if (entry.extensions) log(`  extensions = ${entry.extensions.join(',')}`);
-        log('Restart the server for the change to take effect: ts restart');
+        log('Restart the daemon for the change to take effect: ts restart');
         return;
     }
 
@@ -762,11 +432,10 @@ function cmdRoot(args) {
         current.roots = roots;
         saveConfig(current);
         log(`Root '${args.removeName}' removed.`);
-        log('Restart the server for the change to take effect: ts restart');
+        log('Restart the daemon for the change to take effect: ts restart');
         return;
     }
 
-    // List
     const names = Object.keys(roots);
     if (!names.length) {
         console.log('No roots configured.');
@@ -788,29 +457,22 @@ function usage() {
 Usage: ts <command> [options]
 
 Commands:
-  start                  Start the server
-  stop                   Stop the server
+  start                  Start the daemon
+  stop                   Stop the daemon
   restart                Stop then start
-  status                 Show service health and index stats
+  status                 Show daemon health and index stats
   index                  Run the indexer
     --resethard          Wipe all data and reindex from scratch
     --root NAME          Root to index (default: first configured root)
-  verify                 Scan file system and repair index
+  verify                 Scan filesystem and repair index
     --root NAME          Root to verify (default: first configured root)
-    --no-delete-orphans  Keep index entries for deleted files
-  log                    Show server log
+    --no-delete-orphans  Keep entries for deleted files
+  log                    Show daemon log
     -n N                 Number of lines (default: 40)
-    -f, --follow         Follow log output
-    --indexer            WSL: show indexer log
-    --error              WSL: show server error log
   root                   List configured roots
   root --add NAME PATH   Add (or update) a root in config.json
     --extensions EXTS  Comma-separated extensions to index (e.g. .cs,.py,.ts)
-                       Pass empty string to clear per-root filter: --extensions ""
   root --remove NAME     Remove a root from config.json
-  build                  Docker only: build the Docker image
-  setup                  Build image if needed, then start
-  diag                   WSL only: diagnose startup problems
 `.trim());
     process.exit(0);
 }
@@ -819,17 +481,15 @@ function parseArgs(argv) {
     const [cmd, ...rest] = argv;
     const args = {
         cmd, root: null, resethard: false, noDeleteOrphans: false,
-        indexer: false, error: false, lines: 40, follow: false,
+        lines: 40, follow: false,
         addName: null, addPath: null, removeName: null,
-        extensions: null,  // null = not specified; [] = clear; [...] = set
+        extensions: null,
     };
     for (let i = 0; i < rest.length; i++) {
         switch (rest[i]) {
             case '--resethard':           args.resethard = true; break;
             case '--root':                args.root = rest[++i]; break;
             case '--no-delete-orphans':   args.noDeleteOrphans = true; break;
-            case '--indexer':             args.indexer = true; break;
-            case '--error':               args.error = true; break;
             case '-f': case '--follow':   args.follow = true; break;
             case '-n': case '--lines':    args.lines = parseInt(rest[++i], 10) || 40; break;
             case '--add':
@@ -844,7 +504,7 @@ function parseArgs(argv) {
                         e = e.trim();
                         return e.startsWith('.') ? e.toLowerCase() : `.${e.toLowerCase()}`;
                     }).filter(Boolean)
-                    : [];  // empty string = clear per-root filter
+                    : [];
                 break;
             }
             default:
@@ -873,9 +533,6 @@ const commands = {
     verify:  cmdVerify,
     log:     cmdLog,
     root:    cmdRoot,
-    build:   () => cmdBuild(),
-    setup:   cmdSetup,
-    diag:    cmdDiag,
 };
 
 if (!commands[args.cmd]) {

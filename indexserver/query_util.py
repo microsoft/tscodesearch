@@ -1,7 +1,7 @@
 """
 Structural AST query CLI for the indexserver — supports C#, Python, Rust, JavaScript, TypeScript, C/C++.
 
-Extends query/dispatch.py with Typesense-backed file discovery (--search), filesystem
+Extends query/dispatch.py with Tantivy-backed file discovery (--search), filesystem
 glob expansion, and display helpers (expand_files, print_file_matches).
 
 Usage:
@@ -38,8 +38,6 @@ import os
 import sys
 import argparse
 import json as _json
-import urllib.request
-import urllib.parse
 
 # Add the tscodesearch root to sys.path so query/indexserver are importable.
 _ts_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +45,7 @@ if _ts_root not in sys.path:
     sys.path.insert(0, _ts_root)
 
 from query.dispatch import query_file, ALL_EXTS
+from indexserver.config import normalize_path
 
 
 # ── Filesystem helpers ────────────────────────────────────────────────────────
@@ -58,10 +57,10 @@ def expand_files(patterns, exts=None):
     files = []
     seen  = set()
     for pat in patterns:
-        pat = pat.replace("\\", "/")
+        pat = normalize_path(pat)
         if any(c in pat for c in ("*", "?")):
             for f in sorted(_glob.glob(pat, recursive=True)):
-                f = f.replace("\\", "/")
+                f = normalize_path(f)
                 ext = os.path.splitext(f)[1].lower()
                 if ext in exts and f not in seen:
                     seen.add(f)
@@ -71,7 +70,7 @@ def expand_files(patterns, exts=None):
                 for fn in sorted(fnames):
                     ext = os.path.splitext(fn)[1].lower()
                     if ext in exts:
-                        fp = os.path.join(root, fn).replace("\\", "/")
+                        fp = normalize_path(os.path.join(root, fn))
                         if fp not in seen:
                             seen.add(fp)
                             files.append(fp)
@@ -114,27 +113,19 @@ def print_file_matches(matches, disp, show_path, count_only, context, mode, path
     return len(matches)
 
 
-# ── Typesense file resolver ───────────────────────────────────────────────────
-
-def _ts_search(collection: str, params: dict) -> dict:
-    from indexserver.config import load_config as _load_config
-    _cfg = _load_config()
-    qs = urllib.parse.urlencode({k: str(v) for k, v in params.items()})
-    url = f"http://{_cfg.host}:{_cfg.port}/collections/{collection}/documents/search?{qs}"
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": _cfg.api_key})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return _json.loads(r.read())
-
+# ── Tantivy file resolver ─────────────────────────────────────────────────────
 
 def files_from_search(query, sub=None, ext="cs", limit=50,
                       collection=None, src_root=None, query_by=None,
                       exclude_path=None):
-    """Run a Typesense search and return the local file paths of matching documents."""
-    from indexserver.config import load_config as _load_config, to_native_path
+    """Run a backend search and return the local file paths of matching documents."""
+    from indexserver.config import load_config as _load_config
+    from indexserver.indexer import ensure_backend
+    from indexserver.search import search as _backend_search
+
     _cfg = _load_config()
     coll_name = collection or _cfg.collection
-    root = src_root or _cfg.src_root
-    src_root_native = to_native_path(root)
+    src_root_native = normalize_path(src_root or _cfg.src_root)
 
     filter_parts = [f"extension:={ext.lstrip('.')}"] if ext else []
     if sub:
@@ -146,23 +137,26 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
             filter_parts.append(f"path_segments:!={excluded[0]}")
         elif excluded:
             filter_parts.append(f"path_segments:!=[{','.join(excluded)}]")
-
-    params = {
-        "q":         query,
-        "query_by":  query_by or "filename,symbols,class_names,method_names,content",
-        "per_page":  limit,
-        "prefix":    "false",
-        "num_typos": "1",
-    }
-    if filter_parts:
-        params["filter_by"] = " && ".join(filter_parts)
+    filter_by = " && ".join(filter_parts) if filter_parts else ""
 
     try:
-        result = _ts_search(coll_name, params)
+        backend = ensure_backend(_cfg, coll_name, write=False)
     except Exception as e:
-        print(f"Typesense search error: {e}", file=sys.stderr)
-        print("Is the server running? Try: ts start", file=sys.stderr)
+        print(f"Index open error: {e}", file=sys.stderr)
+        print("Run: ts index --resethard", file=sys.stderr)
         return []
+
+    try:
+        result = _backend_search(
+            backend,
+            q=query,
+            query_by=query_by or "filename,class_names,method_names,tokens",
+            per_page=limit,
+            num_typos=1,
+            filter_by=filter_by,
+        )
+    finally:
+        backend.close()
 
     paths = []
     seen  = set()
@@ -307,7 +301,7 @@ def main():
         total = 0
         for f in files:
             matches = _query(f)
-            disp    = f.replace("\\", "/")
+            disp    = normalize_path(f)
             total  += print_file_matches(matches, disp, show_path, args.count,
                                          context, mode, f)
         if args.count:

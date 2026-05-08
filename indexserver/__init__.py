@@ -1,1 +1,1 @@
-# indexserver — server-side indexing components (Typesense + file watcher)
+# indexserver — Tantivy backend, indexer, verifier, watcher, and queue.

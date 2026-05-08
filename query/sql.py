@@ -452,6 +452,9 @@ def extract_invocations(root, src: bytes) -> list:
 
 # ── Process function ──────────────────────────────────────────────────────────
 
+_SQL_IDENT_RE = re.compile(rb'[A-Za-z_][A-Za-z0-9_]*')
+
+
 def query_sql_bytes(src_bytes: bytes, mode: str, mode_arg: str, **kwargs):
     """Parse SQL bytes and return list[{"line": N, "text": "..."}] for the given mode."""
     text = src_bytes.decode("utf-8", errors="replace")
@@ -507,10 +510,16 @@ def describe_sql_file(src_bytes: bytes, ext: str = "") -> FileDescription:
     for name in extract_proc_names_regex(src_bytes):
         methods.append(MethodInfo(line=0, name=name, kind="procedure"))
 
+    # SQL has no clean tree-walk for identifiers (tree-sitter-sql is partial);
+    # fall back to a regex pass over the raw bytes. Includes keywords and any
+    # tokens inside string literals/comments — accepted as a broad pre-filter.
+    all_refs = {m.decode("utf-8", "replace") for m in _SQL_IDENT_RE.findall(src_bytes)}
+
     return FileDescription(
         language="sql",
         classes=classes,
         methods=methods,
         fields=fields,
         call_site_infos=calls,
+        all_refs=all_refs,
     )

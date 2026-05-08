@@ -1,5 +1,4 @@
 // Fixture for testing accesses_on with inline out variable declarations.
-// No SPO code — generic types only.
 // Pattern: method(args, out SomeType varName) declares a new variable inline.
 using System.Collections.Generic;
 

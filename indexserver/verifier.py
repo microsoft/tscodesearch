@@ -1,21 +1,13 @@
 """
-Index verifier: scan the file system and repair the Typesense index.
+Index verifier: scan the file system and repair the Tantivy index.
 
-Two-phase design so it shares the batch-upsert pipeline with the full indexer:
+Two-phase design:
+  Phase 1 — collect: walk fs + read backend.export_id_mtime(); diff into
+            missing/stale/orphaned sets.
+  Phase 2 — batch-upsert via indexer.index_file_list (sync) or via the
+            IndexQueue (async, lets writes stream while we walk).
 
-  Phase 1 — collect
-      Walk the file system and the current index (via bulk-export).
-      Diff their mtimes to produce a precise list of files that need updating:
-        - Missing   : file on disk but not in index
-        - Stale     : file in index but mtime has changed
-        - Orphaned  : entry in index but file no longer exists on disk
-
-  Phase 2 — batch-upsert  (via indexer.index_file_list)
-      Feeds only the changed/missing files into the shared pipeline that the
-      full indexer also uses.  Progress is reported via the on_progress callback
-      so callers can track it in memory.
-
-  Orphan deletion runs after Phase 2.
+Orphan deletion runs after Phase 2.
 
 Usage:
     python verifier.py [--src PATH] [--collection NAME] [--no-delete-orphans]
@@ -32,10 +24,10 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-from indexserver.config import to_native_path
+from indexserver.config import normalize_path
 from indexserver.indexer import (
     walk_source_files, file_id,
-    get_client, ensure_collection, index_file_list,
+    ensure_backend, index_file_list,
     export_index_map,
 )
 
@@ -55,32 +47,8 @@ def _fmt_time(seconds: float) -> str:
 def check_ready(cfg, src_root: str | None = None,
                 collection: str | None = None,
                 extensions=None) -> dict:
-    """Poll the filesystem and confirm the index is fully up to date.
-
-    Performs a complete synchronous diff without modifying the index:
-      1. Exports the current index ({doc_id: mtime}) from Typesense.
-      2. Walks every source file on disk, comparing mtimes.
-      3. Returns counts of missing/stale/orphaned entries.
-
-    Both conditions must hold for ready=True:
-      - poll_ok: the FS walk completed without errors
-      - index_ok: missing == stale == orphaned == 0
-
-    Returns::
-        {
-          "ready":      bool,   # poll_ok AND index_ok
-          "poll_ok":    bool,   # FS walk completed successfully
-          "index_ok":   bool,   # zero missing/stale/orphaned entries
-          "fs_files":   int,    # files found on disk
-          "indexed":    int,    # documents currently in the index
-          "missing":    int,    # on disk but not in index
-          "stale":      int,    # in index but mtime has changed
-          "orphaned":   int,    # in index but no longer on disk
-          "duration_s": float,  # seconds the poll took
-          "error":      str,    # set if poll_ok is False
-        }
-    """
-    src  = to_native_path(src_root or cfg.src_root)
+    """Read-only diff of fs vs index. Same shape as before."""
+    src  = normalize_path(src_root or cfg.src_root)
     coll = collection or cfg.collection
 
     t0        = time.time()
@@ -88,7 +56,8 @@ def check_ready(cfg, src_root: str | None = None,
     error_msg = ""
 
     try:
-        index_map = export_index_map(coll, cfg)
+        backend = ensure_backend(cfg, coll, write=False)
+        index_map = export_index_map(backend)
     except Exception as e:
         return {
             "ready": False, "poll_ok": False, "index_ok": False,
@@ -98,9 +67,6 @@ def check_ready(cfg, src_root: str | None = None,
             "error": f"index export failed: {e}",
         }
 
-    # Use a single set: start with all index IDs, discard each FS file as we
-    # walk — what remains at the end are the orphaned entries.  This avoids
-    # holding both index_map keys AND a separate fs_ids set in memory at once.
     remaining = set(index_map)
     fs_files  = 0
     missing   = 0
@@ -146,33 +112,21 @@ def run_verify(cfg, src_root: str | None = None,
                stop_event=None,
                on_complete=None,
                on_progress=None,
-               extensions=None) -> None:
+               extensions=None,
+               backend=None) -> None:
     """Scan the file system, diff against the index, and repair any gaps.
 
-    Args:
-        src_root:       Source root to scan (default: from config).
-        collection:     Typesense collection name (default: from config).
-        queue:          IndexQueue to use for async writes. When provided,
-                        missing/stale files are enqueued inline during the FS
-                        scan so Typesense writes begin immediately — no waiting
-                        for the full walk to finish. A fence fires on_complete
-                        after all enqueued items are flushed.
-                        When None, index_file_list() is called synchronously
-                        (backward-compat for CLI and tests).
-        delete_orphans: Remove index entries for files no longer on disk.
-        resethard:      Drop and recreate the collection before syncing.
-        stop_event:     Optional threading.Event; when set the verifier
-                        stops cleanly at the next checkpoint and marks
-                        progress status as 'cancelled'.
-        on_complete:    Called after all work is written to Typesense.
-                        With queue: fires via fence (async).
-                        Without queue: called directly before returning.
+    If `backend` is provided, uses it directly (the daemon shares one writer
+    across operations). Otherwise opens its own writer.
     """
-    src_root  = to_native_path(src_root or cfg.src_root)
+    src_root  = normalize_path(src_root or cfg.src_root)
     coll_name = collection or cfg.collection
 
-    client = get_client(cfg)
-    ensure_collection(client, coll_name, resethard=resethard)
+    own_backend = backend is None
+    if own_backend:
+        backend = ensure_backend(cfg, coll_name, resethard=resethard)
+    elif resethard:
+        backend.delete_all()
 
     progress: dict = {
         "status":          "running",
@@ -198,29 +152,20 @@ def run_verify(cfg, src_root: str | None = None,
     t0 = time.time()
 
     # ── Phase 1: collect ──────────────────────────────────────────────────────
-
-    # 1a. Export current index → {doc_id: mtime}
     print("[verifier] Phase 1/2: collecting changes…", flush=True)
     print("[verifier]   exporting current index…", flush=True)
     progress["phase"] = "collecting: exporting index"
     if on_progress: on_progress(progress)
 
-    index_map = export_index_map(coll_name, cfg)
+    index_map = export_index_map(backend)
     progress["index_docs"] = len(index_map)
     print(f"[verifier]   {len(index_map):,} documents in index", flush=True)
 
-    # 1b+1c. Walk file system and diff inline — no intermediate list.
-    # Keeps memory bounded to O(index_size) rather than O(fs_files).
     print("[verifier]   scanning file system…", flush=True)
     progress["phase"] = "collecting: scanning filesystem"
     if on_progress: on_progress(progress)
 
-    # Start with all index IDs; discard each FS file as we walk.
-    # What remains at the end is the orphaned set.
     remaining: set[str] = set(index_map)
-    # Async path: enqueue files inline during the scan so the queue worker
-    # can start writing to Typesense immediately, without waiting for the
-    # full FS walk to finish.  Sync path still collects a list for index_file_list().
     to_update: list[tuple[str, str]] | None = [] if queue is None else None
     n_enqueued = 0
     n_fs = 0
@@ -287,6 +232,8 @@ def run_verify(cfg, src_root: str | None = None,
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         if on_progress: on_progress(progress)
         print("[verifier] Cancelled.", flush=True)
+        if own_backend:
+            backend.close()
         return
 
     total_to_update = n_enqueued if queue is not None else len(to_update)
@@ -297,22 +244,20 @@ def run_verify(cfg, src_root: str | None = None,
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         if on_progress: on_progress(progress)
         print("[verifier] Index is already up to date.", flush=True)
+        if own_backend:
+            backend.close()
         return
 
     if queue is not None:
-        # Async path: all upserts already enqueued during the scan above.
-        # Handle orphan deletion, then place a fence so on_complete fires
-        # after everything reaches Typesense.
         if delete_orphans and orphaned_ids:
             print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries…", flush=True)
             progress["phase"] = "removing orphans"
             if on_progress: on_progress(progress)
-            for doc_id in orphaned_ids:
-                try:
-                    client.collections[coll_name].documents[doc_id].delete()
-                    progress["deleted"] += 1
-                except Exception:
-                    pass
+            try:
+                backend.delete_many(orphaned_ids)
+                progress["deleted"] = len(orphaned_ids)
+            except Exception as e:
+                print(f"[verifier] orphan delete error: {e}", flush=True)
 
         progress["status"]      = "queued"
         progress["phase"]       = f"queued ({n_enqueued:,} files in index queue)"
@@ -340,7 +285,6 @@ def run_verify(cfg, src_root: str | None = None,
             queue.fence(_fence_cb)
 
     else:
-        # Sync path (backward compat for CLI and unit tests).
         last_print = time.time()
         total_to_update = len(to_update)
 
@@ -362,7 +306,7 @@ def run_verify(cfg, src_root: str | None = None,
                 last_print = now
 
         total_indexed, total_errors = index_file_list(
-            client, to_update, coll_name,
+            backend, to_update, coll_name,
             batch_size=BATCH_SIZE,
             on_progress=_on_progress,
             stop_event=stop_event,
@@ -376,18 +320,19 @@ def run_verify(cfg, src_root: str | None = None,
             progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             if on_progress: on_progress(progress)
             print("[verifier] Cancelled during upsert.", flush=True)
+            if own_backend:
+                backend.close()
             return
 
         if delete_orphans and orphaned_ids:
             print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries…", flush=True)
             progress["phase"] = "removing orphans"
             if on_progress: on_progress(progress)
-            for doc_id in orphaned_ids:
-                try:
-                    client.collections[coll_name].documents[doc_id].delete()
-                    progress["deleted"] += 1
-                except Exception:
-                    pass
+            try:
+                backend.delete_many(orphaned_ids)
+                progress["deleted"] = len(orphaned_ids)
+            except Exception as e:
+                print(f"[verifier] orphan delete error: {e}", flush=True)
 
         elapsed = _fmt_time(time.time() - t0)
         progress["status"]      = "complete"
@@ -402,6 +347,8 @@ def run_verify(cfg, src_root: str | None = None,
         )
         if on_complete:
             on_complete()
+        if own_backend:
+            backend.close()
 
 
 # ── entry point ────────────────────────────────────────────────────────────────

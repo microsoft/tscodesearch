@@ -1,18 +1,8 @@
 """
 End-to-end integration tests using the checked-in sample/ directory.
 
-Each test class calls run_index() in setUpClass to create a fresh collection
-from sample/root1 or sample/root2, then deletes it in tearDownClass.  This
-works in both native WSL mode (sample/ on the host) and Docker mode (sample/
-is at /app/sample/ inside the container via COPY . /app/).
-
-Run natively (auto-starts Typesense if needed):
-    MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/c/.../run_tests.sh tests/integration/test_sample_e2e.py
-
-Run in Docker mode:
-    MSYS_NO_PATHCONV=1 wsl.exe bash -l /mnt/c/.../run_tests.sh --docker
-
-These tests do NOT skip — if Typesense is unreachable the suite fails loudly.
+Each test class calls run_index() in setUpClass to create a fresh Tantivy
+index for sample/root1 or sample/root2, then drops it in tearDownClass.
 
 sample/ layout
 ──────────────
@@ -23,13 +13,10 @@ sample/ layout
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
 import unittest
-import urllib.request
-import urllib.parse
 
 _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _root not in sys.path:
@@ -44,39 +31,29 @@ _CONFIG_PATH = os.path.join(_root, "config.json")
 
 # ── Connection config ─────────────────────────────────────────────────────────
 
-try:
-    from indexserver.config import load_config as _load_config
-    _e2e_cfg = _load_config()
-    _HOST, _PORT, _KEY = _e2e_cfg.host, _e2e_cfg.port, _e2e_cfg.api_key
-except Exception:
-    _HOST, _PORT, _KEY = "localhost", 8108, "codesearch-local"
+from indexserver.config import load_config as _load_config
+_e2e_cfg = _load_config()
 
 
 def _require_server() -> None:
-    """Skip the test class if Typesense is not reachable."""
-    try:
-        url = f"http://{_HOST}:{_PORT}/health"
-        with urllib.request.urlopen(url, timeout=5) as r:
-            if json.loads(r.read()).get("ok"):
-                return
-    except Exception:
-        pass
-    raise unittest.SkipTest(
-        f"Typesense not reachable at {_HOST}:{_PORT} — start with: ts start"
-    )
+    """Tantivy is in-process; nothing external to require."""
+    return None
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _search(collection: str, q: str,
             query_by: str = "filename,class_names,method_names,tokens",
             per_page: int = 20) -> list[dict]:
-    params = urllib.parse.urlencode({
-        "q": q, "query_by": query_by, "per_page": per_page, "num_typos": 0,
-    })
-    url = f"http://{_HOST}:{_PORT}/collections/{collection}/documents/search?{params}"
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": _KEY})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return [h["document"] for h in json.loads(r.read()).get("hits", [])]
+    from indexserver.indexer import ensure_backend
+    from indexserver.search import search as _backend_search
+    backend = ensure_backend(_e2e_cfg, collection, write=False)
+    try:
+        result = _backend_search(
+            backend, q=q, query_by=query_by, per_page=per_page, num_typos=0,
+        )
+    finally:
+        backend.close()
+    return [h["document"] for h in result.get("hits", [])]
 
 
 def _get_doc(collection: str, filename: str) -> dict | None:
@@ -85,23 +62,30 @@ def _get_doc(collection: str, filename: str) -> dict | None:
 
 
 def _collection_info(collection: str) -> dict | None:
-    url = f"http://{_HOST}:{_PORT}/collections/{collection}"
-    req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": _KEY})
+    """Return info for an existing Tantivy index, or None if not yet created."""
+    from indexserver.config import index_root
+    from indexserver.backend import Backend
+    root = next((r for r in _e2e_cfg.roots.values() if r.collection == collection), None)
+    index_dir = root.index_dir if root else str(index_root() / collection)
+    if not os.path.exists(os.path.join(index_dir, "meta.json")):
+        return None
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return json.loads(r.read())
+        backend = Backend(index_dir, write=False, create=False)
+        info = {"num_documents": backend.num_documents()}
+        backend.close()
+        return info
     except Exception:
         return None
 
 
 def _delete_collection(collection: str) -> None:
-    url = f"http://{_HOST}:{_PORT}/collections/{collection}"
-    req = urllib.request.Request(url, method="DELETE",
-                                  headers={"X-TYPESENSE-API-KEY": _KEY})
-    try:
-        urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass
+    from indexserver.backend import drop
+    from indexserver.config import index_root
+    root = next((r for r in _e2e_cfg.roots.values() if r.collection == collection), None)
+    if root is None:
+        drop(str(index_root() / collection))
+    else:
+        drop(root.index_dir)
 
 
 def _count_sample_files(src_root: str) -> int:
@@ -694,250 +678,6 @@ class TestSampleMultiRootE2E(unittest.TestCase):
         expected = _count_sample_files(SAMPLE_ROOT2)
         self.assertEqual(info["num_documents"], expected,
             f"root2 expected {expected} docs, got {info['num_documents']}")
-
-
-# ── TestPreConfiguredRootsE2E ─────────────────────────────────────────────────
-
-_IN_DOCKER = os.environ.get("CODESEARCH_TEST_DOCKER") == "1"
-
-
-@unittest.skipUnless(_IN_DOCKER, "pre-configured roots: only runs inside Docker (CODESEARCH_TEST_DOCKER=1)")
-class TestPreConfiguredRootsE2E(unittest.TestCase):
-    """E2E: verify collections pre-indexed by the entrypoint from config.json roots.
-
-    run_tests.sh --docker writes config.json with root1 and root2 before starting
-    the container.  The entrypoint indexes those roots on startup.  This class
-    confirms that the right collections exist with the right content — testing
-    the full root-add-from-outside workflow without touching anything from within.
-
-    No setUpClass/tearDownClass: collections are owned by the container lifetime.
-    """
-
-    def _coll(self, name: str) -> str:
-        from indexserver.config import collection_for_root
-        return collection_for_root(name)
-
-    # ── Collection naming ─────────────────────────────────────────────────────
-
-    def test_collection_name_convention(self):
-        """codesearch_{sanitized_name} naming applies to pre-configured roots."""
-        self.assertEqual(self._coll("root1"), "codesearch_root1")
-        self.assertEqual(self._coll("root2"), "codesearch_root2")
-
-    # ── root1 ─────────────────────────────────────────────────────────────────
-
-    def test_root1_collection_exists(self):
-        coll = self._coll("root1")
-        self.assertIsNotNone(_collection_info(coll),
-            f"Collection {coll!r} not found — entrypoint should have indexed root1")
-
-    def test_root1_has_ten_files(self):
-        coll = self._coll("root1")
-        info = _collection_info(coll)
-        self.assertIsNotNone(info)
-        expected = _count_sample_files(SAMPLE_ROOT1)
-        self.assertEqual(info["num_documents"], expected,
-            f"Expected {expected} docs in {coll!r}, got {info['num_documents']}")
-
-    def test_root1_has_processors_cs(self):
-        self.assertIsNotNone(_get_doc(self._coll("root1"), "Processors.cs"),
-            "Processors.cs not found in pre-configured root1 collection")
-
-    def test_root1_has_datastore_cs(self):
-        self.assertIsNotNone(_get_doc(self._coll("root1"), "DataStore.cs"),
-            "DataStore.cs not found in pre-configured root1 collection")
-
-    # ── root2 ─────────────────────────────────────────────────────────────────
-
-    def test_root2_collection_exists(self):
-        coll = self._coll("root2")
-        self.assertIsNotNone(_collection_info(coll),
-            f"Collection {coll!r} not found — entrypoint should have indexed root2")
-
-    def test_root2_has_five_files(self):
-        coll = self._coll("root2")
-        info = _collection_info(coll)
-        self.assertIsNotNone(info)
-        expected = _count_sample_files(SAMPLE_ROOT2)
-        self.assertEqual(info["num_documents"], expected,
-            f"Expected {expected} docs in {coll!r}, got {info['num_documents']}")
-
-    def test_root2_has_widgets_cs(self):
-        self.assertIsNotNone(_get_doc(self._coll("root2"), "Widgets.cs"),
-            "Widgets.cs not found in pre-configured root2 collection")
-
-    def test_root2_has_repositories_cs(self):
-        self.assertIsNotNone(_get_doc(self._coll("root2"), "Repositories.cs"),
-            "Repositories.cs not found in pre-configured root2 collection")
-
-    # ── Isolation ─────────────────────────────────────────────────────────────
-
-    def test_root1_does_not_contain_root2_content(self):
-        hits = _search(self._coll("root1"), "WidgetClient", query_by="class_names,filename")
-        self.assertNotIn("Widgets.cs", [h["filename"] for h in hits],
-            "Widgets.cs must not appear in pre-configured root1 collection")
-
-    def test_root2_does_not_contain_root1_content(self):
-        hits = _search(self._coll("root2"), "TextProcessor", query_by="class_names,filename")
-        self.assertNotIn("Processors.cs", [h["filename"] for h in hits],
-            "Processors.cs must not appear in pre-configured root2 collection")
-
-
-# ── TestPythonAstQuery ────────────────────────────────────────────────────────
-
-def _require_api_server() -> None:
-    """Raise AssertionError if the management API (tsquery_server.py) is not reachable."""
-    try:
-        from indexserver.config import load_config as _load_config
-        _API_PORT = _load_config().api_port
-        url = f"http://{_HOST}:{_API_PORT}/health"
-        with urllib.request.urlopen(url, timeout=5) as r:
-            if json.loads(r.read()).get("ok"):
-                return
-    except Exception:
-        pass
-    raise unittest.SkipTest("Management API not reachable — start with: ts start")
-
-
-def _api_query(files: list, mode: str, pattern: str = "") -> list:
-    """POST to tsquery_server /query and return the results list."""
-    url = f"http://{_HOST}:{_e2e_cfg.api_port}/query"
-    body = json.dumps({"mode": mode, "pattern": pattern, "files": files}).encode()
-    req = urllib.request.Request(
-        url, data=body, method="POST",
-        headers={"X-TYPESENSE-API-KEY": _KEY, "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read()).get("results", [])
-
-
-def _matches_for(results: list, filename: str) -> list:
-    """Return match texts for the first result whose file ends with filename."""
-    for r in results:
-        if r["file"].replace("\\", "/").endswith(filename):
-            return [m["text"] for m in r.get("matches", [])]
-    return []
-
-
-class TestPythonAstQuery(unittest.TestCase):
-    """Verify Python AST query modes work via the tsquery_server /query endpoint.
-
-    Tests the fix for _run_query always using the C# parser — Python files
-    must now dispatch to py_q_* functions via _py_parser.
-    """
-
-    SERVICES = os.path.join(SAMPLE_ROOT1, "services.py")
-    PIPELINE = os.path.join(SAMPLE_ROOT1, "pipeline.py")
-    MODELS   = os.path.join(SAMPLE_ROOT2, "models.py")
-    NOTIFIER = os.path.join(SAMPLE_ROOT2, "notifier.py")
-
-    @classmethod
-    def setUpClass(cls):
-        _require_api_server()
-
-    # ── classes mode ─────────────────────────────────────────────────────────
-
-    def test_classes_services_finds_textprocessor(self):
-        results = _api_query([self.SERVICES], "classes")
-        texts = _matches_for(results, "services.py")
-        self.assertTrue(any("TextProcessor" in t for t in texts),
-            f"TextProcessor not in classes output: {texts}")
-
-    def test_classes_services_finds_iprocessor(self):
-        results = _api_query([self.SERVICES], "classes")
-        texts = _matches_for(results, "services.py")
-        self.assertTrue(any("IProcessor" in t for t in texts),
-            f"IProcessor not in classes output: {texts}")
-
-    def test_classes_pipeline_finds_transformpipeline(self):
-        results = _api_query([self.PIPELINE], "classes")
-        texts = _matches_for(results, "pipeline.py")
-        self.assertTrue(any("TransformPipeline" in t for t in texts),
-            f"TransformPipeline not in classes output: {texts}")
-
-    def test_classes_notifier_finds_notificationservice(self):
-        results = _api_query([self.NOTIFIER], "classes")
-        texts = _matches_for(results, "notifier.py")
-        self.assertTrue(any("NotificationService" in t for t in texts),
-            f"NotificationService not in classes output: {texts}")
-
-    # ── implements mode ───────────────────────────────────────────────────────
-
-    def test_implements_finds_textprocessor_for_baseprocessor(self):
-        results = _api_query([self.SERVICES], "implements", "BaseProcessor")
-        texts = _matches_for(results, "services.py")
-        self.assertTrue(any("TextProcessor" in t for t in texts),
-            f"TextProcessor(BaseProcessor) not found: {texts}")
-
-    def test_implements_finds_jsontransformer_for_itransformer(self):
-        results = _api_query([self.PIPELINE], "implements", "ITransformer")
-        texts = _matches_for(results, "pipeline.py")
-        self.assertTrue(any("JsonTransformer" in t for t in texts),
-            f"JsonTransformer(ITransformer) not found: {texts}")
-
-    def test_implements_finds_emailsink_for_ieventsink(self):
-        results = _api_query([self.NOTIFIER], "implements", "IEventSink")
-        texts = _matches_for(results, "notifier.py")
-        self.assertTrue(any("EmailSink" in t for t in texts),
-            f"EmailSink(IEventSink) not found: {texts}")
-
-    # ── calls mode ────────────────────────────────────────────────────────────
-
-    def test_calls_finds_process_in_services(self):
-        results = _api_query([self.SERVICES], "calls", "process")
-        texts = _matches_for(results, "services.py")
-        self.assertTrue(len(texts) > 0,
-            "No calls to process() found in services.py")
-
-    def test_calls_finds_transform_in_pipeline(self):
-        results = _api_query([self.PIPELINE], "calls", "transform")
-        texts = _matches_for(results, "pipeline.py")
-        self.assertTrue(len(texts) > 0,
-            "No calls to transform() found in pipeline.py")
-
-    def test_calls_finds_send_in_notifier(self):
-        results = _api_query([self.NOTIFIER], "calls", "send")
-        texts = _matches_for(results, "notifier.py")
-        self.assertTrue(len(texts) > 0,
-            "No calls to send() found in notifier.py")
-
-    # ── declarations mode ─────────────────────────────────────────────────────
-
-    def test_declarations_finds_textprocessor(self):
-        results = _api_query([self.SERVICES], "declarations", "TextProcessor")
-        texts = _matches_for(results, "services.py")
-        self.assertTrue(any("TextProcessor" in t for t in texts),
-            f"TextProcessor declaration not found: {texts}")
-
-    def test_declarations_finds_transformpipeline(self):
-        results = _api_query([self.PIPELINE], "declarations", "TransformPipeline")
-        texts = _matches_for(results, "pipeline.py")
-        self.assertTrue(any("TransformPipeline" in t for t in texts),
-            f"TransformPipeline declaration not found: {texts}")
-
-    # ── methods mode ──────────────────────────────────────────────────────────
-
-    def test_methods_pipeline_finds_run(self):
-        results = _api_query([self.PIPELINE], "methods")
-        texts = _matches_for(results, "pipeline.py")
-        self.assertTrue(any("run" in t for t in texts),
-            f"run method not found in pipeline.py methods: {texts}")
-
-    def test_methods_notifier_finds_broadcast(self):
-        results = _api_query([self.NOTIFIER], "methods")
-        texts = _matches_for(results, "notifier.py")
-        self.assertTrue(any("broadcast" in t for t in texts),
-            f"broadcast method not found in notifier.py methods: {texts}")
-
-    # ── multi-file query ──────────────────────────────────────────────────────
-
-    def test_classes_across_multiple_py_files(self):
-        results = _api_query([self.SERVICES, self.PIPELINE], "classes")
-        filenames = [r["file"].replace("\\", "/").split("/")[-1] for r in results]
-        self.assertIn("services.py", filenames,
-            "services.py missing from multi-file classes query")
-        self.assertIn("pipeline.py", filenames,
-            "pipeline.py missing from multi-file classes query")
 
 
 if __name__ == "__main__":

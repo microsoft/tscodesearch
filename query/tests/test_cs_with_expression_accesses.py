@@ -17,7 +17,7 @@ Replicates bug discovered in Round 15 of guided testing:
       source identifier; if it is in `var_names`, each `with_initializer`
       child's first identifier is emitted as a member access.
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_with_expression_accesses.py -v
 """
 from __future__ import annotations

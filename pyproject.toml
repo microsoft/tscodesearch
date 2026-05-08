@@ -4,8 +4,8 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "tscodesearch"
-version = "0.1.0"
-description = "Typesense-backed code search with MCP server and tree-sitter indexing"
+version = "0.2.0"
+description = "Tantivy-backed code search with MCP server and tree-sitter indexing"
 requires-python = ">=3.10"
 dependencies = [
     "mcp",
@@ -13,7 +13,7 @@ dependencies = [
     "tree-sitter-c-sharp",
     "tree-sitter-python",
     "tree-sitter-sql",
-    "typesense",
+    "tantivy",
     "watchdog",
     "pathspec",
 ]
@@ -24,9 +24,8 @@ dev = ["pytest"]
 [tool.pytest.ini_options]
 testpaths = ["tests", "query/tests"]
 python_files = ["test_*.py"]
-filterwarnings = ["ignore::DeprecationWarning:typesense"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["*"]
-exclude = ["tests*", "vscode-codesearch*", "docker*"]
+exclude = ["tests*", "vscode-codesearch*"]

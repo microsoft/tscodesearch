@@ -21,7 +21,7 @@ Replicates behavior discovered in Round 7 of guided testing:
   All three bugs fixed together since they share the same root cause.
   Results for q_accesses_on and q_accesses_of are now sorted by line number.
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_null_conditional.py -v
 """
 from __future__ import annotations

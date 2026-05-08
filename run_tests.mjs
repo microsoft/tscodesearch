@@ -3,15 +3,16 @@
  * run_tests.mjs — VS Code extension unit tests.
  *
  * Runs client.test.ts and pipeline.test.ts in vscode-codesearch/.
- * No Typesense server required — tests use a mock HTTP backend.
+ * No daemon required — tests use a mock HTTP backend.
  *
  * Usage:
  *   node run_tests.mjs
  *
  * Python tests are run directly with pytest:
- *   ~/.local/indexserver-venv/bin/pytest tests/ query/tests/ -v
- * The tests/integration/conftest.py fixture handles Typesense startup
- * automatically when CODESEARCH_CONFIG is not already set.
+ *   .client-venv\Scripts\python.exe -m pytest tests/ query/tests/ -v
+ * The tests/integration/conftest.py fixture writes a temp config.json
+ * pointing at the sample/ trees automatically when CODESEARCH_CONFIG
+ * is not already set.
  */
 
 import { spawnSync }                            from 'node:child_process';

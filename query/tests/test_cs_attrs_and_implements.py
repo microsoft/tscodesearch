@@ -13,12 +13,12 @@ Replicates behavior observed in Round 3 of guided testing:
     → generic base types displayed without type parameters:
       _base_type_names returns only the bare identifier from generic_name
       nodes (e.g. "IProcessor" not "IProcessor<string>") because that is
-      what Typesense needs for indexing.  The display in q_implements and
+      what the index stores in `base_types`.  The display in q_implements and
       _q_base_uses used those stripped names verbatim.
       Fixed by reading the raw base_list node text for display while keeping
       _base_type_names unchanged for matching and indexing.
 
-Run (no Typesense needed):
+Run:
     pytest query/tests/test_cs_attrs_and_implements.py -v
 """
 from __future__ import annotations

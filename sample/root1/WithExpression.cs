@@ -1,5 +1,4 @@
 // Fixture for testing accesses_on with C# 9 with-expression record mutation.
-// No SPO code — generic types only.
 // Covers: with { single }, with { multiple }, multi-line with, negative case.
 namespace Sample
 {

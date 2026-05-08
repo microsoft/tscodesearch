@@ -1,15 +1,14 @@
 /**
- * Unified server manager for codesearch.
+ * Daemon manager for codesearch.
  *
- * Owns root management (VS Code settings), config.json generation, and server
- * lifecycle for both Docker and WSL modes.  All heavy lifting is delegated to
- * ts.mjs (Node.js CLI, no WSL required):
+ * Owns root management (config.json) and daemon lifecycle. All heavy lifting
+ * is delegated to ts.mjs:
  *
  *   node.exe <repoPath>/ts.mjs <cmd>
  *
- * ts.mjs reads config.json directly and dispatches to Docker or WSL internals
- * based on the "mode" field.  The management API (port typesensePort+1) is the
- * same for both modes, so FileWatcher and StatusBarManager work identically.
+ * The daemon (tsquery_server.py) listens on config.json's `port` and is
+ * a single in-process Tantivy-backed indexer — there is no Docker or WSL
+ * lifecycle to manage anymore.
  */
 
 import * as vscode from 'vscode';
@@ -17,8 +16,6 @@ import * as fs    from 'fs';
 import * as path  from 'path';
 import * as cp    from 'child_process';
 import { CodesearchConfig, getRoots as getRootsFromConfig } from './client';
-
-export type ServerMode = 'docker' | 'wsl';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -28,8 +25,7 @@ function cfg<T>(key: string, fallback: T): T {
 
 /**
  * Scan VS Code workspace folders for one that contains a valid config.json
- * (identified by having an "api_key" field).  Returns the folder path (the
- * repo root) or null if nothing is found.
+ * (identified by having an "api_key" field).
  */
 function discoverRepoPath(): string | null {
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
@@ -75,31 +71,22 @@ export class ServerManager {
         this._out = out;
     }
 
-    /**
-     * In WSL mode, config.json on disk is the source of truth.
-     * Call this once at startup after discovering the config file.
-     */
+    /** Once the extension finds the on-disk config it should share it here. */
     setDiskConfig(config: CodesearchConfig): void {
         this._diskConfig = config;
     }
 
-    // ── Mode + settings ──────────────────────────────────────────────────────
+    // ── Settings ─────────────────────────────────────────────────────────────
 
-    get mode():          ServerMode { return (this._diskConfig?.mode as ServerMode | undefined) ?? 'docker'; }
-    get mcpPort():       number     { return cfg('mcpPort',         3000); }
-    get typesensePort(): number     { return cfg('typesensePort',   8108); }
-    get apiPort():       number     { return this.typesensePort + 1; }
+    get mcpPort(): number { return cfg('mcpPort', 3000); }
+    get port():    number { return this._diskConfig?.port ?? cfg('port', 8108); }
+    /** Back-compat alias used by the tree view. */
+    get apiPort(): number { return this.port; }
     /** Explicit setting takes precedence; falls back to workspace folder auto-detection. */
     get repoPath(): string { return cfg('repoPath', '') || discoverRepoPath() || ''; }
-    // Docker-specific
-    get containerName(): string { return cfg('dockerContainer', 'codesearch'); }
-    get imageName():     string { return cfg('dockerImage',     'codesearch-mcp'); }
-    get dataVolume():    string { return `${this.containerName}_data`; }
 
     /** Human-readable display name for the Roots tree view. */
-    get displayName(): string {
-        return this.mode === 'docker' ? this.containerName : 'Indexserver (WSL)';
-    }
+    get displayName(): string { return 'Codesearch daemon'; }
 
     // ── Config file helpers ──────────────────────────────────────────────────
 
@@ -142,22 +129,7 @@ export class ServerManager {
         this._writeConfigFile(config);
     }
 
-    // ── Config generation ────────────────────────────────────────────────────
-
-    /**
-     * Sync VS Code settings (port, docker_container, docker_image) into config.json
-     * so that ts.mjs picks them up on the next invocation.  Returns the config path.
-     */
-    writeConfig(): string {
-        const config = this._readConfigFile();
-        config.port             = this.typesensePort;
-        config.docker_container = this.containerName;
-        config.docker_image     = this.imageName;
-        this._writeConfigFile(config);
-        return this._configFilePath();
-    }
-
-    /** Config for the VS Code extension (Windows paths for file resolution). */
+    /** Config for the VS Code extension. */
     getClientConfig(): CodesearchConfig {
         if (this._diskConfig) { return this._diskConfig; }
         return this._readConfigFile();
@@ -169,10 +141,6 @@ export class ServerManager {
         if (!this.repoPath) {
             throw new Error('tscodesearch repo not found. Open the repo folder in VS Code, or set tscodesearch.repoPath explicitly.');
         }
-        // Sync VS Code settings into config.json before every lifecycle command
-        // so ts.mjs reads up-to-date port / container / image values.
-        this.writeConfig();
-
         const tsMjs = path.join(this.repoPath, 'ts.mjs');
         const log   = (l: string) => { this._out.appendLine(l); onLine?.(l); };
         await spawnLines('node.exe', [tsMjs, cmd], log);
@@ -193,9 +161,8 @@ export class ServerManager {
     }
 
     /**
-     * Full setup wizard.  Prompts for repo path if not configured, then
-     * calls `ts.mjs setup` which builds the Docker image (if needed) and starts
-     * the container.
+     * Setup wizard: prompts for the repo path if not configured, then starts
+     * the daemon.
      */
     async setup(progress: vscode.Progress<{ message: string }>): Promise<void> {
         if (!this.repoPath) {
@@ -208,7 +175,7 @@ export class ServerManager {
                 'repoPath', pick[0].fsPath, vscode.ConfigurationTarget.Global,
             );
         }
-        await this._run('setup', (line) => {
+        await this._run('start', (line) => {
             progress.report({ message: line });
         });
     }
