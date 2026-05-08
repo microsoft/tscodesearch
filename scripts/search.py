@@ -114,7 +114,7 @@ def search(query, ext=None, sub=None, limit=10,
         backend = ensure_backend(_cfg, coll_name, write=False)
     except Exception as e:
         print(f"ERROR: cannot open index for collection '{coll_name}': {e}")
-        print(f"  Run: ts index --resethard")
+        print(f"  Run: ts recreate")
         sys.exit(1)
 
     try:

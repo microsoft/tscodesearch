@@ -57,7 +57,7 @@ Windows side
 
 `tsquery_server.start_daemon()` tries to bind PORT; returns `False` if another instance is already running. There is no separate Typesense process: the search index lives in-process via `tantivy-py`.
 
-Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `POST /index/start`, `POST /verify/start`, `POST /verify/stop`, `POST /query-codebase`, `POST /file-events`, `POST /management/shutdown`.
+Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `POST /verify/start`, `POST /verify/stop`, `POST /query-codebase`, `POST /file-events`, `POST /management/shutdown`.
 
 `query_single_file` bypasses HTTP entirely — calls `query_file()` from `query/dispatch.py` in-process. Works without the daemon.
 
@@ -233,6 +233,6 @@ The integration `conftest.py` writes a temporary `config.json` pointing at `samp
 
 **Tantivy is single-writer.** The daemon owns one `IndexWriter` per collection. CLIs (`scripts/search.py`, `indexserver.query_util --search`) open the index read-only via `ensure_backend(..., write=False)`. Trying to open a writer while the daemon already has one will block or fail — let the daemon do the writing and search via the HTTP API.
 
-**Index location.** `<repo>/.tantivy/<collection>/`. Wipe with `ts index --resethard`, or remove the directory directly.
+**Index location.** `<repo>/.tantivy/<collection>/`. Wipe with `ts recreate` (which stops the daemon, removes the directory, and restarts).
 
 **Line endings.** `.gitattributes` enforces LF for shell scripts. Fix with `git add --renormalize .` if any cross-OS quoting goes wrong.

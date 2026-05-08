@@ -108,7 +108,6 @@ def run_verify(cfg, src_root: str | None = None,
                collection: str | None = None,
                queue=None,
                delete_orphans: bool = True,
-               resethard: bool = False,
                stop_event=None,
                on_complete=None,
                on_progress=None,
@@ -124,9 +123,7 @@ def run_verify(cfg, src_root: str | None = None,
 
     own_backend = backend is None
     if own_backend:
-        backend = ensure_backend(cfg, coll_name, resethard=resethard)
-    elif resethard:
-        backend.delete_all()
+        backend = ensure_backend(cfg, coll_name)
 
     progress: dict = {
         "status":          "running",

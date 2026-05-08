@@ -141,7 +141,7 @@ Pipeline tests need the daemon running (`ts start`); they skip with a clear mess
 
 **Must compile before loading.** VS Code loads `out/extension.js`. If `out/` is missing, the command is registered but activation fails silently → "command not found". Always run `npm run compile` (or use `npm run watch` during development).
 
-**Schema is fixed at index creation time.** Indexed fields are populated by the AST extractors, which pre-split compound forms into individual identifiers (e.g. `Task<Widget>` → `Task`, `Widget`). After any schema change, `ts index --resethard` is the way to rebuild.
+**Schema is fixed at index creation time.** Indexed fields are populated by the AST extractors, which pre-split compound forms into individual identifiers (e.g. `Task<Widget>` → `Task`, `Widget`). After any schema change, `ts recreate` is the way to rebuild.
 
 **`configPath` must point to the file, not the folder.** The setting expects a path ending in `config.json`. Setting it to the parent directory causes an `EISDIR` error, which `friendlyConfigError()` translates to a readable message.
 
