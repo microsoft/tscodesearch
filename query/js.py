@@ -23,7 +23,7 @@ import sys
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, AttrInfo, CallSiteInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, AttrInfo, CallSiteInfo, TreeIndex
 
 _JS_LANG  = Language(tsjs.language())
 _js_parser  = Parser(_JS_LANG)
@@ -40,6 +40,33 @@ _LITERAL_NODES = {
     "template_string",
     "regex",
 }
+
+_TYPE_DECL_NODES = frozenset({
+    "class_declaration", "abstract_class_declaration",
+    "interface_declaration", "type_alias_declaration", "enum_declaration",
+})
+
+_FN_DECL_NODES = frozenset({
+    "function_declaration", "generator_function_declaration",
+    "method_definition",
+})
+
+_IMPORT_NODES = frozenset({"import_statement", "import_declaration"})
+
+# Union of node types touched by describe_js_file. One walk feeds all
+# extractors below.
+_DESCRIBE_NODE_TYPES: frozenset = frozenset(
+    _TYPE_DECL_NODES | _FN_DECL_NODES | _IMPORT_NODES
+    | {"call_expression", "decorator"}
+)
+
+
+def _JsIndex(src: bytes, tree, wanted, collect_refs: bool = False) -> TreeIndex:
+    return TreeIndex(
+        src, tree, wanted,
+        literal_nodes=_LITERAL_NODES if collect_refs else None,
+        identifier_types=("identifier", "type_identifier") if collect_refs else (),
+    )
 
 
 def _find_all(node, predicate, results=None):
@@ -110,14 +137,10 @@ def _fn_sig(node, src: bytes) -> str:
 
 # ── Data extraction functions ─────────────────────────────────────────────────
 
-def _js_q_classes_data(src, tree) -> list:
+def _js_q_classes_data(src, idx: TreeIndex) -> list:
     """Return list[ClassInfo] for all class/interface/enum declarations."""
     results = []
-    type_nodes = {
-        "class_declaration", "abstract_class_declaration",
-        "interface_declaration", "type_alias_declaration", "enum_declaration",
-    }
-    for node in _find_all(tree.root_node, lambda n: n.type in type_nodes):
+    for node in idx.of(*_TYPE_DECL_NODES):
         name_node = node.child_by_field_name("name")
         if not name_node:
             continue
@@ -131,14 +154,10 @@ def _js_q_classes_data(src, tree) -> list:
     return results
 
 
-def _js_q_methods_data(src, tree) -> list:
+def _js_q_methods_data(src, idx: TreeIndex) -> list:
     """Return list[MethodInfo] for all function/method definitions."""
     results = []
-    fn_types = {
-        "function_declaration", "generator_function_declaration",
-        "method_definition",
-    }
-    for node in _find_all(tree.root_node, lambda n: n.type in fn_types):
+    for node in idx.of(*_FN_DECL_NODES):
         sig  = _fn_sig(node, src)
         if not sig:
             continue
@@ -158,10 +177,10 @@ def _js_q_methods_data(src, tree) -> list:
     return results
 
 
-def _js_q_all_call_sites_data(src, tree) -> list:
+def _js_q_all_call_sites_data(src, idx: TreeIndex) -> list:
     """Extract all call site names for indexing."""
     names = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "call_expression"):
+    for node in idx.of("call_expression"):
         fn = node.child_by_field_name("function")
         if fn:
             if fn.type == "identifier":
@@ -173,11 +192,10 @@ def _js_q_all_call_sites_data(src, tree) -> list:
     return names
 
 
-def _js_q_imports_data(src, tree) -> list:
+def _js_q_imports_data(src, idx: TreeIndex) -> list:
     """Return list[ImportInfo] for all import statements."""
     results = []
-    for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("import_statement", "import_declaration")):
+    for node in idx.of(*_IMPORT_NODES):
         full = _text(node, src).strip()
         module = ""
         src_node = node.child_by_field_name("source")
@@ -192,12 +210,12 @@ def _js_q_imports_data(src, tree) -> list:
 
 def js_q_classes(src, tree, lines):
     """List class / interface / enum declarations."""
-    return [(_r.line, _r.text) for _r in _js_q_classes_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _js_q_classes_data(src, _JsIndex(src, tree, _TYPE_DECL_NODES))]
 
 
 def js_q_methods(src, tree, lines):
     """List function declarations and class method definitions."""
-    return [(_r.line, _r.text) for _r in _js_q_methods_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _js_q_methods_data(src, _JsIndex(src, tree, _FN_DECL_NODES))]
 
 
 def js_q_calls(src, tree, lines, func_name):
@@ -327,20 +345,16 @@ def js_q_all_refs(src, tree, lines, name):
 def _collect_all_refs(src: bytes, tree) -> set[str]:
     """Deduped set of identifier/type-identifier texts from a parsed JS/TS tree,
     excluding tokens inside literal nodes (strings, template strings, comments,
-    regex literals)."""
-    out: set[str] = set()
-    for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("identifier", "type_identifier")):
-        if _in_literal(node):
-            continue
-        out.add(_text(node, src).strip())
+    regex literals).
+    """
+    out = _JsIndex(src, tree, set(), collect_refs=True).all_refs
     out.discard("")
     return out
 
 
 def js_q_imports(src, tree, lines):
     """List import statements."""
-    return [(_r.line, _r.text) for _r in _js_q_imports_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _js_q_imports_data(src, _JsIndex(src, tree, _IMPORT_NODES))]
 
 
 def js_q_params(src, tree, lines, func_name):
@@ -421,10 +435,13 @@ def describe_js_file(src_bytes: bytes, ext: str = ".js") -> FileDescription:
         print(f"ERROR parsing JS/TS source: {e}", file=sys.stderr)
         return FileDescription(language="js")
 
+    # One walk shared by every extractor below; also collects all_refs.
+    idx = _JsIndex(src_bytes, tree, _DESCRIBE_NODE_TYPES, collect_refs=True)
+
     # TS decorators → AttrInfo
     attrs = []
     if ext in TS_EXTENSIONS:
-        for node in _find_all(tree.root_node, lambda n: n.type == "decorator"):
+        for node in idx.of("decorator"):
             for child in node.children:
                 if child.type in ("identifier", "member_expression", "call_expression"):
                     if child.type == "call_expression":
@@ -437,12 +454,15 @@ def describe_js_file(src_bytes: bytes, ext: str = ".js") -> FileDescription:
                         attrs.append(AttrInfo(line=_line(node), text=name, attr_name=name))
                     break
 
+    all_refs = set(idx.all_refs)
+    all_refs.discard("")
+
     return FileDescription(
         language="js",
-        classes=_js_q_classes_data(src_bytes, tree),
-        methods=_js_q_methods_data(src_bytes, tree),
-        imports=_js_q_imports_data(src_bytes, tree),
+        classes=_js_q_classes_data(src_bytes, idx),
+        methods=_js_q_methods_data(src_bytes, idx),
+        imports=_js_q_imports_data(src_bytes, idx),
         attrs=attrs,
-        call_site_infos=[CallSiteInfo(name=n) for n in _js_q_all_call_sites_data(src_bytes, tree)],
-        all_refs=_collect_all_refs(src_bytes, tree),
+        call_site_infos=[CallSiteInfo(name=n) for n in _js_q_all_call_sites_data(src_bytes, idx)],
+        all_refs=all_refs,
     )

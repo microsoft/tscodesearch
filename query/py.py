@@ -9,7 +9,7 @@ EXTENSIONS = frozenset({".py"})
 import sys
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, AttrInfo, ImportInfo, CallSiteInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, AttrInfo, ImportInfo, CallSiteInfo, TreeIndex
 
 from .cs import _find_all, _text
 
@@ -19,6 +19,24 @@ _py_parser = Parser(_PY_LANG)
 # ── Inlined from src/ast/py.py ──────────────────────────────────────────────
 
 _PY_LITERAL_NODES = {"comment", "string", "concatenated_string"}
+
+_IMPORT_NODES = frozenset({
+    "import_statement", "import_from_statement", "future_import_statement",
+})
+
+# Union of node types touched by describe_py_file.
+_DESCRIBE_NODE_TYPES: frozenset = frozenset(
+    _IMPORT_NODES
+    | {"class_definition", "function_definition", "decorator", "call"}
+)
+
+
+def _PyIndex(src: bytes, tree, wanted, collect_refs: bool = False) -> TreeIndex:
+    return TreeIndex(
+        src, tree, wanted,
+        literal_nodes=_PY_LITERAL_NODES if collect_refs else None,
+        identifier_types=("identifier",) if collect_refs else (),
+    )
 
 
 def _line(node) -> int:
@@ -66,10 +84,10 @@ def _py_base_names(node, src) -> list:
 
 # ── Data extraction functions ─────────────────────────────────────────────────
 
-def _py_q_classes_data(src, tree) -> list:
+def _py_q_classes_data(src, idx: TreeIndex) -> list:
     """Return list[ClassInfo] for all class definitions."""
     results = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "class_definition"):
+    for node in idx.of("class_definition"):
         name_node = node.child_by_field_name("name")
         if not name_node:
             continue
@@ -79,10 +97,10 @@ def _py_q_classes_data(src, tree) -> list:
     return results
 
 
-def _py_q_methods_data(src, tree) -> list:
+def _py_q_methods_data(src, idx: TreeIndex) -> list:
     """Return list[MethodInfo] for all function definitions."""
     results = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "function_definition"):
+    for node in idx.of("function_definition"):
         name_node   = node.child_by_field_name("name")
         if not name_node:
             continue
@@ -108,10 +126,10 @@ def _py_q_methods_data(src, tree) -> list:
     return results
 
 
-def _py_q_attrs_data(src, tree, name=None) -> list:
+def _py_q_attrs_data(src, idx: TreeIndex, name=None) -> list:
     """Return list[AttrInfo] for all decorators."""
     results = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "decorator"):
+    for node in idx.of("decorator"):
         full  = _text(node, src).strip()
         dname = full.lstrip("@").split("(")[0].split(".")[-1].strip()
         if name and dname != name:
@@ -120,12 +138,10 @@ def _py_q_attrs_data(src, tree, name=None) -> list:
     return results
 
 
-def _py_q_imports_data(src, tree) -> list:
+def _py_q_imports_data(src, idx: TreeIndex) -> list:
     """Return list[ImportInfo] for all import statements."""
     results = []
-    for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("import_statement", "import_from_statement",
-                                               "future_import_statement")):
+    for node in idx.of(*_IMPORT_NODES):
         full = _text(node, src).strip()
         module = ""
         if node.type == "import_statement":
@@ -144,10 +160,10 @@ def _py_q_imports_data(src, tree) -> list:
     return results
 
 
-def _py_q_all_call_sites_data(src, tree) -> list:
+def _py_q_all_call_sites_data(src, idx: TreeIndex) -> list:
     """Extract all call site names for indexing."""
     names = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "call"):
+    for node in idx.of("call"):
         fn = node.child_by_field_name("function")
         if fn:
             if fn.type == "identifier":
@@ -160,11 +176,11 @@ def _py_q_all_call_sites_data(src, tree) -> list:
 
 
 def py_q_classes(src, tree, lines):
-    return [(_r.line, _r.text) for _r in _py_q_classes_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _py_q_classes_data(src, _PyIndex(src, tree, {"class_definition"}))]
 
 
 def py_q_methods(src, tree, lines):
-    return [(_r.line, _r.text) for _r in _py_q_methods_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _py_q_methods_data(src, _PyIndex(src, tree, {"function_definition"}))]
 
 
 def py_q_calls(src, tree, lines, method_name):
@@ -229,13 +245,9 @@ def py_q_ident(src, tree, lines, name):
 
 def _collect_all_refs(src: bytes, tree) -> set[str]:
     """Deduped set of identifier texts from a parsed Python tree, excluding
-    identifiers inside literal nodes (strings, comments)."""
-    out: set[str] = set()
-    for node in _find_all(tree.root_node, lambda n: n.type == "identifier"):
-        if _py_in_literal(node):
-            continue
-        out.add(_text(node, src))
-    return out
+    identifiers inside literal nodes (strings, comments).
+    """
+    return _PyIndex(src, tree, set(), collect_refs=True).all_refs
 
 
 def py_q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None):
@@ -255,11 +267,11 @@ def py_q_declarations(src, tree, lines, name, include_body=False, symbol_kind=No
 
 
 def py_q_decorators(src, tree, lines, name=None):
-    return [(_r.line, _r.text) for _r in _py_q_attrs_data(src, tree, name)]
+    return [(_r.line, _r.text) for _r in _py_q_attrs_data(src, _PyIndex(src, tree, {"decorator"}), name)]
 
 
 def py_q_imports(src, tree, lines):
-    return [(_r.line, _r.text) for _r in _py_q_imports_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _py_q_imports_data(src, _PyIndex(src, tree, _IMPORT_NODES))]
 
 
 def py_q_params(src, tree, lines, method_name):
@@ -356,12 +368,14 @@ def describe_py_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         print(f"ERROR parsing Python source: {e}", file=sys.stderr)
         return FileDescription(language="py")
 
+    idx = _PyIndex(src_bytes, tree, _DESCRIBE_NODE_TYPES, collect_refs=True)
+
     return FileDescription(
         language="py",
-        classes=_py_q_classes_data(src_bytes, tree),
-        methods=_py_q_methods_data(src_bytes, tree),
-        imports=_py_q_imports_data(src_bytes, tree),
-        attrs=_py_q_attrs_data(src_bytes, tree),
-        call_site_infos=[CallSiteInfo(name=n) for n in _py_q_all_call_sites_data(src_bytes, tree)],
-        all_refs=_collect_all_refs(src_bytes, tree),
+        classes=_py_q_classes_data(src_bytes, idx),
+        methods=_py_q_methods_data(src_bytes, idx),
+        imports=_py_q_imports_data(src_bytes, idx),
+        attrs=_py_q_attrs_data(src_bytes, idx),
+        call_site_infos=[CallSiteInfo(name=n) for n in _py_q_all_call_sites_data(src_bytes, idx)],
+        all_refs=idx.all_refs,
     )

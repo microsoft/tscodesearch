@@ -212,8 +212,11 @@ There is no longer a separate Typesense / Docker / WSL service — the index liv
 | File | Purpose |
 |------|---------|
 | `query/cs.py`, `py.py`, `js.py`, `rust.py`, `cpp.py`, `sql.py` | Per-language tree-sitter AST functions |
+| `query/_util.py` | Shared dataclasses + `TreeIndex` (single-pass AST walker shared by every language) |
 | `query/dispatch.py` | Pure query dispatcher. `query_file(src_bytes, ext, mode, pattern, ...)`. No backend dependency. |
 | `query/__main__.py` | CLI: `python -m query --mode methods --file Widget.cs` |
+
+`TreeIndex` walks the AST once with tree-sitter's `TreeCursor`, buckets nodes by type, and (optionally) collects literal-aware identifier refs in the same pass. `describe_*_file` covers the union of types every extractor needs in one walk; per-query wrappers (`q_classes`, `q_methods`, …) pass a narrow type set so they pay the cost of a single targeted walk.
 
 **Indexer (`indexserver/`)**
 

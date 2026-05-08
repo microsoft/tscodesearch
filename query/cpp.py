@@ -17,7 +17,7 @@ EXTENSIONS = frozenset({".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"})
 import sys
 import tree_sitter_cpp as tscpp
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo, TreeIndex
 
 _CPP_LANG   = Language(tscpp.language())
 _cpp_parser = Parser(_CPP_LANG)
@@ -44,6 +44,21 @@ _LITERAL_NODES = {
     "char_literal",
     "concatenated_string",
 }
+
+# Union of node types touched by describe_cpp_file.
+_DESCRIBE_NODE_TYPES: frozenset = frozenset(
+    set(_TYPE_DECL_NODES)
+    | {"function_definition", "declaration", "field_declaration",
+       "call_expression", "preproc_include"}
+)
+
+
+def _CppIndex(src: bytes, tree, wanted, collect_refs: bool = False) -> TreeIndex:
+    return TreeIndex(
+        src, tree, wanted,
+        literal_nodes=_LITERAL_NODES if collect_refs else None,
+        identifier_types=("identifier", "type_identifier") if collect_refs else (),
+    )
 
 
 # ── Basic helpers ──────────────────────────────────────────────────────────────
@@ -224,10 +239,10 @@ def _fn_sig(node, src: bytes) -> str:
 
 # ── Data extraction functions ──────────────────────────────────────────────────
 
-def _cpp_q_classes_data(src, tree) -> list:
+def _cpp_q_classes_data(src, idx: TreeIndex) -> list:
     """Return list[ClassInfo] for all class/struct/union/enum declarations."""
     results = []
-    for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
+    for node in idx.of(*_TYPE_DECL_NODES):
         name = _class_name(node, src)
         if not name:
             continue
@@ -237,7 +252,7 @@ def _cpp_q_classes_data(src, tree) -> list:
     return results
 
 
-def _cpp_q_methods_data(src, tree) -> list:
+def _cpp_q_methods_data(src, idx: TreeIndex) -> list:
     """Return list[MethodInfo] for all function definitions and member declarations."""
     results = []
 
@@ -249,7 +264,7 @@ def _cpp_q_methods_data(src, tree) -> list:
             p = p.parent
         return ""
 
-    for node in _find_all(tree.root_node, lambda n: n.type == "function_definition"):
+    for node in idx.of("function_definition"):
         name = _fn_name(node, src)
         if not name:
             continue
@@ -259,7 +274,7 @@ def _cpp_q_methods_data(src, tree) -> list:
         results.append(MethodInfo(line=_line(node), name=name, kind=kind,
                                      sig=sig, cls_name=cls))
 
-    for node in _find_all(tree.root_node, lambda n: n.type == "declaration"):
+    for node in idx.of("declaration"):
         if _enclosing_class(node):
             continue
         fn_decl = next(
@@ -275,7 +290,7 @@ def _cpp_q_methods_data(src, tree) -> list:
         results.append(MethodInfo(line=_line(node), name=name, kind="function",
                                      sig=sig, cls_name=""))
 
-    for node in _find_all(tree.root_node, lambda n: n.type == "field_declaration"):
+    for node in idx.of("field_declaration"):
         name = _member_fn_name(node, src)
         if not name:
             continue
@@ -292,12 +307,12 @@ def _cpp_q_methods_data(src, tree) -> list:
 
 def cpp_q_classes(src, tree, lines):
     """List class/struct/union/enum declarations."""
-    return [(_r.line, _r.text) for _r in _cpp_q_classes_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _cpp_q_classes_data(src, _CppIndex(src, tree, set(_TYPE_DECL_NODES)))]
 
 
 def cpp_q_methods(src, tree, lines):
     """List function definitions and member function declarations."""
-    return [(_r.line, _r.text) for _r in _cpp_q_methods_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _cpp_q_methods_data(src, _CppIndex(src, tree, {"function_definition", "declaration", "field_declaration"}))]
 
 
 def cpp_q_calls(src, tree, lines, func_name):
@@ -457,13 +472,9 @@ def cpp_q_all_refs(src, tree, lines, name):
 
 def _collect_all_refs(src: bytes, tree) -> set[str]:
     """Deduped set of identifier/type-identifier texts from a parsed C/C++ tree,
-    excluding tokens inside literal nodes (strings, char literals, comments)."""
-    out: set[str] = set()
-    for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("identifier", "type_identifier")):
-        if _in_literal(node):
-            continue
-        out.add(_text(node, src).strip())
+    excluding tokens inside literal nodes (strings, char literals, comments).
+    """
+    out = _CppIndex(src, tree, set(), collect_refs=True).all_refs
     out.discard("")
     return out
 
@@ -546,9 +557,11 @@ def describe_cpp_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         print(f"ERROR parsing C/C++ source: {e}", file=sys.stderr)
         return FileDescription(language="cpp")
 
+    idx = _CppIndex(src_bytes, tree, _DESCRIBE_NODE_TYPES, collect_refs=True)
+
     # call sites
     call_sites_raw = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "call_expression"):
+    for node in idx.of("call_expression"):
         fn = node.child_by_field_name("function")
         if fn:
             if fn.type == "identifier":
@@ -564,7 +577,7 @@ def describe_cpp_file(src_bytes: bytes, ext: str = "") -> FileDescription:
 
     # #include → ImportInfo (header name without path/extension as module)
     imports_list = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "preproc_include"):
+    for node in idx.of("preproc_include"):
         path_node = node.child_by_field_name("path")
         if path_node:
             raw = _text(path_node, src_bytes).strip().strip("<>\"")
@@ -572,11 +585,14 @@ def describe_cpp_file(src_bytes: bytes, ext: str = "") -> FileDescription:
             if seg:
                 imports_list.append(ImportInfo(line=_line(node), text=raw, module=seg))
 
+    all_refs = set(idx.all_refs)
+    all_refs.discard("")
+
     return FileDescription(
         language="cpp",
-        classes=_cpp_q_classes_data(src_bytes, tree),
-        methods=_cpp_q_methods_data(src_bytes, tree),
+        classes=_cpp_q_classes_data(src_bytes, idx),
+        methods=_cpp_q_methods_data(src_bytes, idx),
         imports=imports_list,
         call_site_infos=[CallSiteInfo(name=n) for n in call_sites_raw],
-        all_refs=_collect_all_refs(src_bytes, tree),
+        all_refs=all_refs,
     )

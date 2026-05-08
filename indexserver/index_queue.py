@@ -65,6 +65,10 @@ class IndexQueue:
         self._resolve: BackendResolver | None = None
         self._thread: threading.Thread | None = None
         self._stop        = threading.Event()
+        # tid -> (rel_path, size, t_start) for each parse worker currently busy.
+        # Used by stop()'s diagnostic dump and the "slow parse" log.
+        self._busy: dict[int, tuple[str, int, float]] = {}
+        self._busy_lock = threading.Lock()
         # Counters
         self._n_enqueued  = 0
         self._n_deduped   = 0
@@ -91,8 +95,36 @@ class IndexQueue:
         self._stop.set()
         with self._cond:
             self._cond.notify_all()
-        if self._thread:
-            self._thread.join(timeout=timeout)
+        if not self._thread:
+            return
+
+        # Poll-join with a busy-file dump every second if the worker is still alive.
+        # Diagnostics for "queue won't drain" — shows which files parse workers
+        # are stuck on (typically large/minified JS or deeply nested ASTs).
+        deadline = time.monotonic() + timeout
+        while self._thread.is_alive() and time.monotonic() < deadline:
+            self._thread.join(timeout=1.0)
+            if not self._thread.is_alive():
+                break
+            now = time.perf_counter()
+            with self._busy_lock:
+                snapshot = list(self._busy.items())
+            if snapshot:
+                files = ", ".join(
+                    f"{rel} ({size:,}B, {now - t0:.1f}s)"
+                    for _tid, (rel, size, t0) in snapshot
+                )
+                print(
+                    f"[index-queue] worker still alive (items_left={len(self._items)}); "
+                    f"parsing: {files}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[index-queue] worker still alive (items_left={len(self._items)}); "
+                    f"no parse workers busy",
+                    flush=True,
+                )
 
     # ── public interface ──────────────────────────────────────────────────────
 
@@ -245,16 +277,30 @@ class IndexQueue:
             if action == "delete":
                 return ("delete", collection, _file_id(rel))
             try:
-                if os.path.getsize(full_path) > max_bytes:
+                size = os.path.getsize(full_path)
+                if size > max_bytes:
                     return None
             except OSError:
                 return None
+            tid = threading.get_ident()
+            t0 = time.perf_counter()
+            with self._busy_lock:
+                self._busy[tid] = (rel, size, t0)
             try:
                 doc = build_document(full_path, rel)
+                t = time.perf_counter() - t0
+                if t > 1.0:
+                    print(
+                        f"[index-queue] SLOW parse: {rel} took {t:.2f}s ({size:,} bytes)",
+                        flush=True,
+                    )
                 if doc:
                     return ("upsert", collection, doc)
             except OSError:
                 pass
+            finally:
+                with self._busy_lock:
+                    self._busy.pop(tid, None)
             return None
 
         t_parse_start = time.perf_counter()
