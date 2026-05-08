@@ -16,7 +16,7 @@ import { buildWebviewHtml, getNonce } from '../webview';
 describe('buildWebviewHtml', () => {
     it('includes the <select id="mode"> dropdown element', () => {
         const html = buildWebviewHtml(getNonce(), ['default'], 'default');
-        assert.match(html, /<select id="mode" class="filter-select"[^>]*>\s*<\/select>/);
+        assert.match(html, /<select id="mode" class="filter-select"[^>]*>\s*<\/select>/i);
     });
 
     it('inline <script> body parses as valid JavaScript', () => {
@@ -25,7 +25,7 @@ describe('buildWebviewHtml', () => {
         // regex that silently kills the whole inline script.  Compile-only via
         // vm.Script catches this without executing the script.
         const html = buildWebviewHtml(getNonce(), ['default'], 'default');
-        const m = html.match(/<script[^>]*>([\s\S]*?)<\/script>/);
+        const m = html.match(/<script[^>]*>([\s\S]*?)<\/script>/i);
         assert.ok(m, 'expected an inline <script> in the rendered HTML');
         assert.doesNotThrow(() => new vm.Script(m![1]), 'inline script must parse');
     });
