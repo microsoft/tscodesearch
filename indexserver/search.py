@@ -157,20 +157,26 @@ def _tokenize(q: str) -> list[str]:
 #
 # Values are treated as literal strings against `raw`-tokenized fields.
 
-# Strict format: ``field:=value`` or ``field:!=value`` (no internal whitespace).
-# Each clause is stripped before matching, so leading/trailing space is gone;
-# avoiding ``\s*`` here keeps the regex linear (CodeQL polynomial-redos guard).
-_TOKEN_RE = re.compile(
-    r"""
-        (?P<field>[A-Za-z_][A-Za-z0-9_]*)
-        :(?P<negate>!?)=
-        (?P<value>
-              \[[^\]]*\]
-            | [^\s&|]+
-        )
-    """,
-    re.VERBOSE,
-)
+# Strict format: ``field:=value`` or ``field:!=value``. Parsed by hand instead
+# of with a regex so CodeQL's polynomial-redos rule has nothing to flag on the
+# externally-supplied filter_by string.
+def _parse_clause(clause: str) -> tuple[str, bool, str] | None:
+    colon = clause.find(":")
+    if colon <= 0:
+        return None
+    field = clause[:colon]
+    if not field.isidentifier():
+        return None
+    rest = clause[colon + 1:]
+    if rest.startswith("!="):
+        negate, value = True, rest[2:]
+    elif rest.startswith("="):
+        negate, value = False, rest[1:]
+    else:
+        return None
+    if not value:
+        return None
+    return field, negate, value
 
 
 def _parse_filter_by(schema: tantivy.Schema, expr: str) -> list[tuple]:
@@ -184,12 +190,10 @@ def _parse_filter_by(schema: tantivy.Schema, expr: str) -> list[tuple]:
         clause = clause.strip()
         if not clause:
             continue
-        m = _TOKEN_RE.fullmatch(clause)
-        if not m:
+        parsed = _parse_clause(clause)
+        if parsed is None:
             continue
-        field  = m.group("field")
-        negate = m.group("negate") == "!"
-        raw_v  = m.group("value")
+        field, negate, raw_v = parsed
         values = _parse_values(raw_v)
         if not values:
             continue
