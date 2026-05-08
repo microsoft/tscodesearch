@@ -25,7 +25,7 @@ describe('buildWebviewHtml', () => {
         // regex that silently kills the whole inline script.  Compile-only via
         // vm.Script catches this without executing the script.
         const html = buildWebviewHtml(getNonce(), ['default'], 'default');
-        const m = html.match(/<script[^>]*>([\s\S]*?)<\/script>/i);
+        const m = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/i);
         assert.ok(m, 'expected an inline <script> in the rendered HTML');
         assert.doesNotThrow(() => new vm.Script(m![1]), 'inline script must parse');
     });
