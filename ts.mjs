@@ -107,6 +107,13 @@ function clientVenvPython() {
     return path.join(__dirname, '.client-venv', 'Scripts', 'python.exe');
 }
 
+/** Returns tscodesearch.exe if present (descriptive process name in Task Manager),
+ *  otherwise falls back to python.exe. Used only for daemon spawn. */
+function daemonPython() {
+    const named = path.join(__dirname, '.client-venv', 'Scripts', 'tscodesearch.exe');
+    return fs.existsSync(named) ? named : clientVenvPython();
+}
+
 // Mirrors indexserver.config.collection_for_root: lowercase, then [^a-z0-9_] → _.
 function collectionForRoot(name) {
     return `codesearch_${name.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`;
@@ -202,7 +209,7 @@ function daemonLogFile() {
 }
 
 function startDaemon() {
-    const py = clientVenvPython();
+    const py = daemonPython();
     if (!fs.existsSync(py)) {
         die(`.client-venv not found at ${py} — run setup.cmd first`);
     }
