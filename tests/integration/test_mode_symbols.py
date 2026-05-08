@@ -58,23 +58,12 @@ class TestSymbolsAndTextModeLive(LiveTestBase):
                                  "class_names,method_names,filename")
         assert "Config.cs" not in fnames
 
-    def test_text_includes_string_literal_file(self):
-        """Text mode includes tokens, so Config.cs IS returned."""
+    def test_tokens_excludes_string_literal_file(self):
+        """tokens is the AST identifier bag — string contents are not indexed,
+        so a name that appears only in a string literal must not match."""
         fnames = self._ts_search("InventoryManager",
                                  "filename,class_names,method_names,tokens")
-        assert "Config.cs" in fnames
-
-    def test_text_returns_more_than_declarations(self):
-        decl = self._ts_search("InventoryManager",
-                               "class_names,method_names,filename",
-                               per_page=20)
-        text = self._ts_search("InventoryManager",
-                               "filename,class_names,method_names,tokens",
-                               per_page=20)
-        assert len(text) >= len(decl), \
-            "text mode must return >= files compared to declaration-field mode"
-        assert "Config.cs" in text
-        assert "Config.cs" not in decl
+        assert "Config.cs" not in fnames
 
 
 if __name__ == "__main__":

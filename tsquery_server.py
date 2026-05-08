@@ -128,7 +128,6 @@ def _run_query(mode: str, pattern: str, files: list[Path],
 # ── Mode mapping ───────────────────────────────────────────────────────────────
 
 _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
-    "text":         ("text",        "all_refs"),
     "declarations": ("symbols",     "declarations"),
     "calls":        ("calls",       "calls"),
     "implements":   ("implements",  "implements"),
@@ -137,7 +136,7 @@ _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
     "attrs":        ("attrs",       "attrs"),
     "accesses_of":  ("accesses_of", "accesses_of"),
     "accesses_on":  ("uses",        "accesses_on"),
-    "all_refs":     ("text",        "all_refs"),
+    "all_refs":     ("all_refs",    "all_refs"),
 }
 
 
@@ -223,7 +222,9 @@ def _resolve_query_params(ts_mode_flag: str, uses_kind: str, symbol_kind: str
         from query.cs import symbol_kind_query_by
         narrowed = symbol_kind_query_by(symbol_kind or "")
         return (narrowed or "class_names,method_names,filename"), "4,3,2"
-    # default ("text")
+    if ts_mode_flag == "all_refs":
+        return "filename,class_names,method_names,tokens", "5,4,4,1"
+    # Should never reach here — _EXT_TO_TS_AND_AST gates the mode flags above.
     return "filename,class_names,method_names,tokens", "5,4,4,1"
 
 

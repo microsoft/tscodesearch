@@ -1236,6 +1236,17 @@ def q_all_refs(src, tree, lines, name):
     return results
 
 
+def _collect_all_refs(src: bytes, tree) -> set[str]:
+    """Deduped set of identifier texts from a parsed C# tree, excluding
+    identifiers inside literal nodes (strings, comments, char literals)."""
+    out: set[str] = set()
+    for node in _find_all(tree.root_node, lambda n: n.type == "identifier"):
+        if _in_literal(node):
+            continue
+        out.add(_text(node, src))
+    return out
+
+
 # ── Process function ──────────────────────────────────────────────────────────
 
 def query_cs_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False,
@@ -1296,4 +1307,5 @@ def describe_cs_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         cast_infos=[CastInfo(target_type=t) for t in _q_all_cast_types_data(src_bytes, tree)],
         local_var_infos=[LocalVarInfo(var_type=t) for t in _q_all_local_types_data(src_bytes, tree)],
         member_access_infos=[MemberAccessInfo(member=m) for m in _q_all_member_accesses_data(src_bytes, tree)],
+        all_refs=_collect_all_refs(src_bytes, tree),
     )

@@ -237,7 +237,7 @@ There is no longer a separate Typesense / Docker / WSL service — the index liv
 
 ### Backend schema
 
-The `Backend` schema includes one stored, default-tokenized text field per pre-extracted symbol kind:
+The `Backend` schema includes one stored text field per pre-extracted symbol kind. Each entry is a single identifier — the AST extractors pre-split compound forms.
 
 | Tier | Fields | Used by MCP mode |
 |------|--------|-----------------|
@@ -247,12 +247,12 @@ The `Backend` schema includes one stored, default-tokenized text field per pre-e
 | T2 | `type_refs` | `uses` |
 | T2 | `attr_names` | `attrs` |
 | T2 | `usings` | — |
-| — | `class_names`, `method_names`, `tokens` | `text` |
+| — | `class_names`, `method_names`, `tokens` | `all_refs` |
 | — | `filename`, `relative_path` | every mode |
 
 The `path_segments` field is the list of every ancestor folder of each file (e.g. `services/billing/Foo.cs` → `["services", "services/billing"]`). Use `sub=` to scope searches to any folder path — single segment (`services`) or nested (`services/billing`). On overflow, the response suggests deeper folder paths to drill into.
 
-The default Tantivy tokenizer splits on whitespace + ASCII punctuation, so a value like `Task<Widget>` is automatically searchable as both `task` and `widget` — no token-separator configuration is needed.
+`tokens` is the deduped bag of identifiers extracted by the same tree-sitter walk that drives `all_refs`. Identifiers inside string literals, char literals, and comments are excluded. Every other multi-value field is also pre-split per-language by the AST extractors — each stored entry is a single identifier.
 
 ### config.json
 

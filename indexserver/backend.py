@@ -72,11 +72,12 @@ def build_schema() -> tantivy.Schema:
     sb.add_text_field("namespace",     stored=True)
     sb.add_text_field("path_segments", stored=True, tokenizer_name="raw")
 
-    # Tokens — pre-split bag-of-identifiers from the file body.
+    # Tokens — deduped bag of identifiers extracted from the file's AST.
     sb.add_text_field("tokens", stored=False)
 
-    # Multi-value pre-extracted fields. The default tokenizer further splits
-    # values like "Task<Widget>" into the contained identifiers.
+    # Multi-value pre-extracted fields. Each entry is a single identifier — the
+    # AST extractors pre-split compound forms (e.g. ``Task<Widget>`` arrives as
+    # both ``Task`` and ``Widget``).
     for f in (
         "class_names", "method_names",
         "member_sigs",

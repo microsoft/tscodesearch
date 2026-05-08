@@ -324,6 +324,20 @@ def js_q_all_refs(src, tree, lines, name):
     return results
 
 
+def _collect_all_refs(src: bytes, tree) -> set[str]:
+    """Deduped set of identifier/type-identifier texts from a parsed JS/TS tree,
+    excluding tokens inside literal nodes (strings, template strings, comments,
+    regex literals)."""
+    out: set[str] = set()
+    for node in _find_all(tree.root_node,
+                          lambda n: n.type in ("identifier", "type_identifier")):
+        if _in_literal(node):
+            continue
+        out.add(_text(node, src).strip())
+    out.discard("")
+    return out
+
+
 def js_q_imports(src, tree, lines):
     """List import statements."""
     return [(_r.line, _r.text) for _r in _js_q_imports_data(src, tree)]
@@ -430,4 +444,5 @@ def describe_js_file(src_bytes: bytes, ext: str = ".js") -> FileDescription:
         imports=_js_q_imports_data(src_bytes, tree),
         attrs=attrs,
         call_site_infos=[CallSiteInfo(name=n) for n in _js_q_all_call_sites_data(src_bytes, tree)],
+        all_refs=_collect_all_refs(src_bytes, tree),
     )

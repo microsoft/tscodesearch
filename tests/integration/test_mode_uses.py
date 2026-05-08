@@ -59,11 +59,12 @@ class TestUsesModeLive(LiveTestBase):
         fnames = self._ts_search("IDataStore", "type_refs,class_names,filename")
         assert "Indirect.cs" not in fnames
 
-    def test_text_mode_finds_comment_file(self):
-        """Tokens field picks up comments — text mode is broader than uses mode."""
+    def test_tokens_excludes_comment_only_file(self):
+        """tokens is the AST identifier bag — comment text is not indexed,
+        so a name that appears only in a comment must not match."""
         fnames = self._ts_search("IDataStore",
                                  "filename,class_names,method_names,tokens")
-        assert "Indirect.cs" in fnames
+        assert "Indirect.cs" not in fnames
 
     def test_finds_local_var_file(self):
         """File where IDataStore appears only as a local variable type must be found."""

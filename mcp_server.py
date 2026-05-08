@@ -221,21 +221,17 @@ identifier name (e.g. "BlobStore", "SaveChanges") — no whitespace, operators,
 punctuation, generic brackets, or quoted strings. Matches are restricted to
 identifier occurrences in code; strings and comments are never matched.
 
-If you need a multi-word phrase, an operator-bearing fragment like
-"using X =", a literal substring inside a string/comment, or an arbitrary
-regex, this tool cannot help — fall back to grep/ripgrep over the source
-tree. Do NOT call query_codebase("text", ...) with a multi-word pattern;
-it will silently return zero matches.
+If you need a multi-word phrase, an operator-bearing fragment, a literal
+substring inside a string/comment, or an arbitrary regex, this tool cannot
+help — fall back to grep/ripgrep over the source tree.
 
 Args:
   mode:         AST query mode. All take a single identifier as `pattern`.
-                C#:     text, declarations, calls, implements, uses, casts,
+                C#:     declarations, calls, implements, uses, casts,
                         attrs, accesses_of, accesses_on, all_refs
-                Python: text, calls, implements, ident, declarations, params,
-                        decorators
-                text is an alias for all_refs — every identifier occurrence of
-                the given name. Use it when you don't yet know which structural
-                role (call vs declaration vs cast vs param type) you're after.
+                Python: calls, implements, declarations, decorators, all_refs
+                Use all_refs when you don't yet know which structural role
+                (call vs declaration vs cast vs param type) you're after.
                 Prefer a more specific mode (calls, declarations, uses, etc.)
                 when you do.
   pattern:      A single identifier. Examples that DO work: "BlobStore",

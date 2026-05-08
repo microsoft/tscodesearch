@@ -4,7 +4,12 @@ AST query dispatch — routes query_file and describe_file to the right language
 Each language module owns its parser, preprocessing, and query_*_bytes / describe_*_file.
 """
 
+import re
+
 from ._util import FileDescription  # noqa: F401  (re-exported for callers)
+
+
+_GENERIC_IDENT_RE = re.compile(rb'[A-Za-z_][A-Za-z0-9_]*')
 
 from .cs import (
     EXTENSIONS as CS_EXTENSIONS,
@@ -75,8 +80,13 @@ def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
 
 
 def describe_file(src_bytes: bytes, ext: str) -> FileDescription:
-    """Return all structured data from src_bytes as a FileDescription."""
+    """Return all structured data from src_bytes as a FileDescription.
+
+    Unknown extensions still get an identifier-bag pre-filter via a regex pass,
+    so plain-text formats (markdown, configs, etc.) remain searchable by name.
+    """
     fn = _EXT_TO_DESCRIBER.get(ext)
     if fn is None:
-        return FileDescription(language="unknown")
+        bag = {m.decode("utf-8", "replace") for m in _GENERIC_IDENT_RE.findall(src_bytes)}
+        return FileDescription(language="unknown", all_refs=bag)
     return fn(src_bytes, ext=ext)

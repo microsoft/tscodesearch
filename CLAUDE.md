@@ -155,19 +155,18 @@ There is **no longer a WSL or indexserver venv** — Tantivy runs in-process in 
 
 | Mode | `query_by` field(s) | Notes |
 |------|---------------------|-------|
-| `text` | `filename`, `class_names`, `method_names`, `tokens` | Broad keyword |
 | `declarations` | `member_sigs`, `method_names`, `filename` | Precise [T1] |
 | `implements` | `base_types`, `class_names`, `filename` | Precise [T1] |
 | `calls` | `call_sites`, `filename` | Precise [T1] |
 | `uses` | `type_refs`, `class_names`, `filename` | Broader [T2] |
 | `attrs` | `attr_names`, `filename` | Broader [T2] |
-| `all_refs` | `type_refs`, `call_sites`, `filename` | Broadest |
+| `all_refs` | `filename`, `class_names`, `method_names`, `tokens` | Broadest |
 | `accesses_on` | `type_refs`, `filename` | Member accesses on type instances |
 | `accesses_of` | `member_accesses`, `filename` | Access sites of a property/field name |
 
 T1 = precise tree-sitter extractions. T2 = broader, minor false positives possible.
 
-The default Tantivy tokenizer splits on whitespace and ASCII punctuation, so `Task<Widget>` → `task`, `widget` automatically — no `token_separators` configuration needed.
+`tokens` is the per-file deduped bag of identifiers extracted by the same tree-sitter walk that drives `all_refs` — identifiers inside string literals, char literals, and comments are excluded. The structural fields (`class_names`, `method_names`, `member_sigs`, `type_refs`, `call_sites`, `member_accesses`, etc.) are also pre-split per-language by the AST extractors, so each entry stored in the index is a single identifier.
 
 ## tree-sitter query modes
 
@@ -177,7 +176,6 @@ The default Tantivy tokenizer splits on whitespace and ASCII punctuation, so `Ta
 |------|-----|-------|
 | `classes`, `methods`, `fields`, `usings` | — | Listing *(query_single_file only)* |
 | `params` | METHOD | Parameter list *(query_single_file only)* |
-| `text` | NAME | Full source of method/type |
 | `declarations` | NAME | Declaration of method/type |
 | `calls` | METHOD | Call sites. `"Repo.Save"` restricts by receiver. |
 | `implements` | TYPE | Types that inherit/implement TYPE |

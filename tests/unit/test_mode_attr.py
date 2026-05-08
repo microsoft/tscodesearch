@@ -129,9 +129,9 @@ namespace Synth {
         meta = extract_metadata(HAS_CACHEABLE_ATTR.encode(), ".cs")
         assert "Cacheable" not in meta["type_refs"]
 
-    def test_build_document_tokens_includes_attribute(self):
-        """build_document tokens field has the raw source, so attr name is findable
-        via text mode even if it's only in a comment."""
+    def test_build_document_tokens_excludes_comment_attribute(self):
+        """build_document tokens is the AST identifier bag — names that appear
+        only inside a comment must not be indexed."""
         src = """\
 namespace Synth {
     // Use [Cacheable] for hot paths
@@ -146,7 +146,7 @@ namespace Synth {
         try:
             doc = build_document(tmp, "synth/HotPath.cs")
             assert "Cacheable" not in doc.get("attr_names", [])
-            assert "Cacheable" in doc["tokens"]
+            assert "Cacheable" not in doc["tokens"]
         finally:
             os.unlink(tmp)
 

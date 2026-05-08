@@ -121,6 +121,7 @@ def flat_from_fd(fd) -> dict:
         "field_types":     _dedupe(field_types),
         "local_types":     _dedupe(local_types),
         "member_accesses": _dedupe(member_accesses),
+        "tokens":          " ".join(fd.all_refs),
     }
 
 
@@ -205,8 +206,6 @@ def build_document(full_path: str, relative_path: str) -> dict:
     ext = os.path.splitext(full_path)[1].lower()
     meta = flat_from_fd(describe_file(src_bytes, ext))
 
-    _raw = src_bytes.decode("utf-8", errors="replace")
-    tokens = " ".join(dict.fromkeys(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', _raw)))
     relative_path_norm = normalize_path(relative_path)
 
     return {
@@ -219,7 +218,7 @@ def build_document(full_path: str, relative_path: str) -> dict:
         "namespace":        meta["namespace"],
         "class_names":      meta["class_names"],
         "method_names":     meta["method_names"],
-        "tokens":           tokens,
+        "tokens":           meta["tokens"],
         "mtime":            int(stat.st_mtime),
         "member_sigs":      meta["member_sigs"],
         "base_types":       meta["base_types"],

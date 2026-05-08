@@ -455,6 +455,19 @@ def cpp_q_all_refs(src, tree, lines, name):
     return results
 
 
+def _collect_all_refs(src: bytes, tree) -> set[str]:
+    """Deduped set of identifier/type-identifier texts from a parsed C/C++ tree,
+    excluding tokens inside literal nodes (strings, char literals, comments)."""
+    out: set[str] = set()
+    for node in _find_all(tree.root_node,
+                          lambda n: n.type in ("identifier", "type_identifier")):
+        if _in_literal(node):
+            continue
+        out.add(_text(node, src).strip())
+    out.discard("")
+    return out
+
+
 def cpp_q_includes(src, tree, lines):
     """List #include directives."""
     results = []
@@ -565,4 +578,5 @@ def describe_cpp_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         methods=_cpp_q_methods_data(src_bytes, tree),
         imports=imports_list,
         call_site_infos=[CallSiteInfo(name=n) for n in call_sites_raw],
+        all_refs=_collect_all_refs(src_bytes, tree),
     )
