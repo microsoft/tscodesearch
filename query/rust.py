@@ -17,7 +17,7 @@ EXTENSIONS = frozenset({".rs"})
 import sys
 import tree_sitter_rust as tsrust
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo, TreeIndex
 
 _RUST_LANG   = Language(tsrust.language())
 _rust_parser = Parser(_RUST_LANG)
@@ -39,6 +39,21 @@ _LITERAL_NODES = {
     "string_literal", "raw_string_literal",
     "char_literal",
 }
+
+# Union of node types touched by describe_rust_file.
+_DESCRIBE_NODE_TYPES: frozenset = frozenset(
+    set(_TYPE_DECL_NODES)
+    | {"function_item", "impl_item", "use_declaration",
+       "call_expression", "method_call_expression"}
+)
+
+
+def _RustIndex(src: bytes, tree, wanted, collect_refs: bool = False) -> TreeIndex:
+    return TreeIndex(
+        src, tree, wanted,
+        literal_nodes=_LITERAL_NODES if collect_refs else None,
+        identifier_types=("identifier", "type_identifier") if collect_refs else (),
+    )
 
 
 # ── Basic helpers ──────────────────────────────────────────────────────────────
@@ -136,10 +151,10 @@ def _fn_sig(node, src: bytes) -> str:
 
 # ── Data extraction functions ──────────────────────────────────────────────────
 
-def _rust_q_classes_data(src, tree) -> list:
+def _rust_q_classes_data(src, idx: TreeIndex) -> list:
     """Return list[ClassInfo] for all struct/enum/trait/type declarations."""
     results = []
-    for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
+    for node in idx.of(*_TYPE_DECL_NODES):
         name = _type_name(node, src)
         if not name:
             continue
@@ -148,12 +163,12 @@ def _rust_q_classes_data(src, tree) -> list:
     return results
 
 
-def _rust_q_methods_data(src, tree) -> list:
+def _rust_q_methods_data(src, idx: TreeIndex) -> list:
     """Return list[MethodInfo] for all function items and impl methods."""
     results = []
     seen = set()
 
-    for node in _find_all(tree.root_node, lambda n: n.type == "function_item"):
+    for node in idx.of("function_item"):
         sig = _fn_sig(node, src)
         ln = _line(node)
         key = (ln, sig)
@@ -179,12 +194,12 @@ def _rust_q_methods_data(src, tree) -> list:
 
 def rust_q_classes(src, tree, lines):
     """List struct/enum/trait/type declarations."""
-    return [(_r.line, _r.text) for _r in _rust_q_classes_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _rust_q_classes_data(src, _RustIndex(src, tree, set(_TYPE_DECL_NODES)))]
 
 
 def rust_q_methods(src, tree, lines):
     """List function items and methods inside impl blocks."""
-    return [(_r.line, _r.text) for _r in _rust_q_methods_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _rust_q_methods_data(src, _RustIndex(src, tree, {"function_item"}))]
 
 
 def rust_q_calls(src, tree, lines, func_name):
@@ -325,19 +340,8 @@ def rust_q_all_refs(src, tree, lines, name):
 def _collect_all_refs(src: bytes, tree) -> set[str]:
     """Deduped set of identifier/type-identifier texts from a parsed Rust tree,
     excluding tokens inside literal nodes (strings, comments, char literals).
-
-    Single-pass walk that tracks "currently inside a literal" depth to avoid
-    O(N×D) parent-chain walks per identifier.
     """
-    out: set[str] = set()
-    stack: list = [(tree.root_node, 0)]
-    while stack:
-        node, lit_depth = stack.pop()
-        new_depth = lit_depth + (1 if node.type in _LITERAL_NODES else 0)
-        if new_depth == 0 and node.type in ("identifier", "type_identifier"):
-            out.add(_text(node, src).strip())
-        for child in node.children:
-            stack.append((child, new_depth))
+    out = _RustIndex(src, tree, set(), collect_refs=True).all_refs
     out.discard("")
     return out
 
@@ -408,12 +412,14 @@ def describe_rust_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         print(f"ERROR parsing Rust source: {e}", file=sys.stderr)
         return FileDescription(language="rust")
 
-    classes = _rust_q_classes_data(src_bytes, tree)
-    methods = _rust_q_methods_data(src_bytes, tree)
+    idx = _RustIndex(src_bytes, tree, _DESCRIBE_NODE_TYPES, collect_refs=True)
+
+    classes = _rust_q_classes_data(src_bytes, idx)
+    methods = _rust_q_methods_data(src_bytes, idx)
 
     # Enrich ClassInfo objects with impl-trait bases (impl Trait for Type → Type.bases = [Trait])
     type_to_traits: dict = {}
-    for node in _find_all(tree.root_node, lambda n: n.type == "impl_item"):
+    for node in idx.of("impl_item"):
         trait = _impl_trait_name(node, src_bytes)
         typ   = _impl_type_name(node, src_bytes)
         if trait and typ:
@@ -428,7 +434,7 @@ def describe_rust_file(src_bytes: bytes, ext: str = "") -> FileDescription:
 
     # call sites
     call_sites_raw = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "call_expression"):
+    for node in idx.of("call_expression"):
         fn = node.child_by_field_name("function")
         if fn:
             if fn.type == "identifier":
@@ -437,19 +443,22 @@ def describe_rust_file(src_bytes: bytes, ext: str = "") -> FileDescription:
                 f = fn.child_by_field_name("field")
                 if f:
                     call_sites_raw.append(_text(f, src_bytes).strip())
-    for node in _find_all(tree.root_node, lambda n: n.type == "method_call_expression"):
+    for node in idx.of("method_call_expression"):
         nn = node.child_by_field_name("name")
         if nn:
             call_sites_raw.append(_text(nn, src_bytes).strip())
 
     # use declarations → ImportInfo
     imports_list = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "use_declaration"):
+    for node in idx.of("use_declaration"):
         for id_node in _find_all(node, lambda n: n.type == "identifier"):
             seg = _text(id_node, src_bytes).strip()
             if seg and seg not in ("use", "self", "super", "crate"):
                 imports_list.append(ImportInfo(line=_line(node), text=seg, module=seg))
             break
+
+    all_refs = set(idx.all_refs)
+    all_refs.discard("")
 
     return FileDescription(
         language="rust",
@@ -457,5 +466,5 @@ def describe_rust_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         methods=methods,
         imports=imports_list,
         call_site_infos=[CallSiteInfo(name=n) for n in call_sites_raw],
-        all_refs=_collect_all_refs(src_bytes, tree),
+        all_refs=all_refs,
     )

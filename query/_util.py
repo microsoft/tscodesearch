@@ -132,3 +132,92 @@ def _make_matches(results):
             line_int = 0
         out.append({"line": line_int, "text": (text or "").rstrip()})
     return out
+
+
+def node_text(node, src: bytes) -> str:
+    return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
+class TreeIndex:
+    """Pre-computed buckets of AST nodes from a single tree-sitter walk.
+
+    Single shared implementation used by every language module. The walk uses
+    tree-sitter's TreeCursor (C-level traversal) to avoid materialising Python
+    lists of children at each level — about 2× faster than a Python stack of
+    nodes.
+
+    Args:
+        src: source bytes (used only when collecting all_refs).
+        tree: tree-sitter Tree object.
+        wanted: set of node-type strings to bucket; nodes outside this set are
+            still visited but not stored. Pass a small set for one-off queries
+            and the full describe-set for describe_*_file.
+        literal_nodes: set of node-type strings whose subtrees count as
+            "inside a literal" (strings, comments, regex, etc.). Identifiers
+            whose nearest enclosing literal ancestor is not None are excluded
+            from all_refs. Pass None (default) to skip literal-depth tracking.
+        identifier_types: node-type strings that should be added to all_refs.
+            Pass () to skip; only consulted when literal_nodes is also given.
+    """
+
+    __slots__ = ("nodes_by_type", "all_refs")
+
+    def __init__(self, src: bytes, tree, wanted,
+                 literal_nodes=None, identifier_types=()):
+        nodes_by_type: dict[str, list] = {t: [] for t in wanted}
+        all_refs: set[str] = set()
+        cursor = tree.walk()
+
+        if literal_nodes is not None and identifier_types:
+            ident_set = (identifier_types if isinstance(identifier_types, (set, frozenset))
+                         else frozenset(identifier_types))
+            lit_depth_stack = [0]
+            visited_children = False
+            while True:
+                if not visited_children:
+                    node = cursor.node
+                    nt = node.type
+                    lit_depth = lit_depth_stack[-1]
+                    if nt in wanted:
+                        nodes_by_type[nt].append(node)
+                    if lit_depth == 0 and nt in ident_set:
+                        all_refs.add(node_text(node, src))
+                    if cursor.goto_first_child():
+                        lit_depth_stack.append(
+                            lit_depth + (1 if nt in literal_nodes else 0)
+                        )
+                        continue
+                    visited_children = True
+                if cursor.goto_next_sibling():
+                    visited_children = False
+                elif not cursor.goto_parent():
+                    break
+                else:
+                    lit_depth_stack.pop()
+        else:
+            visited_children = False
+            while True:
+                if not visited_children:
+                    nt = cursor.node.type
+                    if nt in wanted:
+                        nodes_by_type[nt].append(cursor.node)
+                    if cursor.goto_first_child():
+                        continue
+                    visited_children = True
+                if cursor.goto_next_sibling():
+                    visited_children = False
+                elif not cursor.goto_parent():
+                    break
+
+        self.nodes_by_type = nodes_by_type
+        self.all_refs = all_refs
+
+    def of(self, *types):
+        """Return all nodes whose type is in `types`, in document order."""
+        if len(types) == 1:
+            return self.nodes_by_type.get(types[0], [])
+        out = []
+        for t in types:
+            out.extend(self.nodes_by_type.get(t, []))
+        out.sort(key=lambda n: n.start_byte)
+        return out

@@ -10,7 +10,7 @@ import re
 import sys
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, ImportInfo, AttrInfo, CallSiteInfo, CastInfo, LocalVarInfo, MemberAccessInfo
+from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, ImportInfo, AttrInfo, CallSiteInfo, CastInfo, LocalVarInfo, MemberAccessInfo, TreeIndex
 
 _CS_LANG = Language(tscsharp.language())
 _cs_parser = Parser(_CS_LANG)
@@ -81,6 +81,20 @@ SYMBOL_KIND_TO_NODES: dict[str, frozenset] = {
 _TYPE_KINDS   = frozenset({"class", "interface", "struct", "enum", "record", "delegate", "type"})
 _MEMBER_KINDS = frozenset({"method", "constructor", "property", "field", "event", "member"})
 
+# Union of every node type bucketed by describe_cs_file's extractors. Passed
+# to _CsIndex when describing a file so a single tree walk feeds all of them.
+_DESCRIBE_NODE_TYPES: frozenset = frozenset(
+    _TYPE_DECL_NODES
+    | _MEMBER_DECL_NODES
+    | {
+        "namespace_declaration", "file_scoped_namespace_declaration",
+        "using_directive", "attribute",
+        "invocation_expression", "object_creation_expression",
+        "member_access_expression", "cast_expression",
+        "local_declaration_statement",
+    }
+)
+
 
 def symbol_kind_query_by(kind: str) -> str:
     """Return the search query_by string for a given symbol_kind.
@@ -106,6 +120,15 @@ def _find_all(node, predicate, results=None):
         # Reverse so leftmost children are processed first
         stack.extend(reversed(n.children))
     return results
+
+
+def _CsIndex(src: bytes, tree, wanted, collect_refs: bool = False) -> TreeIndex:
+    """C#-flavoured TreeIndex: feeds the right literal/identifier types."""
+    return TreeIndex(
+        src, tree, wanted,
+        literal_nodes=_LITERAL_NODES if collect_refs else None,
+        identifier_types=("identifier",) if collect_refs else (),
+    )
 
 
 def _text(node, src: bytes) -> str:
@@ -150,10 +173,10 @@ def _base_type_names(node, src: bytes) -> list:
     return names
 
 
-def _collect_ctor_names(root, src: bytes) -> list:
+def _collect_ctor_names(idx: "_CsIndex", src: bytes) -> list:
     """Return the type name from every 'new Foo(...)' expression in the AST."""
     names = []
-    for node in _find_all(root, lambda n: n.type == "object_creation_expression"):
+    for node in idx.of("object_creation_expression"):
         type_node = node.child_by_field_name("type")
         if type_node:
             idents = _find_all(type_node, lambda n: n.type == "identifier")
@@ -411,11 +434,9 @@ def _expand_type_refs(text: str) -> list:
 
 # ── Data extraction functions ─────────────────────────────────────────────────
 
-def _q_namespace(src, tree) -> str:
+def _q_namespace(src, idx: "_CsIndex") -> str:
     """Extract the primary namespace name."""
-    ns_nodes = _find_all(tree.root_node, lambda n: n.type in (
-        "namespace_declaration", "file_scoped_namespace_declaration"
-    ))
+    ns_nodes = idx.of("namespace_declaration", "file_scoped_namespace_declaration")
     if ns_nodes:
         name_node = ns_nodes[0].child_by_field_name("name")
         if name_node:
@@ -423,10 +444,10 @@ def _q_namespace(src, tree) -> str:
     return ""
 
 
-def _q_classes_data(src, tree) -> list:
+def _q_classes_data(src, idx: "_CsIndex") -> list:
     """Return list[ClassInfo] for all type declarations."""
     results = []
-    for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
+    for node in idx.of(*_TYPE_DECL_NODES):
         name_node = node.child_by_field_name("name")
         if not name_node:
             continue
@@ -437,10 +458,10 @@ def _q_classes_data(src, tree) -> list:
     return results
 
 
-def _q_methods_data(src, tree) -> list:
+def _q_methods_data(src, idx: "_CsIndex") -> list:
     """Return list[MethodInfo] for all member declarations."""
     results = []
-    for node in _find_all(tree.root_node, lambda n: n.type in _MEMBER_DECL_NODES):
+    for node in idx.of(*_MEMBER_DECL_NODES):
         ln = _line(node)
         if node.type == "field_declaration":
             type_txt = _field_type(node, src)
@@ -508,11 +529,10 @@ def _q_methods_data(src, tree) -> list:
     return results
 
 
-def _q_fields_data(src, tree) -> list:
+def _q_fields_data(src, idx: "_CsIndex") -> list:
     """Return list[FieldInfo] for all field and property declarations."""
     results = []
-    for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("field_declaration", "property_declaration")):
+    for node in idx.of("field_declaration", "property_declaration"):
         ln = _line(node)
         if node.type == "field_declaration":
             type_txt = _field_type(node, src)
@@ -533,10 +553,10 @@ def _q_fields_data(src, tree) -> list:
     return results
 
 
-def _q_usings_data(src, tree) -> list:
+def _q_usings_data(src, idx: "_CsIndex") -> list:
     """Return list[ImportInfo] for all using directives."""
     results = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "using_directive"):
+    for node in idx.of("using_directive"):
         full = _text(node, src).strip().rstrip(";")
         namespace = ""
         for child in node.named_children:
@@ -547,10 +567,10 @@ def _q_usings_data(src, tree) -> list:
     return results
 
 
-def _q_attrs_data(src, tree, attr_name=None) -> list:
+def _q_attrs_data(src, idx: "_CsIndex", attr_name=None) -> list:
     """Return list[AttrInfo] for all attribute decorators."""
     results = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "attribute"):
+    for node in idx.of("attribute"):
         name_node = node.child_by_field_name("name")
         if not name_node:
             continue
@@ -568,10 +588,10 @@ def _q_attrs_data(src, tree, attr_name=None) -> list:
     return results
 
 
-def _q_all_call_sites_data(src, tree) -> list:
+def _q_all_call_sites_data(src, idx: "_CsIndex") -> list:
     """Extract all call site method/function names for indexing."""
     names = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "invocation_expression"):
+    for node in idx.of("invocation_expression"):
         fn_node = node.child_by_field_name("function")
         if fn_node:
             if fn_node.type == "member_access_expression":
@@ -580,14 +600,14 @@ def _q_all_call_sites_data(src, tree) -> list:
                     names.append(_text(nn, src).strip())
             elif fn_node.type == "identifier":
                 names.append(_text(fn_node, src).strip())
-    names.extend(_collect_ctor_names(tree.root_node, src))
+    names.extend(_collect_ctor_names(idx, src))
     return names
 
 
-def _q_all_call_site_infos(src, tree) -> list:
+def _q_all_call_site_infos(src, idx: "_CsIndex") -> list:
     """Extract call sites as CallSiteInfo objects, capturing PascalCase receivers."""
     result = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "invocation_expression"):
+    for node in idx.of("invocation_expression"):
         fn_node = node.child_by_field_name("function")
         if fn_node:
             if fn_node.type == "member_access_expression":
@@ -598,31 +618,31 @@ def _q_all_call_site_infos(src, tree) -> list:
                     result.append(CallSiteInfo(name=_text(nn, src).strip(), receiver=receiver))
             elif fn_node.type == "identifier":
                 result.append(CallSiteInfo(name=_text(fn_node, src).strip()))
-    for name in _collect_ctor_names(tree.root_node, src):
+    for name in _collect_ctor_names(idx, src):
         result.append(CallSiteInfo(name=name))
     return result
 
 
-def _q_all_cast_types_data(src, tree) -> list:
+def _q_all_cast_types_data(src, idx: "_CsIndex") -> list:
     """Extract all cast target type strings for indexing."""
     types = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "cast_expression"):
+    for node in idx.of("cast_expression"):
         type_node = node.child_by_field_name("type")
         if type_node:
             types.append(_text(type_node, src).strip())
     return types
 
 
-def _q_all_member_accesses_data(src, tree) -> list:
+def _q_all_member_accesses_data(src, idx: "_CsIndex") -> list:
     """Extract non-invocation member access names for indexing."""
     _invocation_fn_ids = {
         id(node.child_by_field_name("function"))
-        for node in _find_all(tree.root_node, lambda n: n.type == "invocation_expression")
+        for node in idx.of("invocation_expression")
         if node.child_by_field_name("function") is not None
         and node.child_by_field_name("function").type == "member_access_expression"
     }
     names = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "member_access_expression"):
+    for node in idx.of("member_access_expression"):
         if id(node) not in _invocation_fn_ids:
             nn = node.child_by_field_name("name")
             if nn:
@@ -630,10 +650,10 @@ def _q_all_member_accesses_data(src, tree) -> list:
     return names
 
 
-def _q_all_local_types_data(src, tree) -> list:
+def _q_all_local_types_data(src, idx: "_CsIndex") -> list:
     """Extract all local variable type strings for indexing."""
     types = []
-    for node in _find_all(tree.root_node, lambda n: n.type == "local_declaration_statement"):
+    for node in idx.of("local_declaration_statement"):
         var_decl = next((c for c in node.children if c.type == "variable_declaration"), None)
         if var_decl:
             type_node = var_decl.child_by_field_name("type")
@@ -645,15 +665,15 @@ def _q_all_local_types_data(src, tree) -> list:
 # ── Query functions ────────────────────────────────────────────────────────────
 
 def q_classes(src, tree, lines):
-    return [(_r.line, _r.text) for _r in _q_classes_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _q_classes_data(src, _CsIndex(src, tree, _TYPE_DECL_NODES))]
 
 
 def q_methods(src, tree, lines):
-    return [(_r.line, _r.text) for _r in _q_methods_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _q_methods_data(src, _CsIndex(src, tree, _MEMBER_DECL_NODES))]
 
 
 def q_fields(src, tree, lines):
-    return [(_r.line, _r.text) for _r in _q_fields_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _q_fields_data(src, _CsIndex(src, tree, {"field_declaration", "property_declaration"}))]
 
 
 def q_calls(src, tree, lines, method_name):
@@ -840,11 +860,11 @@ def _q_uses_all(src, tree, lines, type_name):
 
 
 def q_attrs(src, tree, lines, attr_name=None):
-    return [(_r.line, _r.text) for _r in _q_attrs_data(src, tree, attr_name)]
+    return [(_r.line, _r.text) for _r in _q_attrs_data(src, _CsIndex(src, tree, {"attribute"}), attr_name)]
 
 
 def q_usings(src, tree, lines):
-    return [(_r.line, _r.text) for _r in _q_usings_data(src, tree)]
+    return [(_r.line, _r.text) for _r in _q_usings_data(src, _CsIndex(src, tree, {"using_directive"}))]
 
 
 def q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None):
@@ -1238,21 +1258,9 @@ def q_all_refs(src, tree, lines, name):
 
 def _collect_all_refs(src: bytes, tree) -> set[str]:
     """Deduped set of identifier texts from a parsed C# tree, excluding
-    identifiers inside literal nodes (strings, comments, char literals).
-
-    Single-pass walk that tracks "currently inside a literal" depth to avoid
-    O(N×D) parent-chain walks per identifier.
-    """
-    out: set[str] = set()
-    stack: list = [(tree.root_node, 0)]
-    while stack:
-        node, lit_depth = stack.pop()
-        new_depth = lit_depth + (1 if node.type in _LITERAL_NODES else 0)
-        if new_depth == 0 and node.type == "identifier":
-            out.add(_text(node, src))
-        for child in node.children:
-            stack.append((child, new_depth))
-    return out
+    identifiers inside literal nodes (strings, comments, char literals)."""
+    # No buckets needed — just the literal-aware identifier walk.
+    return _CsIndex(src, tree, set(), collect_refs=True).all_refs
 
 
 # ── Process function ──────────────────────────────────────────────────────────
@@ -1303,17 +1311,21 @@ def describe_cs_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         print(f"ERROR parsing C# source: {e}", file=sys.stderr)
         return FileDescription(language="cs")
 
+    # One tree walk shared by all extractors below. Buckets every type any
+    # extractor needs and collects literal-aware all_refs in the same pass.
+    idx = _CsIndex(src_bytes, tree, _DESCRIBE_NODE_TYPES, collect_refs=True)
+
     return FileDescription(
         language="cs",
-        classes=_q_classes_data(src_bytes, tree),
-        methods=_q_methods_data(src_bytes, tree),
-        fields=_q_fields_data(src_bytes, tree),
-        imports=_q_usings_data(src_bytes, tree),
-        attrs=_q_attrs_data(src_bytes, tree),
-        namespace=_q_namespace(src_bytes, tree),
-        call_site_infos=_q_all_call_site_infos(src_bytes, tree),
-        cast_infos=[CastInfo(target_type=t) for t in _q_all_cast_types_data(src_bytes, tree)],
-        local_var_infos=[LocalVarInfo(var_type=t) for t in _q_all_local_types_data(src_bytes, tree)],
-        member_access_infos=[MemberAccessInfo(member=m) for m in _q_all_member_accesses_data(src_bytes, tree)],
-        all_refs=_collect_all_refs(src_bytes, tree),
+        classes=_q_classes_data(src_bytes, idx),
+        methods=_q_methods_data(src_bytes, idx),
+        fields=_q_fields_data(src_bytes, idx),
+        imports=_q_usings_data(src_bytes, idx),
+        attrs=_q_attrs_data(src_bytes, idx),
+        namespace=_q_namespace(src_bytes, idx),
+        call_site_infos=_q_all_call_site_infos(src_bytes, idx),
+        cast_infos=[CastInfo(target_type=t) for t in _q_all_cast_types_data(src_bytes, idx)],
+        local_var_infos=[LocalVarInfo(var_type=t) for t in _q_all_local_types_data(src_bytes, idx)],
+        member_access_infos=[MemberAccessInfo(member=m) for m in _q_all_member_accesses_data(src_bytes, idx)],
+        all_refs=idx.all_refs,
     )

@@ -84,8 +84,11 @@ Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `PO
 | File | Responsibility |
 |------|---------------|
 | `query/cs.py`, `query/py.py`, `query/js.py`, `query/rust.py`, `query/cpp.py`, `query/sql.py` | Per-language tree-sitter AST functions and bytes-level mode handlers. |
+| `query/_util.py` | Shared dataclasses (`FileDescription`, `ClassInfo`, …) and `TreeIndex` — single-pass AST walker used by every language. |
 | `query/dispatch.py` | Pure query layer. `query_file(src_bytes, ext, mode, mode_arg, ...)`, `describe_file()`, `ALL_EXTS`. No backend dependency. |
 | `query/__main__.py` | CLI: `python -m query --mode methods --file Widget.cs`. JSON stdin mode also supported. |
+
+**`TreeIndex`** (in `query/_util.py`) walks the AST once with tree-sitter's C-level `TreeCursor`, buckets nodes into `nodes_by_type[type] → [nodes]`, and optionally collects literal-aware `all_refs` in the same pass. `describe_*_file` builds one index covering the union of types every extractor needs (5–10× faster than a per-extractor walk on large files); per-query wrappers (`q_classes`, `q_methods`, …) build a narrow index with just their target types so they pay the same cost as one targeted walk.
 
 ### Indexer
 
@@ -103,6 +106,7 @@ Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `PO
 | File | Responsibility |
 |------|---------------|
 | `scripts/search.py` | Standalone search CLI. Opens a read-only `Backend` and calls `indexserver.search.search()`. |
+| `scripts/parse_perf.py` | Profile parsing of one file: wall-clock + cProfile breakdown of `describe_file`. Useful for diagnosing slow files in the indexer. Usage: `python -m scripts.parse_perf <file> [--top N] [--runs N]`. |
 | `ts.mjs` | Daemon CLI: `start`/`stop`/`restart`/`status`/`index`/`verify`/`log`/`root`. Just spawns `tsquery_server.py` and posts to its API. |
 | `setup.mjs` | Creates `.client-venv`, registers MCP, installs the VS Code extension. |
 | `run_tests.mjs` | VS Code extension unit tests (no daemon required). |
