@@ -324,13 +324,20 @@ def rust_q_all_refs(src, tree, lines, name):
 
 def _collect_all_refs(src: bytes, tree) -> set[str]:
     """Deduped set of identifier/type-identifier texts from a parsed Rust tree,
-    excluding tokens inside literal nodes (strings, comments, char literals)."""
+    excluding tokens inside literal nodes (strings, comments, char literals).
+
+    Single-pass walk that tracks "currently inside a literal" depth to avoid
+    O(N×D) parent-chain walks per identifier.
+    """
     out: set[str] = set()
-    for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("identifier", "type_identifier")):
-        if _in_literal(node):
-            continue
-        out.add(_text(node, src).strip())
+    stack: list = [(tree.root_node, 0)]
+    while stack:
+        node, lit_depth = stack.pop()
+        new_depth = lit_depth + (1 if node.type in _LITERAL_NODES else 0)
+        if new_depth == 0 and node.type in ("identifier", "type_identifier"):
+            out.add(_text(node, src).strip())
+        for child in node.children:
+            stack.append((child, new_depth))
     out.discard("")
     return out
 

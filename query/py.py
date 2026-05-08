@@ -229,12 +229,20 @@ def py_q_ident(src, tree, lines, name):
 
 def _collect_all_refs(src: bytes, tree) -> set[str]:
     """Deduped set of identifier texts from a parsed Python tree, excluding
-    identifiers inside literal nodes (strings, comments)."""
+    identifiers inside literal nodes (strings, comments).
+
+    Single-pass walk that tracks "currently inside a literal" depth to avoid
+    O(N×D) parent-chain walks per identifier.
+    """
     out: set[str] = set()
-    for node in _find_all(tree.root_node, lambda n: n.type == "identifier"):
-        if _py_in_literal(node):
-            continue
-        out.add(_text(node, src))
+    stack: list = [(tree.root_node, 0)]
+    while stack:
+        node, lit_depth = stack.pop()
+        new_depth = lit_depth + (1 if node.type in _PY_LITERAL_NODES else 0)
+        if new_depth == 0 and node.type == "identifier":
+            out.add(_text(node, src))
+        for child in node.children:
+            stack.append((child, new_depth))
     return out
 
 

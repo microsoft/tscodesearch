@@ -192,8 +192,6 @@ def _ast_text(node, src: bytes) -> str:
     return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
 
-_SQL_LITERAL_NODES = {"comment", "marginalia", "string"}
-
 _AST_TYPE_DECL_NODES = {"create_table", "create_view", "alter_table"}
 
 _FUNCTION_DECL_NODES = {"create_function"}
@@ -203,15 +201,6 @@ _PROC_DECL_NODES = {"create_procedure"}
 
 def _ast_line(node) -> int:
     return node.start_point[0] + 1
-
-
-def _sql_in_literal(node) -> bool:
-    p = node.parent
-    while p:
-        if p.type in _SQL_LITERAL_NODES:
-            return True
-        p = p.parent
-    return False
 
 
 def _object_name(node, src: bytes) -> str:

@@ -327,13 +327,21 @@ def js_q_all_refs(src, tree, lines, name):
 def _collect_all_refs(src: bytes, tree) -> set[str]:
     """Deduped set of identifier/type-identifier texts from a parsed JS/TS tree,
     excluding tokens inside literal nodes (strings, template strings, comments,
-    regex literals)."""
+    regex literals).
+
+    Single-pass tree walk that tracks "currently inside a literal" depth.
+    The naive implementation called _in_literal (parent-chain walk) for every
+    identifier — O(N×D) and pathological on deeply-nested minified JS.
+    """
     out: set[str] = set()
-    for node in _find_all(tree.root_node,
-                          lambda n: n.type in ("identifier", "type_identifier")):
-        if _in_literal(node):
-            continue
-        out.add(_text(node, src).strip())
+    stack: list = [(tree.root_node, 0)]
+    while stack:
+        node, lit_depth = stack.pop()
+        new_depth = lit_depth + (1 if node.type in _LITERAL_NODES else 0)
+        if new_depth == 0 and node.type in ("identifier", "type_identifier"):
+            out.add(_text(node, src).strip())
+        for child in node.children:
+            stack.append((child, new_depth))
     out.discard("")
     return out
 
