@@ -26,28 +26,14 @@ sys.path.insert(0, str(_REPO))
 
 from mcp.server.fastmcp import FastMCP
 from query.dispatch import query_file
-from indexserver.config import normalize_path
+from indexserver.config import Root, load_config, normalize_path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-def _load_config() -> dict:
-    cfg_path = _REPO / "config.json"
-    try:
-        raw = json.loads(cfg_path.read_text())
-    except Exception as e:
-        raise RuntimeError(f"Cannot read config.json at {cfg_path}: {e}")
-    if "port" not in raw:
-        raise RuntimeError(f"'port' is required in {cfg_path}")
-    return {
-        "api_key": raw.get("api_key", "codesearch-local"),
-        "port":    int(raw["port"]),
-        "roots":   raw.get("roots", {}),
-    }
-
-_cfg      = _load_config()
-_API_PORT = _cfg["port"]
-_API_KEY  = _cfg["api_key"]
-_ROOTS    = _cfg["roots"]
+_cfg      = load_config()
+_API_PORT = _cfg.port
+_API_KEY  = _cfg.api_key
+_ROOTS    = _cfg.roots  # dict[str, Root]
 
 _MAX_OUTPUT_CHARS     = 40_000
 _QUERY_CODEBASE_LIMIT = 250
@@ -63,7 +49,7 @@ _PER_FILE_DETAIL_LINES  = 10
 
 def _http(method: str, path: str, body=None, timeout: int = 120):
     url     = f"http://localhost:{_API_PORT}{path}"
-    headers = {"X-TYPESENSE-API-KEY": _API_KEY}
+    headers = {"X-API-KEY": _API_KEY}
     data    = None
     if body is not None:
         data = json.dumps(body).encode()
@@ -86,17 +72,20 @@ def _post(path: str, body: dict, timeout: int = 120):
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
-def _collection_for_root(name: str) -> str:
-    return "codesearch_" + re.sub(r"[^a-z0-9_]", "_", name.lower())
+def _resolve_root(name: str) -> Root:
+    """Resolve a root name to a ``Root`` object.
 
-def _get_root(name: str) -> tuple[str, str]:
-    effective = name or ("default" if "default" in _ROOTS else next(iter(_ROOTS), ""))
-    if not effective or effective not in _ROOTS:
+    Empty name resolves to ``"default"`` or the first configured root. Raises
+    ``ValueError`` with a clear message when no roots are configured at all,
+    or when the requested name isn't known.
+    """
+    if not _ROOTS:
+        raise ValueError("No roots configured. Run: ts root --add NAME PATH")
+    try:
+        return _cfg.get_root(name)
+    except ValueError:
         available = ", ".join(sorted(_ROOTS))
         raise ValueError(f"Unknown root '{name}'. Available: {available}")
-    entry = _ROOTS[effective]
-    ext_path = entry.get("path", "") if isinstance(entry, dict) else entry
-    return _collection_for_root(effective), ext_path
 
 def _to_windows_path(file_path: str) -> str:
     """Resolve a tool-input file path to an absolute Windows-style path.
@@ -104,11 +93,10 @@ def _to_windows_path(file_path: str) -> str:
     Accepts an absolute drive path (``C:/...``) or a path relative to the
     default root (with optional ``${SRC_ROOT}`` / ``$SRC_ROOT`` prefix).
     """
-    default_entry  = _ROOTS.get("default") or (next(iter(_ROOTS.values()), None))
-    default_root   = ""
-    if default_entry:
-        ep = default_entry.get("path", "") if isinstance(default_entry, dict) else default_entry
-        default_root = normalize_path(ep).rstrip("/")
+    default_root = ""
+    if _ROOTS:
+        default = _ROOTS.get("default") or next(iter(_ROOTS.values()))
+        default_root = normalize_path(default.path).rstrip("/")
 
     p = normalize_path(file_path)
     p = p.replace("${SRC_ROOT}", default_root).replace("$SRC_ROOT", default_root)
@@ -234,6 +222,23 @@ Args:
                 (call vs declaration vs cast vs param type) you're after.
                 Prefer a more specific mode (calls, declarations, uses, etc.)
                 when you do.
+                Each mode expects a specific *kind* of identifier in `pattern`,
+                and silently returns empty if you pass the wrong kind:
+                  - `calls` wants a METHOD name (e.g. "SaveChanges"). Passing a
+                    variable/receiver name (e.g. "blobStore") matches almost
+                    nothing — it only fires if that name is invoked directly
+                    as `blobStore(...)`, not on `blobStore.Method()` calls.
+                    To find every usage of a variable, use `all_refs` on the
+                    variable name.
+                  - `accesses_on` wants a TYPE name (e.g. "IRepository"). It
+                    finds `.Member`/`?.Member` accesses on locals/params/fields
+                    of that type, plus `new T { Prop = … }` initializers and
+                    `with` mutations. It returns NOTHING when the variable is
+                    only assigned, returned, or forwarded as an argument (no
+                    `.Member` exists). When `accesses_on` is empty but you know
+                    the variable exists, fall back to `all_refs` on the
+                    variable name.
+                  - `accesses_of` wants a MEMBER name (e.g. "Timeout").
   pattern:      A single identifier. Examples that DO work: "BlobStore",
                 "SaveChanges", "IDataStore". Examples that do NOT work:
                 "using BlobStore", "(BlobStore)", "Save Changes",
@@ -466,7 +471,19 @@ Args:
              specific mode (calls, declarations, uses, etc.) when you know the
              role you're after. Do NOT pass a multi-word pattern to text — it
              will return zero matches; reach for grep instead.
-  pattern: Type/method/name to search for. Omit for listing modes.
+  pattern: Type/method/name to search for. Omit for listing modes. Each
+           pattern-required mode expects a specific *kind* of identifier and
+           silently returns empty if you pass the wrong kind:
+             - `calls` expects a METHOD name. Passing a variable/receiver name
+               returns empty — `obj.Method()` is matched by `calls("Method")`,
+               not by `calls("obj")`. Use `all_refs` on the variable name
+               instead to find every usage of that variable.
+             - `accesses_on` expects a TYPE name and finds `.Member` accesses
+               on variables of that type. Returns NOTHING when the variable is
+               only assigned, returned, or forwarded as an argument (no
+               `.Member` access exists). Fall back to `all_refs` on the
+               variable name when this happens.
+             - `accesses_of` expects a MEMBER name.
   file:    Absolute path to the file. Accepts Windows paths (C:/…) or
            $SRC_ROOT-prefixed paths. Relative paths are NOT supported.
   context_lines: Surrounding source lines per match.
@@ -487,7 +504,7 @@ Examples:
         return "file= is required."
 
     try:
-        _, src_root = _get_root(root)
+        src_root = _resolve_root(root).path
     except ValueError as e:
         return f"Error: {e}"
 
@@ -514,7 +531,16 @@ Examples:
     if not matches:
         return header + "No matches found."
 
-    all_lines  = [f"{rel}:{r['line']}: {(r.get('text') or '').rstrip()}" for r in matches]
+    def _fmt_line(r: dict) -> str:
+        # Listing modes (methods/classes/fields) include end_line for scope ranges
+        # so callers can Read the body precisely. Pattern modes emit point
+        # matches without end_line.
+        text = (r.get("text") or "").rstrip()
+        end  = r.get("end_line")
+        loc  = f"{r['line']}-{end}" if end else f"{r['line']}"
+        return f"{rel}:{loc}: {text}"
+
+    all_lines  = [_fmt_line(r) for r in matches]
     total      = len(all_lines)
     page_start = min(offset, total)
     page_end   = min(page_start + head_limit, total)
@@ -546,9 +572,11 @@ ready() or verify_index(action='status') until complete.
 Args:
   root: Named source root to check (empty = default root)."""
     try:
-        collection, _ = _get_root(root)
+        r = _resolve_root(root)
     except ValueError as e:
         return f"Error: {e}"
+    collection = r.collection
+    root_name  = r.name
 
     try:
         status, st = _get("/status")
@@ -557,8 +585,7 @@ Args:
     except Exception as e:
         return f"Indexserver is NOT running: {e}\nStart it with: ts start"
 
-    root_name = root or ("default" if "default" in _ROOTS else next(iter(_ROOTS), ""))
-    col_info  = (st.get("collections") or {}).get(root_name, {})
+    col_info = (st.get("collections") or {}).get(root_name, {})
     ndocs     = col_info.get("num_documents")
     lines     = []
 
@@ -629,7 +656,7 @@ Returns:
 """
     try:
         if root:
-            _get_root(root)
+            _resolve_root(root)
     except ValueError as e:
         return f"Error: {e}"
 
@@ -739,9 +766,10 @@ Args:
 
     if act == "start":
         try:
-            collection, src_root = _get_root(root)
+            r = _resolve_root(root)
         except ValueError as e:
             return f"Error: {e}"
+        collection, src_root = r.collection, r.path
         status, data = _post("/verify/start", {"root": root or "default", "delete_orphans": delete_orphans})
         if status == 409:
             return "A verification scan is already running.\nUse action='status' to monitor, or action='stop' to cancel."
@@ -777,7 +805,7 @@ Args:
 
     for root_name in root_names:
         try:
-            coll_name, _ = _get_root(root_name)
+            coll_name = _resolve_root(root_name).collection
         except ValueError as e:
             lines.append(f"Error: {e}")
             continue

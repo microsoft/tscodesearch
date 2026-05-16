@@ -163,7 +163,10 @@ def run_verify(cfg, src_root: str | None = None,
     if on_progress: on_progress(progress)
 
     remaining: set[str] = set(index_map)
-    to_update: list[tuple[str, str]] | None = [] if queue is None else None
+    # to_update collects pairs only when no queue was passed in; when ``queue``
+    # is supplied the caller wants enqueue-on-the-fly, but we still keep the
+    # list around for the post-walk totals — just leave it empty.
+    to_update: list[tuple[str, str]] = []
     n_enqueued = 0
     n_fs = 0
     last_scan_print = time.time()
@@ -303,7 +306,7 @@ def run_verify(cfg, src_root: str | None = None,
                 last_print = now
 
         total_indexed, total_errors = index_file_list(
-            backend, to_update, coll_name,
+            backend, to_update,
             batch_size=BATCH_SIZE,
             on_progress=_on_progress,
             stop_event=stop_event,

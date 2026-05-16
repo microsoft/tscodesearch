@@ -281,10 +281,10 @@ describe('doQueryCodebase', () => {
         assert.equal(capturedMethod, 'POST');
     });
 
-    it('sends X-TYPESENSE-API-KEY header', async () => {
+    it('sends X-API-KEY header', async () => {
         let capturedKey = '';
         mockHandler = (_, headers) => {
-            capturedKey = headers['x-typesense-api-key'] as string;
+            capturedKey = headers['x-api-key'] as string;
             return { status: 200, body: { found: 0, overflow: false, hits: [], facet_counts: [] } };
         };
         const cfg = makeCfg();
@@ -633,10 +633,10 @@ describe('doQuerySingleFile', () => {
         assert.deepEqual(matches, []);
     });
 
-    it('sends X-TYPESENSE-API-KEY header', async () => {
+    it('sends X-API-KEY header', async () => {
         let capturedKey = '';
         mockHandler = (_, headers) => {
-            capturedKey = headers['x-typesense-api-key'] as string;
+            capturedKey = headers['x-api-key'] as string;
             return { status: 200, body: { results: [] } };
         };
         const cfg = makeCfg();

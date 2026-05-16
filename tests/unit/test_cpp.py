@@ -1,10 +1,10 @@
 """
 Tests for C/C++ support: extract_metadata and query_cpp functions.
 
-No server needed — all tests run against sample/root1/query_fixture.cpp.
+No daemon needed — all tests run against sample/root1/query_fixture.cpp.
 
-Run from WSL:
-    ~/.local/indexserver-venv/bin/pytest tests/unit/test_cpp.py -v
+Run:
+    .client-venv/Scripts/python.exe -m pytest tests/unit/test_cpp.py -v
 """
 
 import os

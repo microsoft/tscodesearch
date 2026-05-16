@@ -1,7 +1,7 @@
 """
-Integration tests for the verifier against a live Typesense instance.
+Integration tests for the verifier against a live Tantivy index.
 
-TestVerifier — requires Typesense to be running.
+TestVerifier — opens a real Tantivy index inline; no daemon required.
 """
 from __future__ import annotations
 import os, sys, shutil, time, unittest
@@ -22,7 +22,7 @@ _cfg = _load_config()
 
 
 class TestVerifier(unittest.TestCase):
-    """Integration tests for run_verify against a live Typesense instance."""
+    """Integration tests for run_verify against a live Tantivy index."""
 
     @classmethod
     def setUpClass(cls):
@@ -44,7 +44,7 @@ class TestVerifier(unittest.TestCase):
 
     def _get(self, filename: str) -> dict | None:
         hits = _search(self.coll, os.path.splitext(filename)[0],
-                       query_by="filename,class_names,method_names,tokens")
+                       query_by="path_tokens,class_names,method_names,tokens")
         return next((h for h in hits if h["filename"] == filename), None)
 
     # ── no-op: index is already up to date ────────────────────────────────────
@@ -91,7 +91,7 @@ class TestVerifier(unittest.TestCase):
         time.sleep(0.5)
 
         hits = _search(self.coll, "FooModified",
-                       query_by="class_names,tokens,filename")
+                       query_by="class_names,tokens,path_tokens")
         names = [h["filename"] for h in hits]
         self.assertIn("foo.cs", names, "Modified foo.cs should be re-indexed")
 

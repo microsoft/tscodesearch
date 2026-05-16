@@ -23,11 +23,11 @@ Management API via curl (read key/port from config.json — never hard-code):
 API_KEY=$(node -e "const c=require('./config.json'); process.stdout.write(c.api_key)")
 API_PORT=$(node -e "const c=require('./config.json'); process.stdout.write(String(c.port??8108))")
 curl -s -X POST http://localhost:$API_PORT/query-codebase \
-  -H "Content-Type: application/json" -H "X-TYPESENSE-API-KEY: $API_KEY" \
+  -H "Content-Type: application/json" -H "X-API-KEY: $API_KEY" \
   -d '{"mode":"declarations","pattern":"SaveChanges","root":""}' | python -m json.tool
 ```
 
-The `X-TYPESENSE-API-KEY` header name is kept for backwards compatibility with existing callers; the daemon checks any value matches `config.json`'s `api_key`.
+The daemon authenticates every request by matching the `X-API-KEY` header against `config.json`'s `api_key`. The daemon's HTTP server binds `localhost` only, but the key still matters: any process on the same machine (browser background pages, other dev tools, a malicious dependency) can reach `localhost:PORT`. Requiring a shared secret means a random local process can't query or mutate the index without first reading `config.json`.
 
 ## CRITICAL: host-side orchestration scripts must be Node.js
 
@@ -136,11 +136,11 @@ There is **no longer a WSL or indexserver venv** — Tantivy runs in-process in 
 {
   "api_key": "codesearch-local",
   "port": 8108,
-  "roots": { "default": "C:/myproject/src" }
+  "roots": { "default": { "path": "C:/myproject/src" } }
 }
 ```
 
-`port` is the daemon's HTTP API port (single port, no Typesense+1). Roots use Windows paths (`C:/...`). `collection_for_root(name)` → `"codesearch_{sanitized_name}"` (default → `codesearch_default`). Each collection's index lives at `<repo>/.tantivy/<collection>/`.
+`port` is the daemon's HTTP API port (single port, no Typesense+1). Roots use Windows paths (`C:/...`). Root entries can be either `{"path": "..."}` objects (what `setup.mjs` and `ts root --add` write) or bare strings (`"C:/..."`); both are parsed by `_parse_roots` in `indexserver/config.py`. `collection_for_root(name)` → `"codesearch_{sanitized_name}"` (default → `codesearch_default`). Each collection's index lives at `<repo>/.tantivy/<collection>/`.
 
 ---
 
@@ -157,20 +157,48 @@ There is **no longer a WSL or indexserver venv** — Tantivy runs in-process in 
 
 ## Backend schema — search mode mapping
 
+The daemon ignores any caller-supplied `query_by`/`weights` for `/query-codebase` and resolves them server-side from the mode (see `_resolve_query_params` in `tsquery_server.py`).
+
 | Mode | `query_by` field(s) | Notes |
 |------|---------------------|-------|
-| `declarations` | `member_sigs`, `method_names`, `filename` | Precise [T1] |
-| `implements` | `base_types`, `class_names`, `filename` | Precise [T1] |
-| `calls` | `call_sites`, `filename` | Precise [T1] |
-| `uses` | `type_refs`, `class_names`, `filename` | Broader [T2] |
-| `attrs` | `attr_names`, `filename` | Broader [T2] |
-| `all_refs` | `filename`, `class_names`, `method_names`, `tokens` | Broadest |
-| `accesses_on` | `type_refs`, `filename` | Member accesses on type instances |
-| `accesses_of` | `member_accesses`, `filename` | Access sites of a property/field name |
+| `declarations` (default) | `class_names`, `method_names`, `path_tokens` | [T1] — narrowed by `symbol_kind`: type kinds → `class_names,path_tokens`; member kinds → `method_names,path_tokens` |
+| `implements` | `base_types`, `class_names`, `path_tokens` | [T1] |
+| `calls` | `call_sites`, `path_tokens` | [T1] |
+| `uses` (default) | `type_refs`, `cast_types`, `path_tokens` | [T2] — narrowed by `uses_kind` (see below) |
+| `uses` `uses_kind=field` | `field_types`, `path_tokens` | [T1] |
+| `uses` `uses_kind=param` | `param_types`, `path_tokens` | [T1] |
+| `uses` `uses_kind=return` | `return_types`, `path_tokens` | [T1] |
+| `uses` `uses_kind=cast` | `cast_types`, `path_tokens` | [T1] |
+| `uses` `uses_kind=base` | `base_types`, `class_names`, `path_tokens` | [T1] |
+| `uses` `uses_kind=locals` | `local_types`, `path_tokens` | [T1] |
+| `casts` | `cast_types`, `path_tokens` | [T1] |
+| `attrs` | `attr_names`, `path_tokens` | [T1] |
+| `accesses_on` | `type_refs`, `cast_types`, `path_tokens` | Shares the `uses` resolver, then AST narrows to `.Member` accesses on instances of the type |
+| `accesses_of` | `member_accesses`, `path_tokens` | [T1] |
+| `all_refs` | `path_tokens`, `class_names`, `method_names`, `tokens` | Broadest — index pre-filter only; AST then matches every identifier occurrence |
 
-T1 = precise tree-sitter extractions. T2 = broader, minor false positives possible.
+T1 = precise tree-sitter extractions. T2 = broader, minor false positives possible (AST post-filter then drops index false positives).
 
-`tokens` is the per-file deduped bag of identifiers extracted by the same tree-sitter walk that drives `all_refs` — identifiers inside string literals, char literals, and comments are excluded. The structural fields (`class_names`, `method_names`, `member_sigs`, `type_refs`, `call_sites`, `member_accesses`, etc.) are also pre-split per-language by the AST extractors, so each entry stored in the index is a single identifier.
+### Tokenizer and storage choices
+
+Every text field uses the **`raw`** tokenizer: each entry is one verbatim term (case-sensitive, no underscore splitting, no length limit). The indexer does all domain-aware splitting before storing — long identifiers like `InitializeNotificationHistoryAcrossDataCentersUSA` stay whole, `add_text_field` is one token, and `Acme.Billing.Service` is stored as three `namespace` entries (`Acme`, `Billing`, `Service`).
+
+Only a small set of fields is `stored=True` (retrievable from the index at search time):
+
+| Stored field | Purpose |
+|--------------|---------|
+| `id` | Primary key for upsert/delete. |
+| `relative_path` | Returned to every caller so they know which file matched. |
+| `filename` | Basename (e.g. `Foo.cs`) — used for display. |
+| `extension`, `language` | Used as exact-match filter terms (`extension:=cs`) and for status output. |
+| `path_segments` | Cumulative ancestor folders for the `sub=` filter (`["services", "services/billing"]`). |
+| `mtime` | Read by the verifier to diff fs vs. index. |
+
+Every other text field — `class_names`, `method_names`, `base_types`, `field_types`, `local_types`, `param_types`, `return_types`, `cast_types`, `type_refs`, `call_sites`, `member_accesses`, `attr_names`, `usings`, `namespace`, `tokens`, `path_tokens`, `member_sig_tokens` — is `stored=False`. The fields are indexed for search but never read back from the index. The daemon's pipeline pre-filters with Tantivy then runs tree-sitter on the candidate files, and the AST output is what carries line-level results all the way to the caller.
+
+`path_tokens` collects every directory name plus the filename, the filename stem, and the extension for one file — so a search for `billing` finds every file under any `billing/` directory at any depth, and a search for `Foo` matches `Foo.cs`. `namespace` is a multi-value field; the indexer splits on `.` for C#/Python/Java/JS (other languages can return a pre-split list from their extractor). `member_sig_tokens` is every identifier appearing in any member signature — attribute names, parameter names, generic args, default-value identifiers — collected by each language's AST extractor walking the member node and skipping the body. The legacy `member_sigs` (full signature strings) field is gone; the structured fields (`method_names`, `return_types`, `param_types`, `class_names`) plus `member_sig_tokens` cover the same searches.
+
+`tokens` is the per-file deduped bag of every identifier — identifiers inside string literals, char literals, and comments are excluded.
 
 ## tree-sitter query modes
 
@@ -181,12 +209,12 @@ T1 = precise tree-sitter extractions. T2 = broader, minor false positives possib
 | `classes`, `methods`, `fields`, `usings` | — | Listing *(query_single_file only)* |
 | `params` | METHOD | Parameter list *(query_single_file only)* |
 | `declarations` | NAME | Declaration of method/type |
-| `calls` | METHOD | Call sites. `"Repo.Save"` restricts by receiver. |
+| `calls` | METHOD | Call sites. `"Repo.Save"` restricts by receiver. Pattern is a METHOD name only — a variable/receiver name (e.g. `"repo"`) silently returns empty; use `all_refs` on the variable for that. |
 | `implements` | TYPE | Types that inherit/implement TYPE |
 | `uses` | TYPE | Type references. Narrow with `uses_kind`. |
 | `casts` | TYPE | `(TYPE)expr` casts |
 | `all_refs` | NAME | Every identifier occurrence |
-| `accesses_on` | TYPE | `.Member` accesses on locals typed as TYPE |
+| `accesses_on` | TYPE | `.Member` accesses on locals/params/fields typed as TYPE (plus `new T { … }` and `with` mutations). Returns nothing when the variable is only assigned, returned, or forwarded as an argument — no `.Member` exists. Fall back to `all_refs` on the variable name. |
 | `accesses_of` | MEMBER | Access sites of property/field. `"Order.Status"` restricts. |
 | `attrs` | NAME? | `[Attribute]` decorators |
 

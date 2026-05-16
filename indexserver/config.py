@@ -78,10 +78,6 @@ class Root:
         r = normalize_path(rel).lstrip("/")
         return self.path.rstrip("/") + "/" + r
 
-    # Back-compat alias used by older callers; identical to ``to_local`` now.
-    def to_external(self, rel: str) -> str:
-        return self.to_local(rel)
-
 
 # ── Config ────────────────────────────────────────────────────────────────────
 

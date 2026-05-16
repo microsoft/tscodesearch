@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import unittest
 
-from tsquery_server import _build_filter_by
+from indexserver.search_modes import build_filter_by
 
 
 def _build_filter(ext=None, sub=None, exclude_path=None):
     """Return the filter_by string production code emits for the given args."""
-    return _build_filter_by(ext or "", sub or "", exclude_path or "")
+    return build_filter_by(ext or "", sub or "", exclude_path or "")
 
 
 class TestExtFilterExpansion(unittest.TestCase):
@@ -72,7 +72,7 @@ class TestExtFilterExpansion(unittest.TestCase):
         self.assertIn("h", f)
 
     def test_cpp_uses_multi_value_syntax(self):
-        """Multiple extensions must use Typesense array syntax extension:=[...]."""
+        """Multiple extensions must use the array syntax extension:=[...]."""
         f = self._filter("cpp")
         self.assertIn("extension:=[", f)
 

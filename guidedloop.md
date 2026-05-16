@@ -181,9 +181,13 @@ namespace Sample
 }
 ```
 
-After adding a fixture file, update the doc-count assertion in
-`test_sample_e2e.py` (`test_collection_has_ten_files` and
-`test_root1_doc_count_equals_nine`) to reflect the new total.
+The doc-count assertions in `tests/integration/test_sample_e2e.py`
+(`test_collection_has_ten_files`, `test_collection_has_five_files`,
+`test_root1_doc_count_equals_nine`) are computed dynamically by
+`_count_sample_files()`, which walks the fixture directory using the indexer's
+own filter rules. Adding a new fixture file does NOT require updating these
+assertions — the expected count adjusts automatically. The names are kept
+for git-history continuity; ignore the literal numbers in the test names.
 
 ---
 

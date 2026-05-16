@@ -1,7 +1,12 @@
 """
-Integration tests for Python support: Typesense indexing of Python semantic fields.
+Integration tests for Python field discrimination.
 
-TestPySemanticFields — requires Typesense to be running.
+The fixtures position one identifier (``IFoo`` for type usage; ``process`` for
+method/call) in exactly one structural role per file. Each search-by-field
+test asserts the file with that role comes back and the files that mention
+the identifier in other roles do not.
+
+TestPySemanticFieldDiscrim — end-to-end against a real Tantivy index.
 """
 from __future__ import annotations
 import os, sys, shutil, time, unittest
@@ -12,7 +17,6 @@ if _root not in sys.path:
 
 from tests.helpers import (
     _assert_server_ok, _search, _delete_collection, _make_git_repo,
-    _FOO_PY, _BAR_PY,
 )
 from indexserver.config import load_config as _load_config
 from indexserver.indexer import run_index
@@ -20,17 +24,77 @@ from indexserver.indexer import run_index
 _cfg = _load_config()
 
 
-class TestPySemanticFields(unittest.TestCase):
-    """Verify that Python files get their semantic fields indexed by Typesense."""
+# ── Fixtures: each file places identifiers in exactly one role ───────────────
+
+_BASE_IMPLEMENTOR_PY = """\
+import os
+
+class IFoo:
+    def process(self, data: str) -> None:
+        pass
+
+class Implementor(IFoo):
+    def process(self, data: str) -> None:
+        print(data)
+"""
+
+_CALLER_PY = """\
+from app.impl import Implementor
+
+class Caller:
+    def __init__(self, target: Implementor) -> None:
+        self._target = target
+
+    def run(self) -> None:
+        self._target.process("hello")
+"""
+
+_DECORATED_PY = """\
+def dataclass(cls):
+    return cls
+
+@dataclass
+class Decorated:
+    name: str = ""
+"""
+
+_IMPORTER_PY = """\
+import json
+from typing import Optional
+
+class JsonHelper:
+    def encode(self, obj) -> Optional[str]:
+        return json.dumps(obj)
+"""
+
+_STRING_MENTION_PY = """\
+class StringMention:
+    description = "implements IFoo for cleanup"
+    note = "calls process at runtime"
+"""
+
+_UNRELATED_PY = """\
+class Unrelated:
+    greeting = "hello"
+"""
+
+
+class TestPySemanticFieldDiscrim(unittest.TestCase):
+    """Search by each field for a known identifier and assert which Python
+    file comes back. No re-parsing on the test side."""
 
     @classmethod
     def setUpClass(cls):
         _assert_server_ok()
         stamp = int(time.time())
-        cls.coll = f"test_pysem_{stamp}"
+        cls.coll = f"test_py_discrim_{stamp}"
         cls.tmpdir = _make_git_repo({
-            "myapp/foo.py": _FOO_PY,
-            "myapp/bar.py": _BAR_PY,
+            "app/impl.py":           _BASE_IMPLEMENTOR_PY,
+            "app/caller.py":         _CALLER_PY,
+            "app/decorated.py":      _DECORATED_PY,
+            "app/importer.py":       _IMPORTER_PY,
+            "app/string_mention.py": _STRING_MENTION_PY,
+            "app/unrelated.py":      _UNRELATED_PY,
         })
         run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
@@ -40,60 +104,86 @@ class TestPySemanticFields(unittest.TestCase):
         _delete_collection(cls.coll)
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
-    def _get(self, filename):
-        hits = _search(self.coll, os.path.splitext(filename)[0],
-                       query_by="filename,class_names,method_names,tokens")
-        return next((h for h in hits if h["filename"] == filename), None)
+    def _files(self, q: str, query_by: str) -> set:
+        hits = _search(self.coll, q, query_by=query_by, per_page=20)
+        return {h["filename"] for h in hits}
 
-    def test_py_class_names_indexed(self):
-        foo = self._get("foo.py")
-        self.assertIsNotNone(foo)
-        self.assertIn("Foo", foo.get("class_names", []))
+    # ── class_names: only declared classes ────────────────────────────────────
 
-    def test_py_method_names_indexed(self):
-        foo = self._get("foo.py")
-        self.assertIsNotNone(foo)
-        self.assertIn("process", foo.get("method_names", []))
+    def test_class_names_finds_declaring_file(self):
+        # ``Implementor`` is declared in impl.py and used as a param type in
+        # caller.py. class_names should match only the declaring file.
+        self.assertEqual(self._files("Implementor", "class_names"),
+                         {"impl.py"})
 
-    def test_py_base_types_indexed(self):
-        foo = self._get("foo.py")
-        self.assertIsNotNone(foo)
-        self.assertIn("IFoo", foo.get("base_types", []))
+    # ── method_names: only declared methods ───────────────────────────────────
 
-    def test_py_subclass_base_types_indexed(self):
-        bar = self._get("bar.py")
-        self.assertIsNotNone(bar)
-        self.assertIn("Foo", bar.get("base_types", []))
+    def test_method_names_finds_only_declaring_files(self):
+        # Both ``IFoo`` and ``Implementor`` (in impl.py) declare ``process``.
+        # caller.py CALLS ``process`` but doesn't define it.
+        self.assertEqual(self._files("process", "method_names"),
+                         {"impl.py"})
 
-    def test_py_call_sites_indexed(self):
-        bar = self._get("bar.py")
-        self.assertIsNotNone(bar)
-        self.assertIn("process", bar.get("call_sites", []))
+    # ── base_types: subclass-of relationship ──────────────────────────────────
 
-    def test_py_decorators_in_attr_names(self):
-        foo = self._get("foo.py")
-        self.assertIsNotNone(foo)
-        self.assertIn("dataclass", foo.get("attr_names", []))
+    def test_base_types_finds_only_subclass(self):
+        # ``Implementor(IFoo)`` is the only subclass relation referencing IFoo.
+        self.assertEqual(self._files("IFoo", "base_types"),
+                         {"impl.py"})
 
-    def test_py_imports_in_usings(self):
-        foo = self._get("foo.py")
-        self.assertIsNotNone(foo)
-        self.assertIn("os", foo.get("usings", []))
+    # ── call_sites: only the call expression ──────────────────────────────────
 
-    def test_py_base_types_searchable_via_index(self):
-        hits = _search(self.coll, "IFoo", query_by="base_types,class_names,filename")
-        names = [h["filename"] for h in hits]
-        self.assertIn("foo.py", names)
+    def test_call_sites_finds_only_caller(self):
+        # caller.py calls .process(); impl.py declares it.
+        self.assertEqual(self._files("process", "call_sites"),
+                         {"caller.py"})
 
-    def test_py_call_sites_searchable_via_index(self):
-        hits = _search(self.coll, "process", query_by="call_sites,filename")
-        names = [h["filename"] for h in hits]
-        self.assertIn("bar.py", names)
+    # ── attr_names: only decorator usages ─────────────────────────────────────
 
-    def test_py_member_sigs_searchable_via_index(self):
-        hits = _search(self.coll, "process", query_by="member_sigs,method_names,filename")
-        names = [h["filename"] for h in hits]
-        self.assertIn("foo.py", names)
+    def test_attr_names_finds_only_decorated_file(self):
+        self.assertEqual(self._files("dataclass", "attr_names"),
+                         {"decorated.py"})
+
+    # ── usings: only the importing file ───────────────────────────────────────
+
+    def test_usings_finds_only_importer(self):
+        self.assertEqual(self._files("json", "usings"),
+                         {"importer.py"})
+
+    def test_usings_excludes_files_without_that_import(self):
+        # impl.py imports os, not json. caller.py imports app.impl, not json.
+        files = self._files("os", "usings")
+        self.assertEqual(files, {"impl.py"},
+            f"only impl.py imports os, got {files}")
+
+    # ── string-literal mentions don't leak into structured fields ─────────────
+
+    def test_string_mentions_excluded_from_structured_fields(self):
+        for field in ("class_names", "method_names", "base_types",
+                      "call_sites", "attr_names", "usings", "tokens"):
+            self.assertNotIn(
+                "string_mention.py", self._files("IFoo", field),
+                f"string_mention.py leaked into {field} (string literal)",
+            )
+            self.assertNotIn(
+                "string_mention.py", self._files("process", field),
+                f"string_mention.py leaked into {field} (string literal)",
+            )
+
+    # ── unrelated files never come back ───────────────────────────────────────
+
+    def test_unrelated_file_excluded_from_every_search(self):
+        for ident, field in (
+            ("IFoo",        "base_types"),
+            ("process",     "method_names"),
+            ("Implementor", "class_names"),
+            ("dataclass",   "attr_names"),
+            ("json",        "usings"),
+        ):
+            self.assertNotIn(
+                "unrelated.py", self._files(ident, field),
+                f"unrelated.py should not appear for {ident}/{field}",
+            )
 
 
 if __name__ == "__main__":

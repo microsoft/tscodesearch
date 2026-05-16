@@ -210,7 +210,7 @@ export async function doQueryCodebase(
                 path: '/query-codebase',
                 method: 'POST',
                 headers: {
-                    'X-TYPESENSE-API-KEY': apiKey,
+                    'X-API-KEY': apiKey,
                     'Content-Type': 'application/json',
                     'Content-Length': Buffer.byteLength(body),
                 },
@@ -284,7 +284,7 @@ export async function doQuerySingleFile(
             {
                 hostname: 'localhost', port, path: '/query', method: 'POST',
                 headers: {
-                    'X-TYPESENSE-API-KEY': apiKey,
+                    'X-API-KEY': apiKey,
                     'Content-Type': 'application/json',
                     'Content-Length': Buffer.byteLength(body),
                 },

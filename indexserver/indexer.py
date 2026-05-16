@@ -51,6 +51,71 @@ def _expand_type(t: str) -> list:
     return names
 
 
+# Languages whose namespace strings are dot-separated (C#, Python, Java, JS,
+# TypeScript, Kotlin, Scala). Other separators (Rust/C++ ``::``, JS module
+# paths with ``/``) can be added per-language in the AST extractor by
+# returning a pre-split list; the indexer accepts either form.
+def _split_namespace(ns) -> list[str]:
+    """Return the searchable components of a namespace value.
+
+    Accepts a plain string (``"Acme.Billing.Service"``) — split on ``.`` —
+    or a pre-split list/tuple from a language whose namespaces use a
+    different separator.
+    """
+    if not ns:
+        return []
+    if isinstance(ns, (list, tuple)):
+        return [str(p) for p in ns if p]
+    return [p for p in str(ns).split(".") if p]
+
+
+def _split_filename(basename: str) -> list[str]:
+    """Return the searchable components of a filename.
+
+    Always includes the full basename so a search for ``Foo.cs`` matches
+    exactly; also includes the stem (``Foo``) and extension (``cs``) so
+    searches for either still hit. For multi-dot names like
+    ``Widget.Test.cs`` every dot-separated piece is added.
+    """
+    if not basename:
+        return []
+    out = [basename]
+    for piece in basename.split("."):
+        if piece and piece not in out:
+            out.append(piece)
+    return out
+
+
+def path_tokens_from_path(relative_path: str) -> list[str]:
+    """Per-directory + filename tokens that make subpath search work.
+
+    ``services/billing/Foo.cs`` →
+        ["services", "billing", "Foo.cs", "Foo", "cs"]
+
+    Each directory name is its own raw token, so a query for ``billing``
+    finds every file under any ``billing/`` directory at any depth. The
+    filename is split via ``_split_filename`` so both ``Foo`` and
+    ``Foo.cs`` match.
+    """
+    norm = normalize_path(relative_path)
+    parts = [p for p in norm.split("/") if p]
+    if not parts:
+        return []
+    seen: set = set()
+    out: list = []
+    # Per-directory tokens (every ancestor folder name).
+    for d in parts[:-1]:
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    # Filename components.
+    for piece in _split_filename(parts[-1]):
+        if piece not in seen:
+            seen.add(piece)
+            out.append(piece)
+    return out
+
+
 def flat_from_fd(fd) -> dict:
     """Derive all indexer flat fields from a FileDescription's structured data."""
     from query._util import _dedupe
@@ -65,6 +130,11 @@ def flat_from_fd(fd) -> dict:
             base_types.append(unqual[:idx].strip() if idx >= 0 else unqual)
 
     method_names = [m.name for m in fd.methods]
+    # ``member_sigs`` is no longer stored in the index — the per-identifier
+    # fields plus ``member_sig_tokens`` cover the search story, and AST
+    # post-processing provides line-level output. The aggregated list still
+    # lives in this Python dict so test/diagnostic callers can inspect what
+    # the extractors built; ``build_document`` simply ignores the key.
     _NO_SIG_KINDS = {"field", "property", "event"}
     member_sigs = (
         [m.sig for m in fd.methods if m.sig and m.kind not in _NO_SIG_KINDS]
@@ -105,23 +175,38 @@ def flat_from_fd(fd) -> dict:
     usings     = [i.module for i in fd.imports if i.module]
     attr_names = [a.attr_name for a in fd.attrs if a.attr_name]
 
+    # member_sig_tokens — every identifier inside any member's signature
+    # (attribute names, parameter names, default-value identifiers, generic
+    # args, etc.), deduped file-wide. Each language's extractor produces a
+    # ``sig_tokens`` list per MethodInfo / FieldInfo by walking the member
+    # AST and skipping the body. Languages that don't yet emit them simply
+    # contribute nothing.
+    sig_tokens: list = []
+    for m in fd.methods:
+        sig_tokens.extend(m.sig_tokens)
+    for f in fd.fields:
+        sig_tokens.extend(f.sig_tokens)
+
     return {
-        "namespace":       fd.namespace,
-        "class_names":     _dedupe(class_names),
-        "method_names":    _dedupe(method_names),
-        "base_types":      _dedupe(base_types),
-        "call_sites":      _dedupe(call_sites),
-        "cast_types":      _dedupe(cast_types),
-        "member_sigs":     _dedupe(member_sigs),
-        "type_refs":       _dedupe(type_refs),
-        "attr_names":      _dedupe(attr_names),
-        "usings":          _dedupe(usings),
-        "return_types":    _dedupe(return_types),
-        "param_types":     _dedupe(param_types),
-        "field_types":     _dedupe(field_types),
-        "local_types":     _dedupe(local_types),
-        "member_accesses": _dedupe(member_accesses),
-        "tokens":          " ".join(fd.all_refs),
+        # ``namespace`` is multi-value raw — store each dot-separated
+        # component as its own searchable token.
+        "namespace":         _dedupe(_split_namespace(fd.namespace)),
+        "class_names":       _dedupe(class_names),
+        "method_names":      _dedupe(method_names),
+        "base_types":        _dedupe(base_types),
+        "call_sites":        _dedupe(call_sites),
+        "cast_types":        _dedupe(cast_types),
+        "member_sigs":       _dedupe(member_sigs),   # diagnostic only — not indexed
+        "member_sig_tokens": _dedupe(sig_tokens),
+        "type_refs":         _dedupe(type_refs),
+        "attr_names":        _dedupe(attr_names),
+        "usings":            _dedupe(usings),
+        "return_types":      _dedupe(return_types),
+        "param_types":       _dedupe(param_types),
+        "field_types":       _dedupe(field_types),
+        "local_types":       _dedupe(local_types),
+        "member_accesses":   _dedupe(member_accesses),
+        "tokens":            _dedupe(fd.all_refs),
     }
 
 
@@ -195,7 +280,10 @@ def should_skip_dir(dirname: str, exclude_dirs) -> bool:
     return dirname in exclude_dirs or dirname.startswith(".")
 
 
-def build_document(full_path: str, relative_path: str) -> dict:
+def build_document(full_path: str, relative_path: str) -> dict | None:
+    """Return the flat document dict for one source file, or ``None`` if the
+    file can't be read (deleted between walk and read, permission denied, …).
+    Callers must check for None."""
     try:
         stat = os.stat(full_path)
         with open(full_path, "rb") as _f:
@@ -209,18 +297,23 @@ def build_document(full_path: str, relative_path: str) -> dict:
     relative_path_norm = normalize_path(relative_path)
 
     return {
+        # Stored fields (retrievable from the index for display/filter).
         "id":               file_id(relative_path_norm),
         "relative_path":    relative_path_norm,
         "filename":         os.path.basename(full_path),
         "extension":        ext.lstrip("."),
         "language":         _file_language(ext),
         "path_segments":    path_segments_from_path(relative_path_norm),
+        "mtime":            int(stat.st_mtime),
+        # Search-only fields (indexed but stored=False — not retrievable).
+        # The AST stage provides the actual line-level matches; the index
+        # only needs these to decide which files are candidates.
+        "path_tokens":      path_tokens_from_path(relative_path_norm),
         "namespace":        meta["namespace"],
         "class_names":      meta["class_names"],
         "method_names":     meta["method_names"],
         "tokens":           meta["tokens"],
-        "mtime":            int(stat.st_mtime),
-        "member_sigs":      meta["member_sigs"],
+        "member_sig_tokens": meta["member_sig_tokens"],
         "base_types":       meta["base_types"],
         "field_types":      meta["field_types"],
         "local_types":      meta["local_types"],
@@ -349,7 +442,6 @@ def _flush(backend: Backend, docs: list, verbose: bool) -> tuple[int, int]:
 def index_file_list(
     backend: Backend,
     file_pairs,
-    coll_name: str,
     batch_size: int = 50,
     verbose: bool = False,
     on_progress=None,
@@ -484,7 +576,7 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
             last_report_n = n
 
     total_indexed, total_errors = index_file_list(
-        backend, _tracked_files(), coll_name,
+        backend, _tracked_files(),
         batch_size=batch_size, verbose=verbose,
         on_progress=_rate_report,
     )
