@@ -1,30 +1,37 @@
 """
-Search the local Tantivy code index.
+Search the local Tantivy code index (read-only — no daemon required).
+
+Mode and filter resolution share their logic with the daemon via
+``indexserver.search_modes`` — adding a new mode there reaches both call sites.
 
 Usage:
     search.py "query" [--ext cs] [--sub myservice] [--limit 10] [--symbols] [--json]
 
 Modes:
-    Default:         full-text search across filenames, declared names, and tokens
-    --symbols:       search only declared names (class/interface/method)
-    --implements X:  find types that inherit from or implement X
-    --calls X:       find call sites that invoke method X
-    --uses X:        find files that reference type X in declarations
-    --attr X:        find files decorated with attribute X
-    --ext EXT:       filter by file extension (e.g. cs, h, py)
-    --sub PATH:      filter by ancestor folder (e.g. myservice, services/billing)
+    Default:         broad identifier search (filename + class/method names + tokens)
+    --symbols:       restrict to declared class/interface/method names
+    --implements:    types that inherit from or implement the queried type
+    --calls:         call sites that invoke the queried method
+    --uses:          files that reference the queried type
+    --attrs:         files decorated with the queried attribute
+    --casts:         explicit ``(T)expr`` / ``as T`` cast sites
+    --ext EXT:       filter by file extension (e.g. cs, h, py).
+                     Any C/C++ source extension auto-includes .h/.hpp/.hxx.
+    --sub PATH:      restrict to an ancestor folder (e.g. myservice, services/billing)
     --exclude-path P: exclude files under any of these folders (comma-separated)
     --limit N:       max results (default 10)
+    --facets:        also print folder/extension breakdowns
+    --debug:         show full signature list per result
+    --json:          dump the raw result dict
 
 Examples:
-    search.py "IStorageProvider"
-    search.py "GetItemsAsync" --ext cs --sub myservice
-    search.py "WriteItemsAsync" --symbols
-    search.py "circuit breaker" --sub core --limit 5
-    search.py "IStorageProvider" --implements
-    search.py "GetItemsAsync" --calls
-    search.py "ItemInfo" --uses
-    search.py "Obsolete" --attr
+    search.py "Widget"
+    search.py "SaveChanges" --ext cs --sub services
+    search.py "SaveChanges" --symbols
+    search.py "IRepository" --implements
+    search.py "SaveChanges" --calls
+    search.py "Order" --uses
+    search.py "Obsolete" --attrs
 """
 
 import os
@@ -38,9 +45,21 @@ sys.path.insert(0, _root)
 from indexserver.config import load_config as _load_config
 from indexserver.indexer import ensure_backend
 from indexserver.search import search as _backend_search
-from query.cs import symbol_kind_query_by
+from indexserver.search_modes import build_filter_by, resolve_query_params
 
 _cfg = _load_config()
+
+
+def _ts_mode_flag(symbols_only, implements, calls, uses, attrs, casts, accesses_of) -> str:
+    """Map this CLI's boolean flags to the ts_mode_flag the resolver expects."""
+    if implements:  return "implements"
+    if calls:       return "calls"
+    if uses:        return "uses"
+    if attrs:       return "attrs"
+    if casts:       return "casts"
+    if accesses_of: return "accesses_of"
+    if symbols_only: return "symbols"
+    return "all_refs"
 
 
 def search(query, ext=None, sub=None, limit=10,
@@ -49,66 +68,11 @@ def search(query, ext=None, sub=None, limit=10,
            symbol_kind=None, uses_kind="", exclude_path=None):
     coll_name = collection or _cfg.collection
 
-    # Determine query_by based on mode
-    if implements:
-        query_by = "base_types,class_names,filename"
-    elif calls:
-        query_by = "call_sites,filename"
-    elif uses:
-        k = (uses_kind or "all").lower().strip()
-        if k == "field":
-            query_by = "field_types,filename"
-        elif k == "param":
-            query_by = "param_types,filename"
-        elif k == "return":
-            query_by = "return_types,filename"
-        elif k == "cast":
-            query_by = "cast_types,filename"
-        elif k == "base":
-            query_by = "base_types,class_names,filename"
-        elif k == "locals":
-            query_by = "local_types,filename"
-        else:
-            query_by = "type_refs,cast_types,filename"
-    elif attrs:
-        query_by = "attr_names,filename"
-    elif casts:
-        query_by = "cast_types,filename"
-    elif accesses_of:
-        query_by = "member_accesses,filename"
-    elif symbols_only:
-        narrowed = symbol_kind_query_by(symbol_kind or "")
-        query_by = narrowed if narrowed else "class_names,method_names,filename"
-    else:
-        query_by = "filename,class_names,method_names,tokens"
-
-    # When a C/C++ source extension is requested, automatically include C/C++ headers.
-    _CPP_SRC = {"cpp", "cc", "cxx", "c"}
-    _CPP_HDR = {"h", "hpp", "hxx"}
-    filter_parts = []
-    if ext:
-        exts = {e.lstrip(".") for e in ext.split(",")}
-        if exts & _CPP_SRC:
-            exts |= _CPP_HDR
-        if len(exts) == 1:
-            filter_parts.append(f"extension:={next(iter(exts))}")
-        else:
-            filter_parts.append(f"extension:=[{','.join(sorted(exts))}]")
-    if sub:
-        included = [p.replace(chr(92), '/').strip('/') for p in sub.split(",")]
-        included = [p for p in included if p]
-        if len(included) == 1:
-            filter_parts.append(f"path_segments:={included[0]}")
-        elif included:
-            filter_parts.append(f"path_segments:=[{','.join(included)}]")
-    if exclude_path:
-        excluded = [p.replace(chr(92), '/').strip('/') for p in exclude_path.split(",")]
-        excluded = [p for p in excluded if p]
-        if len(excluded) == 1:
-            filter_parts.append(f"path_segments:!={excluded[0]}")
-        elif excluded:
-            filter_parts.append(f"path_segments:!=[{','.join(excluded)}]")
-    filter_by = " && ".join(filter_parts) if filter_parts else ""
+    mode_flag         = _ts_mode_flag(symbols_only, implements, calls, uses,
+                                      attrs, casts, accesses_of)
+    query_by, weights = resolve_query_params(mode_flag, uses_kind or "",
+                                             symbol_kind or "")
+    filter_by         = build_filter_by(ext or "", sub or "", exclude_path or "")
 
     try:
         backend = ensure_backend(_cfg, coll_name, write=False)
@@ -122,6 +86,7 @@ def search(query, ext=None, sub=None, limit=10,
             backend,
             q=query,
             query_by=query_by,
+            weights=weights,
             per_page=limit,
             num_typos=1,
             filter_by=filter_by,
@@ -137,7 +102,33 @@ def search(query, ext=None, sub=None, limit=10,
     return result, query_by
 
 
-def format_results(result, query, query_by, show_facets=False, debug=False):
+def _root_for_collection(collection: str):
+    """Return the configured Root whose collection name matches, or None."""
+    for r in _cfg.roots.values():
+        if r.collection == collection:
+            return r
+    return None
+
+
+def _extract_for_display(rel_path: str, root) -> dict:
+    """Re-parse a hit's source file to get class_names / base_types /
+    member_sigs / etc. The schema no longer stores those (they're indexed
+    but not retrievable) — for a debug CLI display we re-extract on the fly.
+    Returns an empty dict if the file can't be read."""
+    if root is None or not rel_path:
+        return {}
+    import os
+    from indexserver.indexer import extract_metadata
+    full = os.path.join(root.path, rel_path)
+    try:
+        with open(full, "rb") as fh:
+            return extract_metadata(fh.read(), os.path.splitext(full)[1].lower())
+    except OSError:
+        return {}
+
+
+def format_results(result, query, query_by, show_facets=False, debug=False,
+                   collection: str = ""):
     hits = result.get("hits", [])
     total = result.get("found", 0)
 
@@ -156,19 +147,24 @@ def format_results(result, query, query_by, show_facets=False, debug=False):
         print("No results found.")
         return
 
+    root = _root_for_collection(collection)
+
     for i, hit in enumerate(hits, 1):
         doc = hit["document"]
         rel = doc.get("relative_path", "")
-        ns = doc.get("namespace", "")
+        meta = _extract_for_display(rel, root)
+        ns = meta.get("namespace", "")
+        if isinstance(ns, list):
+            ns = ".".join(ns)
 
         print(f"{i}. {rel}")
 
-        class_names  = doc.get("class_names",  []) or []
-        method_names = doc.get("method_names", []) or []
-        base_types   = doc.get("base_types",   []) or []
-        member_sigs  = doc.get("member_sigs",  []) or []
-        attr_names   = doc.get("attr_names",   []) or []
-        usings       = doc.get("usings",       []) or []
+        class_names  = meta.get("class_names",  []) or []
+        method_names = meta.get("method_names", []) or []
+        base_types   = meta.get("base_types",   []) or []
+        member_sigs  = meta.get("member_sigs",  []) or []
+        attr_names   = meta.get("attr_names",   []) or []
+        usings       = meta.get("usings",       []) or []
 
         if class_names:  print(f"   Classes    : {', '.join(class_names[:5])}")
         if base_types:   print(f"   Implements : {', '.join(base_types[:5])}")
@@ -233,7 +229,9 @@ def main():
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        format_results(result, args.query, query_by, show_facets=args.facets, debug=args.debug)
+        format_results(result, args.query, query_by,
+                       show_facets=args.facets, debug=args.debug,
+                       collection=_cfg.collection)
 
 
 if __name__ == "__main__":

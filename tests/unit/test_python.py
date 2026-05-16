@@ -1,12 +1,12 @@
 """
 Unit tests for Python support: extract_metadata and process_py_file.
 
-TestExtractPyMetadata and TestQueryPy require no server.
+TestExtractPyMetadata and TestQueryPy require no daemon.
 
-Integration tests (require Typesense) are in tests/integration/test_python.py.
+Integration tests (live Tantivy index) are in tests/integration/test_python.py.
 
-Run (from WSL):
-    ~/.local/indexserver-venv/bin/pytest tests/unit/test_python.py -v
+Run:
+    .client-venv/Scripts/python.exe -m pytest tests/unit/test_python.py -v
 """
 
 import os
@@ -91,7 +91,7 @@ class TestExtractPyMetadata(unittest.TestCase):
 
     def test_namespace_empty(self):
         meta = self._meta(_FOO_PY)
-        self.assertEqual(meta["namespace"], "")
+        self.assertEqual(meta["namespace"], [])
 
 
 # ── TestQueryPy ───────────────────────────────────────────────────────────────

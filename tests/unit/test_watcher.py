@@ -1,12 +1,12 @@
 """
 Unit tests for the file watcher: SourceChangeHandler event routing and flush logic.
 
-TestSourceChangeHandlerUnit — no server needed; uses a lightweight mock queue.
+TestSourceChangeHandlerUnit — no daemon needed; uses a lightweight mock queue.
 
-Integration tests (require Typesense) are in tests/integration/test_watcher.py.
+Integration tests (live Tantivy index) are in tests/integration/test_watcher.py.
 
-Run (from WSL):
-    ~/.local/indexserver-venv/bin/pytest tests/unit/test_watcher.py -v
+Run:
+    .client-venv/Scripts/python.exe -m pytest tests/unit/test_watcher.py -v
 """
 
 import os
@@ -23,7 +23,7 @@ _cfg = _load_config()
 # ── lightweight mock queue ────────────────────────────────────────────────────
 
 class _MockQueue:
-    """Records enqueue() calls for assertion without any Typesense interaction."""
+    """Records enqueue() calls for assertion without any indexserver interaction."""
 
     def __init__(self):
         self.calls: list = []  # (full_path, rel, collection, action, mtime)

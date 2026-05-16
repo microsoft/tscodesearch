@@ -45,9 +45,11 @@ _REPO = Path(__file__).parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
+from indexserver.backend import Backend
 from indexserver.config import load_config as _load_config, normalize_path
 from indexserver.index_queue import IndexQueue
 from indexserver.indexer import ensure_backend
+from indexserver.search_modes import build_filter_by, resolve_query_params
 from indexserver.verifier import check_ready, run_verify
 from indexserver.watcher import run_watcher
 from indexserver import search as _search_mod
@@ -82,7 +84,7 @@ _sync_progress: dict = {}
 _synced_roots: dict[str, str] = {}   # root_name → ISO timestamp of last successful sync
 
 # Backends keyed by collection name. The daemon owns the writer for each.
-_backends: dict[str, object] = {}
+_backends: dict[str, Backend] = {}
 
 _index_queue = IndexQueue(max_file_bytes=_cfg.max_file_bytes)
 
@@ -196,66 +198,6 @@ def _collections_status() -> dict:
     return collections
 
 
-# ── Search resolver: query_by and weights for each mode ────────────────────────
-
-def _resolve_query_params(ts_mode_flag: str, uses_kind: str, symbol_kind: str
-                         ) -> tuple[str, str]:
-    """Return (query_by, weights) for the given mode flag."""
-    if ts_mode_flag == "implements":
-        return "base_types,class_names,filename", "4,3,2"
-    if ts_mode_flag == "calls":
-        return "call_sites,filename", "4,2"
-    if ts_mode_flag == "uses":
-        k = (uses_kind or "all").lower().strip()
-        if k == "field":   return "field_types,filename", "4,2"
-        if k == "param":   return "param_types,filename", "4,2"
-        if k == "return":  return "return_types,filename", "4,2"
-        if k == "cast":    return "cast_types,filename", "4,2"
-        if k == "base":    return "base_types,class_names,filename", "4,3,2"
-        if k == "locals":  return "local_types,filename", "4,2"
-        return "type_refs,cast_types,filename", "4,3,2"
-    if ts_mode_flag == "attrs":       return "attr_names,filename", "4,2"
-    if ts_mode_flag == "casts":       return "cast_types,filename", "4,2"
-    if ts_mode_flag == "accesses_of": return "member_accesses,filename", "4,2"
-    if ts_mode_flag == "symbols":
-        from query.cs import symbol_kind_query_by
-        narrowed = symbol_kind_query_by(symbol_kind or "")
-        return (narrowed or "class_names,method_names,filename"), "4,3,2"
-    if ts_mode_flag == "all_refs":
-        return "filename,class_names,method_names,tokens", "5,4,4,1"
-    # Should never reach here — _EXT_TO_TS_AND_AST gates the mode flags above.
-    return "filename,class_names,method_names,tokens", "5,4,4,1"
-
-
-def _build_filter_by(ext: str, sub: str, exclude_path: str) -> str:
-    parts = []
-    if ext:
-        exts = {e.lstrip(".") for e in ext.split(",") if e.strip()}
-        _CPP_SRC = {"cpp", "cc", "cxx", "c"}
-        _CPP_HDR = {"h", "hpp", "hxx"}
-        if exts & _CPP_SRC:
-            exts |= _CPP_HDR
-        if len(exts) == 1:
-            parts.append(f"extension:={next(iter(exts))}")
-        elif exts:
-            parts.append(f"extension:=[{','.join(sorted(exts))}]")
-    if sub:
-        included = [normalize_path(p).strip("/") for p in sub.split(",")]
-        included = [p for p in included if p]
-        if len(included) == 1:
-            parts.append(f"path_segments:={included[0]}")
-        elif included:
-            parts.append(f"path_segments:=[{','.join(included)}]")
-    if exclude_path:
-        excluded = [normalize_path(p).strip("/") for p in exclude_path.split(",")]
-        excluded = [p for p in excluded if p]
-        if len(excluded) == 1:
-            parts.append(f"path_segments:!={excluded[0]}")
-        elif excluded:
-            parts.append(f"path_segments:!=[{','.join(excluded)}]")
-    return " && ".join(parts)
-
-
 # ── Watcher ────────────────────────────────────────────────────────────────────
 
 def _start_watcher() -> None:
@@ -342,7 +284,7 @@ def _enqueue_file_events(events: list) -> dict:
             if test.startswith(prefix):
                 native_root, coll, root_exts = nr, c, exts
                 break
-        if coll is None:
+        if coll is None or native_root is None or root_exts is None:
             continue
 
         if ext not in root_exts:
@@ -410,11 +352,12 @@ def _initialize_async(stop_event: threading.Event) -> None:
 # ── HTTP handler ───────────────────────────────────────────────────────────────
 
 class _Handler(BaseHTTPRequestHandler):
-    def log_message(self, *_):
+    def log_message(self, format: str, *args) -> None:  # noqa: A002
+        # Silence the default per-request stderr access log.
         pass
 
     def _auth(self) -> bool:
-        return self.headers.get("X-TYPESENSE-API-KEY") == _cfg.api_key
+        return self.headers.get("X-API-KEY") == _cfg.api_key
 
     def _send_json(self, code: int, data: dict) -> None:
         body = json.dumps(data).encode()
@@ -565,8 +508,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "backend not yet available", "loading": True})
                 return
 
-            query_by, weights = _resolve_query_params(ts_mode_flag, uses_kind, symbol_kind)
-            filter_by         = _build_filter_by(ext, sub, exclude_path)
+            query_by, weights = resolve_query_params(ts_mode_flag, uses_kind, symbol_kind)
+            filter_by         = build_filter_by(ext, sub, exclude_path)
 
             try:
                 ts_result = _search_mod.search(
@@ -625,7 +568,7 @@ class _Handler(BaseHTTPRequestHandler):
                 response_hits.append({
                     "document": {
                         "id":            doc.get("id", ""),
-                        "relative_path": root.to_external(doc.get("relative_path", "")),
+                        "relative_path": doc.get("relative_path", ""),
                         "filename":      doc.get("filename", ""),
                     },
                     "matches": ast_item["matches"],

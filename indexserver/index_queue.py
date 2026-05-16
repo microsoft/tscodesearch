@@ -37,7 +37,7 @@ class _Fence:
     def __init__(self, cb): self.callback = cb
 
 
-BackendResolver = Callable[[str], Backend]
+BackendResolver = Callable[[str], Backend | None]
 
 # Commit cadence: commit when the queue empties, when a fence is hit, when the
 # buffered doc count crosses COMMIT_DOC_THRESHOLD, or after COMMIT_INTERVAL_S
@@ -61,7 +61,7 @@ class IndexQueue:
         self._batch_size = batch_size
         self._max_file_bytes = max_file_bytes
         self._cond  = threading.Condition()
-        self._items: OrderedDict[tuple, tuple] = OrderedDict()
+        self._items: OrderedDict[tuple, tuple | _Fence] = OrderedDict()
         self._resolve: BackendResolver | None = None
         self._thread: threading.Thread | None = None
         self._stop        = threading.Event()
@@ -304,7 +304,8 @@ class IndexQueue:
             return None
 
         t_parse_start = time.perf_counter()
-        parsed: list[tuple[str, str, object]] = []
+        # payload is a doc dict for upserts and a doc-id string for deletes.
+        parsed: list[tuple[str, str, dict | str]] = []
         with ThreadPoolExecutor(max_workers=PARSE_WORKERS) as pool:
             for result in pool.map(_parse_one, regular):
                 if result is not None:
@@ -326,10 +327,10 @@ class IndexQueue:
             if backend is None:
                 continue
             try:
-                if kind == "upsert":
+                if kind == "upsert" and isinstance(payload, dict):
                     backend.add(payload)
                     n_added += 1
-                else:  # delete
+                elif kind == "delete" and isinstance(payload, str):
                     backend.delete(payload)
                     n_deleted += 1
                 dirty.add(coll)

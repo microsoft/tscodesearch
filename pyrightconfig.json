@@ -1,0 +1,25 @@
+{
+    "include": [
+        "indexserver",
+        "query",
+        "scripts",
+        "tests",
+        "mcp_server.py",
+        "tsquery_server.py"
+    ],
+    "exclude": [
+        "**/__pycache__",
+        ".client-venv",
+        ".tantivy",
+        "node_modules",
+        "vscode-codesearch",
+        "win-watcher",
+        "sample"
+    ],
+    "pythonVersion": "3.12",
+    "venvPath": ".",
+    "venv": ".client-venv",
+    "useLibraryCodeForTypes": true,
+    "reportMissingImports": "warning",
+    "reportMissingTypeStubs": "none"
+}

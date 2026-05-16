@@ -1,11 +1,11 @@
 """
 Unit tests for the indexer: extract_metadata, index_file_list, and IndexQueue.
 
-TestExtractCsMetadata — tree-sitter C# extractor unit tests
-TestIndexFileList     — shared batch-upsert pipeline (fake backend)
-TestIndexQueue        — queue enqueue/dedup/mtime/worker behavior (fake backend)
+TestExtractCsMetadata — tree-sitter C# extractor unit tests (no backend)
+TestIndexFileList     — shared batch-upsert pipeline (real Tantivy on tempdir)
+TestIndexQueue        — queue enqueue/dedup/mtime/worker behavior (real Tantivy on tempdir)
 
-Integration tests (require a real Tantivy index) are in tests/integration/test_indexer.py.
+The broader end-to-end indexer tests live in tests/integration/test_indexer.py.
 """
 
 import os
@@ -15,11 +15,11 @@ import time
 import unittest
 
 from tests.helpers import (
-    _FakeBackend,
+    make_test_backend,
     _QUALIFIED_CS, _GENERIC_WRAPPER_CS,
 )
 from indexserver.indexer import (
-    index_file_list, extract_metadata, SourceFile,
+    file_id, index_file_list, extract_metadata, SourceFile,
 )
 from indexserver.index_queue import IndexQueue, MTIME_DELETE
 
@@ -92,15 +92,16 @@ class TestExtractCsMetadata(unittest.TestCase):
 # ── TestIndexFileList ─────────────────────────────────────────────────────────
 
 class TestIndexFileList(unittest.TestCase):
-    """Unit tests for index_file_list — uses a fake in-memory backend."""
+    """Unit tests for index_file_list — runs against a real Tantivy index on a tempdir."""
 
     COLL = "test_coll"
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="ts_ifl_test_")
-        self.backend = _FakeBackend()
+        self.backend, self._backend_cleanup = make_test_backend()
 
     def tearDown(self):
+        self._backend_cleanup()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _make_file(self, rel: str, content: str) -> tuple[str, str]:
@@ -114,17 +115,17 @@ class TestIndexFileList(unittest.TestCase):
         f1 = self._make_file("sub/Foo.cs", "class Foo {}")
         f2 = self._make_file("sub/Bar.cs", "class Bar {}")
         total, errors = index_file_list(
-            self.backend, [f1, f2], self.COLL, batch_size=10,
+            self.backend, [f1, f2], batch_size=10,
         )
         self.assertEqual(total, 2)
         self.assertEqual(errors, 0)
-        self.assertEqual(len(self.backend.upserted), 2)
+        self.assertEqual(self.backend.num_documents(), 2)
 
     def test_batches_files(self):
         files = [self._make_file(f"sub/File{i}.cs", f"class File{i} {{}}") for i in range(7)]
         calls: list[tuple[int, int]] = []
         total, errors = index_file_list(
-            self.backend, files, self.COLL,
+            self.backend, files,
             batch_size=3, on_progress=lambda n, e: calls.append((n, e)),
         )
         self.assertEqual(total, 7)
@@ -136,7 +137,7 @@ class TestIndexFileList(unittest.TestCase):
     def test_empty_input_returns_zero(self):
         calls: list = []
         total, errors = index_file_list(
-            self.backend, [], self.COLL, batch_size=50,
+            self.backend, [], batch_size=50,
             on_progress=lambda n, e: calls.append((n, e)),
         )
         self.assertEqual(total, 0)
@@ -146,7 +147,7 @@ class TestIndexFileList(unittest.TestCase):
     def test_on_progress_none_no_crash(self):
         f = self._make_file("a.cs", "class A {}")
         total, errors = index_file_list(
-            self.backend, [f], self.COLL, batch_size=50,
+            self.backend, [f], batch_size=50,
         )
         self.assertEqual(total, 1)
         self.assertEqual(errors, 0)
@@ -154,7 +155,7 @@ class TestIndexFileList(unittest.TestCase):
     def test_unreadable_file_counted_as_error(self):
         ghost = (os.path.join(self.tmpdir, "ghost.cs"), "ghost.cs")
         total, errors = index_file_list(
-            self.backend, [ghost], self.COLL, batch_size=50,
+            self.backend, [ghost], batch_size=50,
         )
         self.assertEqual(total, 0)
         self.assertEqual(errors, 1)
@@ -163,7 +164,7 @@ class TestIndexFileList(unittest.TestCase):
         files = [self._make_file(f"m{i}.cs", f"class M{i} {{}}") for i in range(10)]
         counts: list[int] = []
         index_file_list(
-            self.backend, files, self.COLL,
+            self.backend, files,
             batch_size=4, on_progress=lambda n, _e: counts.append(n),
         )
         for a, b in zip(counts, counts[1:]):
@@ -172,16 +173,16 @@ class TestIndexFileList(unittest.TestCase):
     def test_final_partial_batch_is_flushed(self):
         files = [self._make_file(f"p{i}.cs", f"class P{i} {{}}") for i in range(5)]
         total, errors = index_file_list(
-            self.backend, files, self.COLL, batch_size=4,
+            self.backend, files, batch_size=4,
         )
         self.assertEqual(total, 5)
-        self.assertEqual(len(self.backend.upserted), 5)
+        self.assertEqual(self.backend.num_documents(), 5)
 
     def test_mixed_valid_and_invalid_files(self):
         f1 = self._make_file("good.cs", "class Good {}")
         ghost = (os.path.join(self.tmpdir, "ghost.cs"), "ghost.cs")
         total, errors = index_file_list(
-            self.backend, [f1, ghost], self.COLL, batch_size=50,
+            self.backend, [f1, ghost], batch_size=50,
         )
         self.assertEqual(total, 1)
         self.assertEqual(errors, 1)
@@ -190,18 +191,19 @@ class TestIndexFileList(unittest.TestCase):
 # ── TestIndexQueue ────────────────────────────────────────────────────────────
 
 class TestIndexQueue(unittest.TestCase):
-    """Unit tests for IndexQueue — uses a fake in-memory backend."""
+    """Unit tests for IndexQueue — runs against a real Tantivy index on a tempdir."""
 
     COLL = "test_coll"
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="ts_iq_test_")
-        self.backend = _FakeBackend()
+        self.backend, self._backend_cleanup = make_test_backend()
         self.queue = IndexQueue(batch_size=10)
         self.queue.start(lambda c: self.backend if c == self.COLL else None)
 
     def tearDown(self):
         self.queue.stop(timeout=2)
+        self._backend_cleanup()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _file(self, rel: str, content: str = "class T {}") -> tuple[str, str]:
@@ -235,6 +237,7 @@ class TestIndexQueue(unittest.TestCase):
         self.queue._stop.set()
         with self.queue._cond:
             item = next(iter(self.queue._items.values()))
+        assert isinstance(item, tuple)
         mtime = item[4]
         self.assertIsNotNone(mtime, "mtime should be auto-statted for upserts")
         self.assertEqual(mtime, int(os.stat(full).st_mtime))
@@ -245,6 +248,7 @@ class TestIndexQueue(unittest.TestCase):
         self.queue._stop.set()
         with self.queue._cond:
             item = next(iter(self.queue._items.values()))
+        assert isinstance(item, tuple)
         self.assertIs(item[4], MTIME_DELETE)
 
     def test_enqueue_dedup_updates_mtime(self):
@@ -256,6 +260,7 @@ class TestIndexQueue(unittest.TestCase):
         self.queue._stop.set()
         with self.queue._cond:
             item = next(iter(self.queue._items.values()))
+        assert isinstance(item, tuple)
         self.assertEqual(item[4], new_mtime)
 
     def test_depth_reflects_queue_size(self):
@@ -308,17 +313,22 @@ class TestIndexQueue(unittest.TestCase):
         full, rel = self._file("MyFile.cs", "namespace T { public class MyClass {} }")
         self.queue.enqueue(full, rel, self.COLL)
         self._drain()
-        self.assertGreater(len(self.backend.upserted), 0)
-        self.assertEqual(self.queue.stats()["upserted"], len(self.backend.upserted))
+        self.assertEqual(self.backend.num_documents(), 1)
+        self.assertEqual(self.queue.stats()["upserted"], 1)
 
     def test_worker_deletes_from_backend(self):
-        from indexserver.indexer import file_id as _file_id
+        # Pre-seed the index with a doc so the delete actually has something to remove.
+        from indexserver.indexer import build_document
         full, rel = self._file("Gone.cs", "class Gone {}")
-        doc_id = _file_id(rel)
-        self.backend._docs[doc_id] = {"id": doc_id}
+        doc = build_document(full, rel)
+        assert doc is not None
+        self.backend.upsert_many([doc])
+        doc_id = file_id(rel)
+        self.assertIn(doc_id, self.backend.export_id_mtime())
+
         self.queue.enqueue(full, rel, self.COLL, "delete")
         self._drain()
-        self.assertIn(doc_id, self.backend.deleted)
+        self.assertNotIn(doc_id, self.backend.export_id_mtime())
         self.assertEqual(self.queue.stats()["deleted"], 1)
 
 

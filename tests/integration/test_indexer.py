@@ -1,12 +1,14 @@
 """
-Integration tests for the indexer: collection creation, file indexing, and semantic fields.
+Integration tests for the indexer: collection creation, file indexing, and field discrimination.
 
-TestIndexer          — collection creation, file count, paths, priority, reset
-TestSemanticFields   — all indexed fields: base_types, call_sites, member_sigs, etc.
-TestMultiRoot        — two independent collections from the same source tree
-TestSearchFieldModes — each MCP search mode's query_by field returns the right file
+TestIndexer                  — collection creation, file count, paths, priority, reset
+TestSemanticFieldDiscrim     — each per-identifier field returns ONLY the file where the
+                               identifier appears in that exact role (param vs field vs
+                               base vs local vs cast vs call vs string-literal)
+TestMultiRoot                — two independent collections from the same source tree
+TestSearchFieldModes         — each MCP search mode's query_by field returns the right file
 
-All classes require Typesense to be running.
+All classes open a real Tantivy index inline — no daemon required.
 """
 from __future__ import annotations
 import os, sys, shutil, time, unittest
@@ -64,12 +66,12 @@ class TestIndexer(unittest.TestCase):
         self.assertIn("Foo.cs", names, f"Foo.cs not in {names}")
 
     def test_python_file_indexed(self):
-        hits = _search(self.coll, "deploy", query_by="filename,tokens")
+        hits = _search(self.coll, "deploy", query_by="path_tokens,tokens")
         names = [h["filename"] for h in hits]
         self.assertIn("deploy.py", names, f"deploy.py not in {names}")
 
     def test_markdown_indexed(self):
-        hits = _search(self.coll, "project", query_by="filename,tokens")
+        hits = _search(self.coll, "project", query_by="path_tokens,tokens")
         names = [h["filename"] for h in hits]
         self.assertIn("README.md", names, f"README.md not in {names}")
 
@@ -106,19 +108,113 @@ class TestIndexer(unittest.TestCase):
         self.assertEqual(old_info["num_documents"], new_info["num_documents"])
 
 
-# ── TestSemanticFields ────────────────────────────────────────────────────────
+# ── TestSemanticFieldDiscrim ─────────────────────────────────────────────────
 
-class TestSemanticFields(unittest.TestCase):
-    """tree-sitter extracts the right symbols and semantic metadata."""
+# Fixtures designed so the identifier ``IDisposable`` appears in exactly one
+# structural role per file. Each search-by-field test then asserts that only
+# the file holding ``IDisposable`` in that role comes back — verifying both
+# that the indexer wrote the right field AND that searching that field is
+# discriminating. This is a meaningful end-to-end check; just round-tripping
+# extract_metadata through the file system would only re-test the parser.
+
+_BASE_IMPLEMENTOR_CS = """\
+using System;
+namespace Discrim {
+    [Serializable]
+    public class BaseImplementor : IDisposable {
+        public void DoWork() { }
+        public void Dispose() { }
+    }
+}
+"""
+
+_PARAM_USER_CS = """\
+namespace Discrim {
+    public class ParamUser {
+        public void Accept(IDisposable d) { }
+    }
+}
+"""
+
+_FIELD_OWNER_CS = """\
+namespace Discrim {
+    public class FieldOwner {
+        private IDisposable _disposable;
+    }
+}
+"""
+
+_RETURN_USER_CS = """\
+namespace Discrim {
+    public class ReturnUser {
+        public IDisposable Create() { return null; }
+    }
+}
+"""
+
+_LOCAL_USER_CS = """\
+namespace Discrim {
+    public class LocalUser {
+        public void Run() {
+            IDisposable d = null;
+        }
+    }
+}
+"""
+
+_CAST_USER_CS = """\
+namespace Discrim {
+    public class CastUser {
+        public void Run(object o) { var d = (IDisposable)o; }
+    }
+}
+"""
+
+_CALLER_CS = """\
+namespace Discrim {
+    public class Caller {
+        public void Run(BaseImplementor impl) { impl.DoWork(); }
+    }
+}
+"""
+
+_STRING_MENTION_CS = """\
+namespace Discrim {
+    public class StringMention {
+        public string Description = "documents IDisposable cleanup";
+    }
+}
+"""
+
+_UNRELATED_CS = """\
+namespace Discrim {
+    public class Unrelated {
+        public string Greeting = "hello";
+    }
+}
+"""
+
+
+class TestSemanticFieldDiscrim(unittest.TestCase):
+    """Field-by-field discrimination: search by exactly one field for a single
+    identifier and assert which file comes back. No re-parsing on the test side
+    — every assertion is end-to-end through the Tantivy index."""
 
     @classmethod
     def setUpClass(cls):
         _assert_server_ok()
         stamp = int(time.time())
-        cls.coll = f"test_sem_{stamp}"
+        cls.coll = f"test_discrim_{stamp}"
         cls.tmpdir = _make_git_repo({
-            "core/Foo.cs": _FOO_CS,
-            "core/Bar.cs": _BAR_CS,
+            "BaseImplementor.cs": _BASE_IMPLEMENTOR_CS,
+            "ParamUser.cs":       _PARAM_USER_CS,
+            "FieldOwner.cs":      _FIELD_OWNER_CS,
+            "ReturnUser.cs":      _RETURN_USER_CS,
+            "LocalUser.cs":       _LOCAL_USER_CS,
+            "CastUser.cs":        _CAST_USER_CS,
+            "Caller.cs":          _CALLER_CS,
+            "StringMention.cs":   _STRING_MENTION_CS,
+            "Unrelated.cs":       _UNRELATED_CS,
         })
         run_index(_cfg, src_root=cls.tmpdir, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.3)
@@ -128,79 +224,99 @@ class TestSemanticFields(unittest.TestCase):
         _delete_collection(cls.coll)
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
-    def _get(self, filename):
-        base = os.path.splitext(filename)[0]
-        hits = _search(self.coll, base, per_page=5)
-        return next((h for h in hits if h["filename"] == filename), None)
+    def _files(self, q: str, query_by: str) -> set:
+        hits = _search(self.coll, q, query_by=query_by, per_page=20)
+        return {h["filename"] for h in hits}
 
-    def test_base_types_interface(self):
-        foo = self._get("Foo.cs")
-        self.assertIsNotNone(foo)
-        self.assertIn("IDisposable", foo.get("base_types", []),
-            f"base_types: {foo.get('base_types')}")
+    # ── single-field discrimination on ``IDisposable`` ────────────────────────
 
-    def test_base_types_multiple(self):
-        foo = self._get("Foo.cs")
-        self.assertIsNotNone(foo)
-        self.assertIn("IComparable", foo.get("base_types", []),
-            f"base_types: {foo.get('base_types')}")
+    def test_base_types_finds_only_implementor(self):
+        self.assertEqual(self._files("IDisposable", "base_types"),
+                         {"BaseImplementor.cs"})
 
-    def test_base_class_in_base_types(self):
-        bar = self._get("Bar.cs")
-        self.assertIsNotNone(bar)
-        self.assertIn("Foo", bar.get("base_types", []),
-            f"base_types for Bar: {bar.get('base_types')}")
+    def test_param_types_finds_only_param_user(self):
+        self.assertEqual(self._files("IDisposable", "param_types"),
+                         {"ParamUser.cs"})
 
-    def test_call_sites(self):
-        bar = self._get("Bar.cs")
-        self.assertIsNotNone(bar)
-        self.assertIn("DoWork", bar.get("call_sites", []),
-            f"call_sites: {bar.get('call_sites')}")
+    def test_field_types_finds_only_field_owner(self):
+        self.assertEqual(self._files("IDisposable", "field_types"),
+                         {"FieldOwner.cs"})
 
-    def test_type_refs(self):
-        bar = self._get("Bar.cs")
-        self.assertIsNotNone(bar)
-        self.assertIn("Foo", bar.get("type_refs", []),
-            f"type_refs: {bar.get('type_refs')}")
+    def test_return_types_finds_only_return_user(self):
+        self.assertEqual(self._files("IDisposable", "return_types"),
+                         {"ReturnUser.cs"})
 
-    def test_attr_names(self):
-        foo = self._get("Foo.cs")
-        self.assertIsNotNone(foo)
-        self.assertIn("Serializable", foo.get("attr_names", []),
-            f"attr_names: {foo.get('attr_names')}")
+    def test_local_types_finds_only_local_user(self):
+        self.assertEqual(self._files("IDisposable", "local_types"),
+                         {"LocalUser.cs"})
 
-    def test_usings(self):
-        foo = self._get("Foo.cs")
-        self.assertIsNotNone(foo)
-        self.assertIn("System", foo.get("usings", []),
-            f"usings: {foo.get('usings')}")
+    def test_cast_types_finds_only_cast_user(self):
+        self.assertEqual(self._files("IDisposable", "cast_types"),
+                         {"CastUser.cs"})
 
-    def test_class_names(self):
-        foo = self._get("Foo.cs")
-        self.assertIsNotNone(foo)
-        self.assertIn("Foo", foo.get("class_names", []))
+    # ── type_refs is the union of typed-use roles (not cast_types) ────────────
 
-    def test_method_names(self):
-        foo = self._get("Foo.cs")
-        self.assertIsNotNone(foo)
-        methods = foo.get("method_names", [])
-        self.assertIn("Dispose", methods, f"method_names: {methods}")
-        self.assertIn("DoWork",  methods, f"method_names: {methods}")
+    def test_type_refs_unions_typed_use_roles(self):
+        self.assertEqual(
+            self._files("IDisposable", "type_refs"),
+            {"BaseImplementor.cs", "ParamUser.cs", "FieldOwner.cs",
+             "ReturnUser.cs", "LocalUser.cs"},
+        )
 
-    def test_member_sigs(self):
-        foo = self._get("Foo.cs")
-        self.assertIsNotNone(foo)
-        sigs = foo.get("member_sigs", [])
-        self.assertTrue(any("Dispose" in s for s in sigs),
-                        f"expected 'Dispose' in member_sigs: {sigs}")
-        self.assertTrue(any("DoWork" in s for s in sigs),
-                        f"expected 'DoWork' in member_sigs: {sigs}")
+    # ── string-literal mentions must not leak into structured fields ──────────
 
-    def test_namespace(self):
-        foo = self._get("Foo.cs")
-        self.assertIsNotNone(foo)
-        self.assertEqual(foo.get("namespace"), "TestNs",
-                         f"namespace: {foo.get('namespace')}")
+    def test_string_literal_excluded_from_every_structured_field(self):
+        for field in ("base_types", "param_types", "field_types",
+                      "return_types", "local_types", "cast_types",
+                      "type_refs", "method_names", "class_names",
+                      "attr_names", "tokens"):
+            self.assertNotIn(
+                "StringMention.cs", self._files("IDisposable", field),
+                f"StringMention.cs leaked into {field} via string literal",
+            )
+
+    # ── method_names: only the declarer ───────────────────────────────────────
+
+    def test_method_names_finds_only_declarer(self):
+        # Caller.cs CALLS DoWork(); only BaseImplementor.cs DECLARES it.
+        self.assertEqual(self._files("DoWork", "method_names"),
+                         {"BaseImplementor.cs"})
+
+    # ── call_sites: only the caller, not the declarer ─────────────────────────
+
+    def test_call_sites_finds_only_caller(self):
+        self.assertEqual(self._files("DoWork", "call_sites"),
+                         {"Caller.cs"})
+
+    # ── attr_names: only attribute decorations ────────────────────────────────
+
+    def test_attr_names_finds_only_decorated_file(self):
+        self.assertEqual(self._files("Serializable", "attr_names"),
+                         {"BaseImplementor.cs"})
+
+    # ── class_names: only declarations, not usages ────────────────────────────
+
+    def test_class_names_finds_only_declarer(self):
+        # Caller.cs uses BaseImplementor as a parameter type — it must NOT
+        # appear in class_names search for BaseImplementor.
+        self.assertEqual(self._files("BaseImplementor", "class_names"),
+                         {"BaseImplementor.cs"})
+
+    # ── usings: only the file that imports the namespace ──────────────────────
+
+    def test_usings_finds_only_importer(self):
+        self.assertEqual(self._files("System", "usings"),
+                         {"BaseImplementor.cs"})
+
+    # ── namespace: every file in this fixture shares ``Discrim`` ──────────────
+
+    def test_namespace_split_into_components(self):
+        # All fixture files declare ``namespace Discrim``; the indexer stores
+        # it as the single component "Discrim", searchable by exact name.
+        fnames = self._files("Discrim", "namespace")
+        self.assertIn("BaseImplementor.cs", fnames)
+        self.assertEqual(len(fnames), 9,
+            f"every fixture file should match: {fnames}")
 
 
 # ── TestMultiRoot ─────────────────────────────────────────────────────────────
@@ -275,32 +391,34 @@ class TestSearchFieldModes(unittest.TestCase):
         return _search(self.coll, q, query_by=query_by, per_page=per_page)
 
     def test_implements_mode_base_types(self):
-        hits = self._qby("IDisposable", "base_types,class_names,filename")
+        hits = self._qby("IDisposable", "base_types,class_names,path_tokens")
         names = [h["filename"] for h in hits]
         self.assertIn("Foo.cs", names)
 
     def test_calls_mode_call_sites(self):
-        hits = self._qby("DoWork", "call_sites,filename")
+        hits = self._qby("DoWork", "call_sites,path_tokens")
         names = [h["filename"] for h in hits]
         self.assertIn("Bar.cs", names)
 
-    def test_declarations_mode_member_sigs(self):
-        hits = self._qby("Dispose", "member_sigs,method_names,filename")
+    def test_declarations_mode_method_names(self):
+        # ``method_names`` is the modern equivalent of the old member_sigs
+        # field (the daemon's declarations resolver queries method_names).
+        hits = self._qby("Dispose", "method_names,class_names,path_tokens")
         names = [h["filename"] for h in hits]
         self.assertIn("Foo.cs", names)
 
     def test_uses_mode_type_refs(self):
-        hits = self._qby("Foo", "type_refs,class_names,filename")
+        hits = self._qby("Foo", "type_refs,class_names,path_tokens")
         names = [h["filename"] for h in hits]
         self.assertIn("Bar.cs", names)
 
     def test_attrs_mode_attr_names(self):
-        hits = self._qby("Serializable", "attr_names,filename")
+        hits = self._qby("Serializable", "attr_names,path_tokens")
         names = [h["filename"] for h in hits]
         self.assertIn("Foo.cs", names)
 
     def test_namespace_in_query(self):
-        hits = self._qby("TestNs", "tokens,filename")
+        hits = self._qby("TestNs", "namespace,tokens,path_tokens")
         self.assertGreater(len(hits), 0)
 
 

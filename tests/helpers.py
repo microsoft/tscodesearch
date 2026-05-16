@@ -19,7 +19,7 @@ def _assert_server_ok() -> None:
 
 
 def _search(collection: str, q: str,
-            query_by: str = "filename,class_names,method_names,tokens",
+            query_by: str = "path_tokens,class_names,method_names,tokens",
             per_page: int = 10) -> list[dict]:
     """Run a backend search and return the documents from each hit."""
     from indexserver.config import load_config as _load_config
@@ -82,70 +82,26 @@ def _make_git_repo(files: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Fake backend used by unit tests that don't want the full Tantivy index
+# Per-test Tantivy backend on a tempdir
 # ---------------------------------------------------------------------------
 
-class _FakeBackend:
-    """Drop-in replacement for indexserver.backend.Backend in unit tests.
+def make_test_backend():
+    """Open a real Tantivy ``Backend`` for one unit test.
 
-    Stores documents in a dict keyed by id; no indexing or scoring.
-    Mirrors the streaming contract: ``add``/``delete`` buffer, ``commit``
-    finalizes, ``has_pending`` reports buffered state.
+    Returns ``(backend, cleanup)``. Call ``cleanup()`` in ``tearDown`` to
+    close the backend and remove the on-disk index. Cheap enough (~50 ms
+    per setup) that per-test isolation is fine.
     """
+    import shutil
+    from indexserver.backend import Backend
+    path = tempfile.mkdtemp(prefix="ts_backend_test_")
+    backend = Backend(path, write=True)
 
-    def __init__(self):
-        self._docs: dict[str, dict] = {}
-        self._buffered_upserts: list[dict] = []
-        self._buffered_deletes: list[str] = []
-        self.upserted: list[dict] = []
-        self.deleted: list[str] = []
+    def cleanup():
+        backend.close(quick=True)
+        shutil.rmtree(path, ignore_errors=True)
 
-    @property
-    def has_pending(self) -> bool:
-        return bool(self._buffered_upserts or self._buffered_deletes)
-
-    def add(self, doc):
-        self._buffered_upserts.append(doc)
-
-    def delete(self, doc_id):
-        self._buffered_deletes.append(doc_id)
-
-    def commit(self):
-        for d in self._buffered_upserts:
-            self._docs[d["id"]] = d
-            self.upserted.append(d)
-        for doc_id in self._buffered_deletes:
-            if self._docs.pop(doc_id, None) is not None:
-                self.deleted.append(doc_id)
-        self._buffered_upserts.clear()
-        self._buffered_deletes.clear()
-
-    def upsert_many(self, docs):
-        for d in docs:
-            self.add(d)
-        self.commit()
-        return len(docs), 0
-
-    def delete_many(self, ids):
-        for doc_id in ids:
-            self.delete(doc_id)
-        n_present = sum(1 for i in ids if i in self._docs)
-        self.commit()
-        return n_present
-
-    def delete_all(self):
-        self.deleted.extend(self._docs)
-        self._docs.clear()
-
-    def export_id_mtime(self):
-        return {d["id"]: int(d.get("mtime", 0)) for d in self._docs.values()}
-
-    def num_documents(self):
-        return len(self._docs)
-
-    def close(self):
-        if self.has_pending:
-            self.commit()
+    return backend, cleanup
 
 
 class _FakeEvent:

@@ -1,7 +1,9 @@
 """
-Python AST query functions — extracted from query.py.
+Python AST query functions.
 
-All public functions are re-exported from query.py for backward compatibility.
+Tree-sitter walkers for every Python query mode used by
+``query.dispatch.query_file`` and ``indexserver.indexer.extract_metadata``.
+The package's public re-exports live in ``query/__init__.py``.
 """
 
 EXTENSIONS = frozenset({".py"})

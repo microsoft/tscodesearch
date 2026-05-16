@@ -1,10 +1,10 @@
 """
-Tests for query.py -- C# AST structural query functions.
+Tests for query/cs.py — C# AST structural query functions.
 
-Does NOT require Typesense to be running; calls query functions directly.
+No daemon required; calls query functions directly.
 
-Run from WSL:
-    /tmp/ts-test-venv/bin/pytest codesearch/tests/test_query_cs.py -v
+Run:
+    .client-venv/Scripts/python.exe -m pytest query/tests/test_query_cs.py -v
 """
 
 import os
@@ -39,11 +39,13 @@ def fx():
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def texts(results):
-    return [t for _, t in results]
+    # Listing-mode results (q_classes/q_methods/q_fields) yield 3-tuples
+    # (line, end_line, text); other modes still yield 2-tuples (line, text).
+    return [row[-1] for row in results]
 
 
 def has(results, sub):
-    return any(sub in t for _, t in results)
+    return any(sub in row[-1] for row in results)
 
 
 # ── classes ───────────────────────────────────────────────────────────────────
@@ -56,17 +58,17 @@ class TestClasses:
 
     def test_interface_tagged_correctly(self, fx):
         r = q_classes(*fx)
-        match = next(t for _, t in r if "IProcessor" in t)
+        match = next(row[-1] for row in r if "IProcessor" in row[-1])
         assert "[interface]" in match
 
     def test_finds_abstract_class_with_base(self, fx):
         r = q_classes(*fx)
-        match = next(t for _, t in r if "BaseProcessor" in t)
+        match = next(row[-1] for row in r if "BaseProcessor" in row[-1])
         assert "IProcessor" in match  # base type included
 
     def test_finds_concrete_class_with_bases(self, fx):
         r = q_classes(*fx)
-        match = next(t for _, t in r if "TextProcessor" in t)
+        match = next(row[-1] for row in r if "TextProcessor" in row[-1])
         assert "BaseProcessor" in match or "IProcessor" in match
 
     def test_finds_static_class(self, fx):
@@ -75,12 +77,12 @@ class TestClasses:
 
     def test_finds_struct(self, fx):
         r = q_classes(*fx)
-        match = next(t for _, t in r if "ProcessResult" in t)
+        match = next(row[-1] for row in r if "ProcessResult" in row[-1])
         assert "[struct]" in match
 
     def test_finds_enum(self, fx):
         r = q_classes(*fx)
-        match = next(t for _, t in r if "ProcessingMode" in t)
+        match = next(row[-1] for row in r if "ProcessingMode" in row[-1])
         assert "[enum]" in match
 
     def test_finds_delegate(self, fx):
@@ -98,7 +100,7 @@ class TestClasses:
 class TestMethods:
     def test_finds_method_with_return_type(self, fx):
         r = q_methods(*fx)
-        match = next((t for _, t in r if "Transform" in t), None)
+        match = next((row[-1] for row in r if "Transform" in row[-1]), None)
         assert match is not None
         assert "string" in match
 
@@ -121,7 +123,7 @@ class TestMethods:
 
     def test_finds_multiple_methods(self, fx):
         r = q_methods(*fx)
-        method_texts = [t for _, t in r if "[method]" in t]
+        method_texts = [row[-1] for row in r if "[method]" in row[-1]]
         assert len(method_texts) >= 5
 
 
@@ -139,14 +141,15 @@ class TestFields:
 
     def test_no_methods_in_results(self, fx):
         r = q_fields(*fx)
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             assert "[method]" not in t
             assert "[ctor]" not in t
 
     def test_field_includes_type(self, fx):
         r = q_fields(*fx)
         # ILogger _logger field should appear with its type
-        match = next((t for _, t in r if "_logger" in t), None)
+        match = next((row[-1] for row in r if "_logger" in row[-1]), None)
         assert match is not None
         assert "ILogger" in match
 
@@ -203,12 +206,13 @@ class TestImplements:
     def test_finds_class_inheriting_base_class(self, fx):
         src, tree, lines = fx
         r = q_implements(src, tree, lines, "BaseProcessor")
-        assert any("TextProcessor" in t for _, t in r)
+        assert any("TextProcessor" in row[-1] for row in r)
 
     def test_does_not_include_the_interface_itself(self, fx):
         src, tree, lines = fx
         r = q_implements(src, tree, lines, "IProcessor")
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             # The declaration "interface IProcessor" should not be a match
             assert "[interface] IProcessor" not in t
 
@@ -220,7 +224,8 @@ class TestImplements:
     def test_unrelated_class_not_included(self, fx):
         src, tree, lines = fx
         r = q_implements(src, tree, lines, "IProcessor")
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             assert "ProcessorFactory" not in t
             assert "ProcessingService" not in t
 
@@ -237,19 +242,20 @@ class TestUses:
         # "interface IProcessor" line is NOT a use of IProcessor
         src, tree, lines = fx
         r = q_uses(src, tree, lines, "IProcessor")
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             assert not t.strip().startswith("public interface IProcessor")
 
     def test_finds_in_field_declaration(self, fx):
         src, tree, lines = fx
         r = q_uses(src, tree, lines, "IProcessor")
-        assert any("_processor" in t for _, t in r)
+        assert any("_processor" in row[-1] for row in r)
 
     def test_finds_in_parameter(self, fx):
         src, tree, lines = fx
         r = q_uses(src, tree, lines, "IProcessor")
         # parameter "IProcessor<string> processor" or "IProcessor<string> proc"
-        assert any("processor" in t or "proc" in t for _, t in r)
+        assert any("processor" in row[-1] or "proc" in row[-1] for row in r)
 
     def test_no_match_for_unused_name(self, fx):
         src, tree, lines = fx
@@ -260,7 +266,7 @@ class TestUses:
         """typeof(ProcessResult) counts as a type reference."""
         src, tree, lines = fx
         r = q_uses(src, tree, lines, "ProcessResult")
-        assert any("typeof" in t for _, t in r)
+        assert any("typeof" in row[-1] for row in r)
 
     def test_deduplicates_same_line(self, fx):
         """Merge(ProcessResult a, ProcessResult b) has two refs on one line.
@@ -283,14 +289,16 @@ class TestAttrs:
         src, tree, lines = fx
         r = q_attrs(src, tree, lines, "Serializable")
         assert len(r) >= 1
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             assert "Serializable" in t
 
     def test_filter_obsolete(self, fx):
         src, tree, lines = fx
         r = q_attrs(src, tree, lines, "Obsolete")
         assert len(r) >= 1
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             assert "Obsolete" in t
 
     def test_filter_no_match(self, fx):
@@ -318,7 +326,7 @@ class TestUsings:
     def test_finds_using_alias(self, fx):
         r = q_usings(*fx)
         # "using StringList = System.Collections.Generic.List<string>;"
-        assert any("StringList" in t for _, t in r)
+        assert any("StringList" in row[-1] for row in r)
 
     def test_count_matches_file(self, fx):
         r = q_usings(*fx)
@@ -414,7 +422,8 @@ class TestFieldType:
         src, tree, lines = fx
         r = q_uses(src, tree, lines, "IProcessor", uses_kind="field")
         assert len(r) >= 1
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             assert "IProcessor" in t
 
     def test_finds_field_typed_as_logger(self, fx):
@@ -425,7 +434,7 @@ class TestFieldType:
     def test_finds_property(self, fx):
         src, tree, lines = fx
         r = q_uses(src, tree, lines, "string", uses_kind="field")
-        assert any("Prefix" in t for _, t in r)
+        assert any("Prefix" in row[-1] for row in r)
 
     def test_no_match_for_unknown_type(self, fx):
         src, tree, lines = fx
@@ -449,7 +458,8 @@ class TestParamType:
     def test_result_contains_method_name(self, fx):
         src, tree, lines = fx
         r = q_uses(src, tree, lines, "ILogger", uses_kind="param")
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             # Should mention the enclosing method/ctor name
             assert "(" in t
 
@@ -470,7 +480,8 @@ class TestCasts:
     def test_cast_text_contains_type(self, fx):
         src, tree, lines = fx
         r = q_casts(src, tree, lines, "TextProcessor")
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             assert "TextProcessor" in t
 
     def test_no_match_for_unknown_type(self, fx):
@@ -490,7 +501,8 @@ class TestCasts:
         src, tree, lines = fx
         r = q_casts(src, tree, lines, "TextProcessor")
         # All results should be actual code lines, not the comment line
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             stripped = t.strip()
             assert not stripped.startswith("//"), \
                 f"Comment line incorrectly reported as cast: {t!r}"
@@ -529,7 +541,8 @@ class TestIdent:
         r = q_all_refs(src, tree, lines, "ProcessResult")
         # Lines that mention only ProcessResultSummary (never the bare token
         # "ProcessResult") should not appear in the results.
-        for _, t in r:
+        for row in r:
+            t = row[-1]
             if "ProcessResultSummary" in t:
                 # The line must also contain "ProcessResult" as a separate token
                 # (e.g. it could legitimately mention both).

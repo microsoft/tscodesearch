@@ -50,21 +50,25 @@ imports nothing from `vscode`, so it can be unit-tested with plain Node.js.
 
 ## Search modes
 
-Defined in `client.ts` `MODES` array. Each entry has `key`, `label`, `queryBy`, `weights`, and `desc`. The daemon's `/query-codebase` does an index pre-filter (Tantivy) followed by tree-sitter AST post-processing for line-level matches.
+Defined in `client.ts` `MODES` array. Each entry has `key`, `label`, `queryBy`, `weights`, `desc`, and optionally `astMode`/`uses_kind`. The daemon's `/query-codebase` does an index pre-filter (Tantivy) followed by tree-sitter AST post-processing for line-level matches.
 
-| Key | `query_by` fields | Intent |
-|-----|-------------------|--------|
-| `text` | filename, class_names, method_names, content | Broad full-text |
-| `declarations` | method_sigs, method_names, filename | Method/type signature search [T1] |
-| `implements` | base_types, class_names, filename | Interface implementors [T1] |
-| `calls` | call_sites, filename | Call sites of a method [T1] |
-| `uses` | type_refs, class_names, filename | Type reference search [T2] |
-| `casts` | cast_sites, filename | Explicit cast sites [T2] |
-| `attrs` | attributes, filename | Attribute decoration [T2] |
-| `all_refs` | type_refs, call_sites, filename | All references — broad |
-| `accesses_on` | type_refs, filename | Member accesses on instances of a type |
-| `uses_field` | type_refs, filename | Fields/properties declared as a given type |
-| `uses_param` | type_refs, filename | Method parameters typed as a given type |
+The `queryBy`/`weights` fields on `MODES` are **not** sent to the daemon — `/query-codebase` resolves them server-side from `astMode` + `uses_kind` (see `_resolve_query_params` in `tsquery_server.py`). They survive on the client only as labels for the panel UI and may go away in a future cleanup. The intent column below describes what the user sees; the actual field set queried is determined by the server.
+
+| Key | `astMode` sent to daemon | `uses_kind` | Intent |
+|-----|--------------------------|-------------|--------|
+| `text` | (key is sent as-is — falls through to `all_refs` server-side) | — | Broad identifier search |
+| `declarations` | `declarations` | — | Method/type signature search [T1] |
+| `implements` | `implements` | — | Interface implementors [T1] |
+| `calls` | `calls` | — | Call sites of a method [T1] |
+| `uses` | `uses` | — | Type reference search (default `type_refs,cast_types`) [T2] |
+| `casts` | `casts` | — | Explicit `(T)expr` / `as T` cast sites [T1] |
+| `attrs` | `attrs` | — | `[Attribute]` decoration [T1] |
+| `all_refs` | `all_refs` | — | All identifier occurrences — broadest |
+| `accesses_on` | `accesses_on` | — | `.Member` accesses on instances of a type |
+| `uses_field` | `uses` | `field` | Fields/properties declared as a given type |
+| `uses_param` | `uses` | `param` | Method/ctor parameters typed as a given type |
+
+The server-side field-set mapping (one source of truth) lives in `tsquery_server._resolve_query_params`; see `../CLAUDE.md` for the full mode → query-by table.
 
 ## Config
 

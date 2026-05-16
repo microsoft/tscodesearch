@@ -63,11 +63,17 @@ class FileDescription:
 
 @dataclass
 class ClassInfo:
-    """A type declaration (class, struct, interface, enum, trait, union, …)."""
+    """A type declaration (class, struct, interface, enum, trait, union, …).
+
+    ``line`` is the 1-indexed start line of the declaration; ``end_line`` is
+    the 1-indexed last line of its body, inclusive. ``end_line == line`` for
+    forward declarations / interface stubs that have no body.
+    """
     line: int
     name: str
     kind: str
     bases: list = dc_field(default_factory=list)
+    end_line: int = 0
 
     @property
     def text(self) -> str:
@@ -77,7 +83,12 @@ class ClassInfo:
 
 @dataclass
 class MethodInfo:
-    """A function, method, constructor, property accessor, or event member."""
+    """A function, method, constructor, property accessor, or event member.
+
+    ``line``/``end_line`` are 1-indexed and span the whole declaration
+    including any leading attributes/decorators and the body. For fields
+    (no body) ``end_line == line``.
+    """
     line: int
     name: str
     kind: str
@@ -85,6 +96,13 @@ class MethodInfo:
     cls_name: str = ""
     return_type: str = ""
     param_types: list = dc_field(default_factory=list)
+    # Every identifier-like token appearing in the member's signature —
+    # attribute names, modifiers' identifiers, generic args, parameter names,
+    # default-value identifiers, etc. Excludes the body. Populated by each
+    # language's extractor using language-aware AST traversal; empty list
+    # means the language doesn't yet emit them.
+    sig_tokens: list = dc_field(default_factory=list)
+    end_line: int = 0
 
     @property
     def text(self) -> str:
@@ -100,6 +118,10 @@ class FieldInfo:
     kind: str
     field_type: str = ""
     sig: str = ""
+    # Same purpose as MethodInfo.sig_tokens — every identifier in the
+    # field/property declaration excluding any initialiser body.
+    sig_tokens: list = dc_field(default_factory=list)
+    end_line: int = 0
 
     @property
     def text(self) -> str:
@@ -123,14 +145,32 @@ class AttrInfo:
 
 
 def _make_matches(results):
-    """Convert (line, text) tuples from query functions to list[{"line": N, "text": "..."}]."""
+    """Convert tuples from query functions to list of match dicts.
+
+    Accepts either:
+      * ``(line, text)`` — pattern-mode results; emits ``{"line": N, "text": ...}``
+      * ``(line, end_line, text)`` — listing-mode results with scope; emits
+        ``{"line": N, "end_line": M, "text": ...}``. ``end_line`` lets callers
+        ``Read(file, offset=line, limit=end_line - line + 1)`` precisely.
+    """
     out = []
-    for line_num, text in results:
+    for row in results:
+        if len(row) == 3:
+            line_num, end_num, text = row
+            try:    end_int = int(end_num)
+            except (ValueError, TypeError):
+                end_int = 0
+        else:
+            line_num, text = row
+            end_int = 0
         try:
             line_int = int(line_num)
         except (ValueError, TypeError):
             line_int = 0
-        out.append({"line": line_int, "text": (text or "").rstrip()})
+        match = {"line": line_int, "text": (text or "").rstrip()}
+        if end_int and end_int != line_int:
+            match["end_line"] = end_int
+        out.append(match)
     return out
 
 

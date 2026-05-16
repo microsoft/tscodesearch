@@ -63,7 +63,7 @@ function apiGet(urlPath, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
         const req = http.request({
             host: 'localhost', port: PORT, path: urlPath, method: 'GET',
-            headers: { 'X-TYPESENSE-API-KEY': API_KEY },
+            headers: { 'X-API-KEY': API_KEY },
         }, res => {
             let data = '';
             res.on('data', d => data += d);
@@ -84,7 +84,7 @@ function apiPost(urlPath, body, timeoutMs = 10000) {
         const req = http.request({
             host: 'localhost', port: PORT, path: urlPath, method: 'POST',
             headers: {
-                'X-TYPESENSE-API-KEY': API_KEY,
+                'X-API-KEY': API_KEY,
                 'Content-Type': 'application/json',
                 'Content-Length': Buffer.byteLength(data),
             },

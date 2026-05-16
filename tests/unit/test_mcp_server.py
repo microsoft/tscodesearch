@@ -1,8 +1,8 @@
 """
 Tests for mcp_server.py — helper functions and query_single_file tool.
 
-No indexserver or Typesense required.  The mcp package is stubbed when absent
-so the tests run under the indexserver venv as well as the client venv.
+No daemon required. The mcp package is stubbed when absent so the tests run
+under any Python with tree-sitter installed.
 """
 from __future__ import annotations
 
@@ -51,22 +51,26 @@ except Exception as e:
 _skip = unittest.skipUnless(_IMPORT_OK, f"mcp_server import failed: {_IMPORT_ERR}")
 
 
-# ── _collection_for_root ──────────────────────────────────────────────────────
+# ── collection_for_root (indexserver.config) ─────────────────────────────────
 
 @_skip
 class TestCollectionForRoot(unittest.TestCase):
 
     def test_default(self):
-        assert _ms._collection_for_root("default") == "codesearch_default"
+        from indexserver.config import collection_for_root
+        assert collection_for_root("default") == "codesearch_default"
 
     def test_uppercase_lowered(self):
-        assert _ms._collection_for_root("Backend") == "codesearch_backend"
+        from indexserver.config import collection_for_root
+        assert collection_for_root("Backend") == "codesearch_backend"
 
     def test_spaces_replaced(self):
-        assert _ms._collection_for_root("My Project") == "codesearch_my_project"
+        from indexserver.config import collection_for_root
+        assert collection_for_root("My Project") == "codesearch_my_project"
 
     def test_special_chars_replaced(self):
-        assert _ms._collection_for_root("my-repo/src") == "codesearch_my_repo_src"
+        from indexserver.config import collection_for_root
+        assert collection_for_root("my-repo/src") == "codesearch_my_repo_src"
 
 
 # ── _rel_path ─────────────────────────────────────────────────────────────────
@@ -126,12 +130,19 @@ class TestTruncate(unittest.TestCase):
 
 # ── _to_windows_path ──────────────────────────────────────────────────────────
 
+def _root(name, path):
+    """Build a Root instance matching what load_config produces."""
+    from indexserver.config import Root, collection_for_root, INCLUDE_EXTENSIONS
+    return Root(name=name, path=path, collection=collection_for_root(name),
+                extensions=INCLUDE_EXTENSIONS)
+
+
 @_skip
 class TestToWindowsPath(unittest.TestCase):
 
     def setUp(self):
         self._orig_roots = _ms._ROOTS
-        _ms._ROOTS = {"default": "C:/myproject/src"}
+        _ms._ROOTS = {"default": _root("default", "C:/myproject/src")}
 
     def tearDown(self):
         _ms._ROOTS = self._orig_roots
@@ -155,40 +166,44 @@ class TestToWindowsPath(unittest.TestCase):
         assert result == "C:/myproject/src/services/Widget.cs"
 
 
-# ── _get_root ─────────────────────────────────────────────────────────────────
+# ── _resolve_root ─────────────────────────────────────────────────────────────
 
 @_skip
-class TestGetRoot(unittest.TestCase):
+class TestResolveRoot(unittest.TestCase):
 
     def setUp(self):
         self._orig_roots = _ms._ROOTS
         _ms._ROOTS = {
-            "default": "C:/myproject/src",
-            "tests":   "C:/myproject/tests",
+            "default": _root("default", "C:/myproject/src"),
+            "tests":   _root("tests",   "C:/myproject/tests"),
         }
+        # _cfg.roots is what Config.get_root reads, so keep them in sync.
+        self._orig_cfg_roots = _ms._cfg.roots
+        object.__setattr__(_ms._cfg, "roots", _ms._ROOTS)
 
     def tearDown(self):
         _ms._ROOTS = self._orig_roots
+        object.__setattr__(_ms._cfg, "roots", self._orig_cfg_roots)
 
     def test_empty_name_returns_default(self):
-        coll, path = _ms._get_root("")
-        assert coll == "codesearch_default"
-        assert path == "C:/myproject/src"
+        r = _ms._resolve_root("")
+        assert r.collection == "codesearch_default"
+        assert r.path == "C:/myproject/src"
 
     def test_named_root(self):
-        coll, path = _ms._get_root("tests")
-        assert coll == "codesearch_tests"
-        assert path == "C:/myproject/tests"
+        r = _ms._resolve_root("tests")
+        assert r.collection == "codesearch_tests"
+        assert r.path == "C:/myproject/tests"
 
     def test_unknown_root_raises(self):
         with self.assertRaises(ValueError):
-            _ms._get_root("nonexistent")
+            _ms._resolve_root("nonexistent")
 
-    def test_dict_entry_uses_path_field(self):
-        _ms._ROOTS["complex"] = {"path": "C:/complex/src", "other": "ignored"}
-        coll, path = _ms._get_root("complex")
-        assert coll == "codesearch_complex"
-        assert path == "C:/complex/src"
+    def test_no_roots_raises(self):
+        _ms._ROOTS = {}
+        object.__setattr__(_ms._cfg, "roots", _ms._ROOTS)
+        with self.assertRaises(ValueError):
+            _ms._resolve_root("")
 
 
 # ── query_single_file ─────────────────────────────────────────────────────────
@@ -203,14 +218,17 @@ class TestQuerySingleFile(unittest.TestCase):
     """
 
     def setUp(self):
-        self._orig_roots   = _ms._ROOTS
-        self._orig_to_wp   = _ms._to_windows_path
-        _ms._ROOTS = {"default": _SAMPLE}
+        self._orig_roots     = _ms._ROOTS
+        self._orig_cfg_roots = _ms._cfg.roots
+        self._orig_to_wp     = _ms._to_windows_path
+        _ms._ROOTS = {"default": _root("default", _SAMPLE)}
+        object.__setattr__(_ms._cfg, "roots", _ms._ROOTS)
         if sys.platform != "win32":
             _ms._to_windows_path = lambda p: p  # no-op: keep native paths on Linux
 
     def tearDown(self):
-        _ms._ROOTS          = self._orig_roots
+        _ms._ROOTS = self._orig_roots
+        object.__setattr__(_ms._cfg, "roots", self._orig_cfg_roots)
         _ms._to_windows_path = self._orig_to_wp
 
     # ── error cases ───────────────────────────────────────────────────────────
@@ -578,7 +596,7 @@ class TestQueryCodebaseTier3(unittest.TestCase):
         assert idx_huge < idx_mid < idx_tiny
 
     def test_drops_files_with_zero_ast_matches(self):
-        """Typesense false positives (matches=[]) shouldn't appear."""
+        """Index false positives (matches=[]) shouldn't appear."""
         hits = [
             {"document": {"id": "a", "relative_path": "src/Real.cs", "filename": "Real.cs"},
              "matches": [{"line": 1, "text": "hit"}]},
@@ -695,9 +713,9 @@ class TestWaitForSync(unittest.TestCase):
         self._t = [0.0]
         self._orig_monotonic = _ms.time.monotonic
         _ms.time.monotonic = lambda: self._t[0]
-        # Default _get_root patch so root validation does not need real config.
-        self._orig_get_root = _ms._get_root
-        _ms._get_root = lambda name="": ("codesearch_default", "C:/myproject/src")
+        # Default _resolve_root patch so root validation does not need real config.
+        self._orig_resolve_root = _ms._resolve_root
+        _ms._resolve_root = lambda name="": _root("default", "C:/myproject/src")
         # Default _get patch slot — each test installs its own.
         self._orig_get = _ms._get
 
@@ -705,7 +723,7 @@ class TestWaitForSync(unittest.TestCase):
         _ms.time.sleep      = self._orig_sleep
         _ms.time.monotonic  = self._orig_monotonic
         _ms._get            = self._orig_get
-        _ms._get_root       = self._orig_get_root
+        _ms._resolve_root   = self._orig_resolve_root
 
     def _set_responses(self, responses):
         """Patch _ms._get to return successive responses, advancing time by
@@ -767,7 +785,7 @@ class TestWaitForSync(unittest.TestCase):
     def test_transient_error_retried_then_succeeds(self):
         """A single /status timeout must NOT be reported as 'not running' —
         wait_for_sync should retry and surface a successful sync on the next poll.
-        Regression test for the user-reported bug where a slow Typesense
+        Regression test for the user-reported bug where a slow backend
         round-trip in /status caused an immediate 'NOT running' return."""
         calls = {"n": 0}
         def _flaky(path, timeout=10):
@@ -792,8 +810,8 @@ class TestWaitForSync(unittest.TestCase):
     def test_unknown_root_rejected_without_polling(self):
         def _should_not_be_called(*_a, **_kw):
             raise AssertionError("_get must not be called when root is invalid")
-        _ms._get      = _should_not_be_called
-        _ms._get_root = lambda name="": (_ for _ in ()).throw(ValueError(f"Unknown root: {name!r}"))
+        _ms._get          = _should_not_be_called
+        _ms._resolve_root = lambda name="": (_ for _ in ()).throw(ValueError(f"Unknown root: {name!r}"))
         result = _ms.wait_for_sync(timeout_s=5, root="nope")
         assert "Error:" in result
         assert "nope" in result

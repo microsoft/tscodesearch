@@ -2,7 +2,7 @@
 Tests verifying consistency between the indexer (extract_metadata) and the
 query functions (q_*), and documenting known gaps between the two systems.
 
-These tests run purely in-memory — no Typesense server required.
+These tests run purely in-memory — no daemon required.
 
 Gap taxonomy used in this file:
   CONSISTENT  – both systems produce equivalent data for this property
@@ -36,7 +36,7 @@ def _parse(src: bytes):
 
 
 def _texts(results):
-    return [t for _, t in results]
+    return [t for t in (row[-1] for row in results)]
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ class TestBaseTypesConsistency:
         """Every type that q_implements finds for IWidget should be represented
         in the indexer's class_names alongside a base_types entry."""
         r = q_implements(*fx, "IWidget")
-        for _, txt in r:
+        for txt in (row[-1] for row in r):
             # txt is "[class] ClassName : base1, base2"
             # extract declared name (between '] ' and ' :')
             after_bracket = txt.split("] ", 1)[-1]
@@ -235,8 +235,8 @@ class TestClassNamesConsistency:
     def test_indexer_matches_query_count(self, meta, fx):
         """Number of distinct class_names from indexer == number of types from q_classes."""
         q_names = {
-            txt.split("] ", 1)[-1].split(" :")[0].strip()
-            for _, txt in q_classes(*fx)
+            row[-1].split("] ", 1)[-1].split(" :")[0].strip()
+            for row in q_classes(*fx)
         }
         for name in meta["class_names"]:
             assert name in q_names, \
@@ -300,7 +300,7 @@ class TestMethodSigsFieldNameGap:
     def test_query_includes_return_type_in_method_output(self, fx):
         """q_methods correctly shows return types."""
         r = q_methods(*fx)
-        transform_lines = [t for _, t in r if "Transform" in t and "[method]" in t]
+        transform_lines = [t for t in (row[-1] for row in r) if "Transform" in t and "[method]" in t]
         assert transform_lines, "Transform method not found by q_methods"
         assert any("string" in t for t in transform_lines), \
             f"Return type 'string' missing from q_methods output: {transform_lines}"
@@ -553,17 +553,17 @@ namespace N {
         """event_field_declaration is now found by q_methods as '[event]'."""
         s, t, ls = _parse(self._SRC_FIELD)
         r = q_methods(s, t, ls)
-        assert any("OnChanged" in txt for _, txt in r), \
+        assert any("OnChanged" in txt for txt in (row[-1] for row in r)), \
             "field-style event should appear in q_methods output"
-        assert any("[event]" in txt for _, txt in r)
+        assert any("[event]" in txt for txt in (row[-1] for row in r))
 
     def test_accessor_style_event_found_by_q_methods(self):
         """event_declaration (accessor form) IS in _MEMBER_DECL_NODES so q_methods finds it."""
         s, t, ls = _parse(self._SRC_ACCESSOR)
         r = q_methods(s, t, ls)
-        assert any("OnAccessor" in txt for _, txt in r), \
+        assert any("OnAccessor" in txt for txt in (row[-1] for row in r)), \
             "accessor-style event should appear in q_methods as '[event]'"
-        assert any("[event]" in txt for _, txt in r)
+        assert any("[event]" in txt for txt in (row[-1] for row in r))
 
     def test_accessor_style_event_found_by_indexer(self):
         """event_declaration name and type ARE captured by the indexer."""
@@ -577,7 +577,7 @@ namespace N {
         """q_fields omits all event declarations (both styles)."""
         s, t, ls = _parse(self._SRC_ACCESSOR)
         r = q_fields(s, t, ls)
-        assert not any("[event]" in txt for _, txt in r), \
+        assert not any("[event]" in txt for txt in (row[-1] for row in r)), \
             "q_fields should never include event declarations"
 
     def test_q_field_type_finds_field_style_event(self):
@@ -585,7 +585,7 @@ namespace N {
         s, t, ls = _parse(self._SRC_FIELD)
         r = q_uses(s, t, ls, "EventHandler", uses_kind="field")
         assert len(r) >= 1, "uses(kind=field) should find event_field_declaration by type"
-        assert any("OnChanged" in txt for _, txt in r)
+        assert any("OnChanged" in txt for txt in (row[-1] for row in r))
 
 
 # ===========================================================================
@@ -596,7 +596,7 @@ class TestCastSitesMissing:
     """
     GAP CLOSED: cast_types is now a T1 field.
     q_casts finds explicit (TYPE)expr cast expressions; the indexer now extracts
-    the same types into cast_types for Typesense pre-filtering.
+    the same types into cast_types for the Tantivy pre-filter.
     Cast targets do NOT bleed into type_refs — they remain in cast_types only.
     """
 
@@ -632,9 +632,9 @@ namespace N {
 class TestIdentMissing:
     """
     MISSING: q_ident is a semantic grep over all identifier occurrences.
-    There is no equivalent field in the Typesense index; the content field
-    holds raw source text for full-text search, but it is not semantically
-    filtered (includes comments and strings).
+    There is no dedicated index field for it; the closest is the `tokens` bag,
+    which holds every identifier in code (excluding strings and comments) but
+    is queried only via the broad `all_refs` mode.
     """
 
     def test_q_ident_finds_all_occurrences(self, fx):
@@ -711,7 +711,7 @@ class TestFieldParamTypeConsistency:
 
     def test_field_type_results_in_type_refs(self, fx, meta):
         """Every type returned by q_field_type should be in type_refs."""
-        for _, txt in q_uses(*fx, "IWidget", uses_kind="field"):
+        for row in q_uses(*fx, "IWidget", uses_kind="field"):
             # type_refs stores individual type names, not full qualified strings
             assert "IWidget" in meta["type_refs"], \
                 f"uses(kind=field) found IWidget field but it's absent from type_refs"
@@ -755,18 +755,19 @@ class TestNamespaceConsistency:
     """CONSISTENT — both indexer and q_usings work from the same source."""
 
     def test_indexer_extracts_namespace(self, meta):
-        assert meta["namespace"] == "TestApp", \
+        # namespace is multi-value raw — one entry per dot-separated component.
+        assert meta["namespace"] == ["TestApp"], \
             f"namespace: {meta['namespace']!r}"
 
     def test_file_scoped_namespace(self):
         src = b"namespace MyApp.Core;\npublic class C {}"
         m = extract_metadata(src, ".cs")
-        assert m["namespace"] == "MyApp.Core", \
+        assert m["namespace"] == ["MyApp", "Core"], \
             f"file-scoped namespace: {m['namespace']!r}"
 
     def test_nested_namespace_uses_first(self):
         src = b"namespace Outer { namespace Inner { public class C {} } }"
         m = extract_metadata(src, ".cs")
-        # Indexer stores the first namespace found
-        assert m["namespace"] in ("Outer", "Inner"), \
+        # Indexer stores the first namespace found, split by component.
+        assert m["namespace"] in (["Outer"], ["Inner"]), \
             f"namespace: {m['namespace']!r}"

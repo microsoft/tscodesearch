@@ -113,7 +113,7 @@ class TestImplementsDisplay(unittest.TestCase):
     """
     q_implements used _base_type_names() for the display string.
     _base_type_names() strips generic type parameters (returning "IProcessor"
-    instead of "IProcessor<string>") because that is what the Typesense
+    instead of "IProcessor<string>") because that is what the Tantivy
     index needs.  The result text therefore omitted type parameters, which
     was misleading when multiple implementations used different type args.
     Fixed by reading the raw base_list node text for display.

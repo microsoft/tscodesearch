@@ -22,7 +22,6 @@ import os
 import re
 import shutil
 import threading
-from dataclasses import dataclass
 from pathlib import Path
 
 import tantivy
@@ -31,27 +30,38 @@ import tantivy
 # Schema definition — kept here because the same field set is consulted by
 # writer (build_document → backend.add) and reader (search.search).
 #
-# Fields the user can search by name. The values listed here are also the
-# accepted query_by tokens.
+# Every text field in this schema uses the ``raw`` tokenizer: Tantivy stores
+# each entry verbatim as a single term, with no splitting on punctuation/case
+# and no length filter. The indexer is responsible for producing the right
+# tokens for each field — including domain-appropriate splits like dotted
+# namespaces (``Acme.Billing.Service`` → three entries) and per-directory
+# path components (``services/billing/Foo.cs`` → ``services``, ``billing``,
+# ``Foo``, ``cs``, ``Foo.cs``). Putting all splitting in the indexer means
+# every language can decide its own rules and no token is ever silently
+# dropped because Tantivy's SimpleTokenizer didn't like it.
 SEARCHABLE_FIELDS: tuple[str, ...] = (
-    "filename", "namespace",
+    "namespace",
     "tokens",
     "class_names", "method_names",
-    "member_sigs",
+    "member_sig_tokens",
     "base_types", "field_types", "local_types",
     "param_types", "return_types", "cast_types",
     "type_refs", "call_sites", "member_accesses",
     "attr_names", "usings",
+    "path_tokens",
 )
 
 # Multi-value fields (added several times per document).
 MULTI_VALUE_FIELDS: frozenset[str] = frozenset({
     "class_names", "method_names",
-    "member_sigs",
+    "member_sig_tokens",
     "base_types", "field_types", "local_types",
     "param_types", "return_types", "cast_types",
     "type_refs", "call_sites", "member_accesses",
     "attr_names", "usings",
+    "namespace",
+    "tokens",
+    "path_tokens",
     "path_segments",
 })
 
@@ -60,33 +70,46 @@ RAW_FIELDS: frozenset[str] = frozenset({
     "id", "relative_path", "extension", "language", "path_segments",
 })
 
+# Fields kept ``stored=True`` so values can be retrieved at search time:
+# the document id, what file matched, when it was indexed (verifier diff),
+# and the basename + ext/language for display & filtering. Every other text
+# field on the schema is ``stored=False`` — indexed for search but not
+# retrievable. The AST stage is what actually produces line-level output,
+# so the index doesn't need to carry display-only payload.
+STORED_FIELDS: frozenset[str] = frozenset({
+    "id", "relative_path", "filename", "extension", "language",
+    "path_segments", "mtime",
+})
+
 
 def build_schema() -> tantivy.Schema:
     sb = tantivy.SchemaBuilder()
-    # Identity / retrieval
+    # ── Stored fields: retrievable at search time ─────────────────────────
     sb.add_text_field("id",            stored=True, tokenizer_name="raw")
     sb.add_text_field("relative_path", stored=True, tokenizer_name="raw")
-    sb.add_text_field("filename",      stored=True)
     sb.add_text_field("extension",     stored=True, tokenizer_name="raw")
     sb.add_text_field("language",      stored=True, tokenizer_name="raw")
-    sb.add_text_field("namespace",     stored=True)
     sb.add_text_field("path_segments", stored=True, tokenizer_name="raw")
+    sb.add_text_field("filename",      stored=True, tokenizer_name="raw")
 
-    # Tokens — deduped bag of identifiers extracted from the file's AST.
-    sb.add_text_field("tokens", stored=False)
-
-    # Multi-value pre-extracted fields. Each entry is a single identifier — the
-    # AST extractors pre-split compound forms (e.g. ``Task<Widget>`` arrives as
-    # both ``Task`` and ``Widget``).
+    # ── Search-only multi-value raw fields (stored=False) ────────────────
+    # Indexed for query_by matching, not retrievable from the document.
+    # The AST post-filter produces the line-level output; the index only
+    # needs to know whether each file CONTAINS a given identifier so it can
+    # pre-filter the candidate set. Storing every identifier list per doc
+    # would bloat the index for no real benefit.
     for f in (
+        "namespace",
         "class_names", "method_names",
-        "member_sigs",
+        "member_sig_tokens",   # every identifier inside a sig
         "base_types", "field_types", "local_types",
         "param_types", "return_types", "cast_types",
         "type_refs", "call_sites", "member_accesses",
         "attr_names", "usings",
+        "tokens",       # deduped bag of every identifier in the file
+        "path_tokens",  # per-directory + filename parts
     ):
-        sb.add_text_field(f, stored=True)
+        sb.add_text_field(f, stored=False, tokenizer_name="raw")
 
     # File modification time — fast field so export_id_mtime() stays cheap.
     sb.add_unsigned_field("mtime", stored=True, fast=True)
@@ -96,12 +119,6 @@ def build_schema() -> tantivy.Schema:
 # ---------------------------------------------------------------------------
 # Backend
 # ---------------------------------------------------------------------------
-
-@dataclass
-class _OpenFailure:
-    path: str
-    error: Exception
-
 
 class Backend:
     """One Tantivy index, with optional writer."""
@@ -239,12 +256,13 @@ class Backend:
     def _reopen_writer(self) -> None:
         """Discard the current writer and open a fresh one. Used after a
         commit failure leaves the writer in an undefined state."""
-        try:
-            self._writer.wait_merging_threads()
-        except Exception:
-            # The writer is already in an undefined state (we're recovering from
-            # a commit failure); skip the wait and rebuild from disk below.
-            pass
+        if self._writer is not None:
+            try:
+                self._writer.wait_merging_threads()
+            except Exception:
+                # The writer is already in an undefined state (we're recovering
+                # from a commit failure); skip the wait and rebuild from disk.
+                pass
         self._writer = None
         gc.collect()
         # Reload the index handle so the new writer sees the post-rollback state.
@@ -317,7 +335,7 @@ class Backend:
             return {}
         result = searcher.search(tantivy.Query.all_query(), limit=n)
         out: dict[str, int] = {}
-        for _score, addr in result.hits:
+        for _, addr in result.hits:
             doc = searcher.doc(addr).to_dict()
             doc_id = (doc.get("id") or [""])[0]
             mtime  = (doc.get("mtime") or [0])[0]

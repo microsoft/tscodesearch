@@ -7,7 +7,7 @@ a 500 error at runtime.
 
 These tests catch that class of bug for all modes.
 
-Run (no Typesense):
+Run (no daemon):
     pytest tests/unit/test_api_dispatch_tables.py -v
 """
 from __future__ import annotations

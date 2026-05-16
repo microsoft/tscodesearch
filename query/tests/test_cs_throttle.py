@@ -56,7 +56,7 @@ def _lines_of(results):
 
 def _texts(results):
     """Concatenate all result texts into one string for assertion scanning."""
-    return " ".join(t for _, t in results)
+    return " ".join(t for t in (row[-1] for row in results))
 
 
 # ===========================================================================
@@ -71,7 +71,7 @@ class TestDeclarations(unittest.TestCase):
     def test_finds_class_by_name(self):
         r = self._decl("ExponentialRetry")
         assert r, "ExponentialRetry class must be found"
-        assert any("ExponentialRetry" in t for _, t in r)
+        assert any("ExponentialRetry" in t for t in (row[-1] for row in r))
 
     def test_finds_interface_by_name(self):
         r = self._decl("IRetryPolicy")
@@ -113,7 +113,7 @@ class TestImplements(unittest.TestCase):
     def test_retryrunner_not_returned(self):
         """RetryRunner does not implement IRetryPolicy."""
         r = self._impl("IRetryPolicy")
-        assert not any("RetryRunner" in t for _, t in r)
+        assert not any("RetryRunner" in t for t in (row[-1] for row in r))
 
     def test_nonexistent_interface_returns_empty(self):
         assert self._impl("INonExistent") == []
@@ -131,12 +131,12 @@ class TestCalls(unittest.TestCase):
     def test_finds_math_min(self):
         r = self._calls("Math.Min")
         assert r, "Math.Min call must be found"
-        assert all("Min" in t for _, t in r)
+        assert all("Min" in t for t in (row[-1] for row in r))
 
     def test_finds_math_max(self):
         r = self._calls("Math.Max")
         assert r, "Math.Max call must be found"
-        assert all("Max" in t for _, t in r)
+        assert all("Max" in t for t in (row[-1] for row in r))
 
     def test_math_min_and_max_on_different_lines(self):
         """Math.Min and Math.Max appear on separate lines."""
@@ -148,7 +148,7 @@ class TestCalls(unittest.TestCase):
     def test_finds_record_attempt_call(self):
         r = self._calls("RecordAttempt")
         assert r, "_policy.RecordAttempt(ok) call must be found"
-        assert any("RecordAttempt" in t for _, t in r)
+        assert any("RecordAttempt" in t for t in (row[-1] for row in r))
 
     def test_interface_method_not_a_call(self):
         """RecordAttempt declarations are not calls — only the call site in RetryRunner."""
@@ -196,7 +196,7 @@ class TestAccessesOf(unittest.TestCase):
         """_policy.Interval in RetryRunner.Execute must be found."""
         r = self._of("Interval")
         assert r, "_policy.Interval must be found as an accesses_of result"
-        assert any("_policy.Interval" in t for _, t in r)
+        assert any("_policy.Interval" in t for t in (row[-1] for row in r))
 
     def test_interval_as_receiver_not_returned(self):
         """
@@ -340,14 +340,14 @@ class TestListingModes(unittest.TestCase):
     def test_methods_finds_record_attempt_in_both_classes(self):
         """RecordAttempt is declared in ExponentialRetry and FixedRetry."""
         r = q_methods(*_PARSED)
-        record_hits = [t for _, t in r if "RecordAttempt" in t]
+        record_hits = [t for t in (row[-1] for row in r) if "RecordAttempt" in t]
         assert len(record_hits) >= 2, \
             f"Expected RecordAttempt in ≥2 members, got {record_hits}"
 
     def test_methods_includes_fields_and_props(self):
         """methods listing mode returns all members: fields, props, ctors, methods."""
         r = q_methods(*_PARSED)
-        kinds = {t.split("]")[0].lstrip("[") for _, t in r if "]" in t}
+        kinds = {t.split("]")[0].lstrip("[") for t in (row[-1] for row in r) if "]" in t}
         assert "field"  in kinds, f"No field entries in methods listing: {kinds}"
         assert "prop"   in kinds, f"No prop entries in methods listing: {kinds}"
         assert "method" in kinds, f"No method entries in methods listing: {kinds}"
@@ -355,11 +355,11 @@ class TestListingModes(unittest.TestCase):
 
     def test_methods_finds_execute(self):
         r = q_methods(*_PARSED)
-        assert any("Execute" in t for _, t in r)
+        assert any("Execute" in t for t in (row[-1] for row in r))
 
     def test_methods_finds_interval_property(self):
         r = q_methods(*_PARSED)
-        assert any("Interval" in t for _, t in r)
+        assert any("Interval" in t for t in (row[-1] for row in r))
 
 
 if __name__ == "__main__":

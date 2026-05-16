@@ -49,7 +49,7 @@ def search(
     highlight_fields: str = "",
 ) -> dict:
     """Run a search and return a result dict."""
-    fields  = _split_csv(query_by) or ["filename", "tokens"]
+    fields  = _split_csv(query_by) or ["path_tokens", "tokens"]
     weight_list = _split_csv(weights)
     field_boosts: dict[str, float] = {}
     for i, f in enumerate(fields):
@@ -109,6 +109,14 @@ def _build_text_query(
     # one go. The escape step below removes characters that would otherwise be
     # interpreted as Tantivy query syntax (`:`, `+`, `-`, parentheses, etc.).
     # Only pass field_boosts/fuzzy_fields when non-empty — Tantivy rejects None.
+    #
+    # Per-identifier fields use the ``raw`` tokenizer (no length filter, no
+    # underscore splitting) so long identifiers and snake_case names match
+    # exactly. Tokenized fields (filename / namespace / member_sigs) still go
+    # through the default tokenizer; any ≥40-char word inside them would be
+    # dropped by RemoveLongFilter, but the indexer pre-truncates those, so the
+    # query naturally matches the stored prefix when one of those fields is in
+    # play.
     safe_q = _escape_query_text(q)
     kwargs = {"default_field_names": fields}
     if field_boosts:

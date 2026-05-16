@@ -1,11 +1,11 @@
 """
 Tests for JavaScript and TypeScript support: extract metadata and query functions.
 
-No server needed — all tests run against sample/root1/query_fixture.js and
+No daemon needed — all tests run against sample/root1/query_fixture.js and
 sample/root1/query_fixture.ts.
 
-Run from WSL:
-    ~/.local/indexserver-venv/bin/pytest tests/unit/test_js_ts.py -v
+Run:
+    .client-venv/Scripts/python.exe -m pytest tests/unit/test_js_ts.py -v
 """
 
 import os

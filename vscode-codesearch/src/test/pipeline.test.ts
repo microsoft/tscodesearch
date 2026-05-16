@@ -1,15 +1,15 @@
 /**
- * Pipeline integration tests — validate the full Typesense + AST search
- * pipeline, mirroring exactly what the VS Code extension does.
+ * Pipeline integration tests — validate the full Tantivy + tree-sitter AST
+ * search pipeline, mirroring exactly what the VS Code extension does.
  *
- * Start the server first:  ts start
- * Run all tests:           npm test
- * Run just this file:      node --require tsx/cjs --test src/test/pipeline.test.ts
+ * Start the daemon first:   ts start
+ * Run all tests:             npm test
+ * Run just this file:        node --require tsx/cjs --test src/test/pipeline.test.ts
  *
- * Live pipeline tests require the server AND the management API (port+1).
- * They always query against the sample data in sample/root1/ and sample/root2/
- * using hardcoded type names from those fixtures. They skip automatically when
- * the server is not reachable.
+ * Live pipeline tests require the daemon's HTTP API. They always query
+ * against the sample data in sample/root1/ and sample/root2/ using hardcoded
+ * type names from those fixtures. They skip automatically when the daemon is
+ * not reachable.
  *
  * Optional env vars:
  *   CS_CONFIG   Path to config.json (defaults to ../../../config.json)

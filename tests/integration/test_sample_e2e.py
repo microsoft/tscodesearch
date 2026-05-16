@@ -42,7 +42,7 @@ def _require_server() -> None:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _search(collection: str, q: str,
-            query_by: str = "filename,class_names,method_names,tokens",
+            query_by: str = "path_tokens,class_names,method_names,tokens",
             per_page: int = 20) -> list[dict]:
     from indexserver.indexer import ensure_backend
     from indexserver.search import search as _backend_search
@@ -56,7 +56,12 @@ def _search(collection: str, q: str,
     return [h["document"] for h in result.get("hits", [])]
 
 
-def _get_doc(collection: str, filename: str) -> dict | None:
+def _get_doc(collection: str, filename: str, src_root: str = "") -> dict | None:
+    """Return the indexed document for ``filename`` in ``collection``, or
+    ``None`` if not found. Used only for smoke checks that a file is in the
+    index; field-level assertions go through ``_search`` directly so they
+    test the index, not the parser. ``src_root`` is unused (kept for callers
+    that still pass it)."""
     hits = _search(collection, os.path.splitext(filename)[0], per_page=10)
     return next((h for h in hits if h.get("filename") == filename), None)
 
@@ -106,6 +111,7 @@ class TestSampleRoot1E2E(unittest.TestCase):
         _require_server()
         from indexserver.indexer import run_index
         cls.coll = f"test_e2e_r1_{int(time.time())}"
+        cls.src_root = SAMPLE_ROOT1
         run_index(_e2e_cfg, src_root=SAMPLE_ROOT1, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
@@ -125,145 +131,119 @@ class TestSampleRoot1E2E(unittest.TestCase):
             f"Expected {expected} docs in root1, got {ndocs}")
 
     def test_processors_cs_indexed(self):
-        self.assertIsNotNone(_get_doc(self.coll, "Processors.cs"),
+        self.assertIsNotNone(_get_doc(self.coll, "Processors.cs", self.src_root),
                              "Processors.cs not found in index")
 
     def test_datastore_cs_indexed(self):
-        self.assertIsNotNone(_get_doc(self.coll, "DataStore.cs"),
+        self.assertIsNotNone(_get_doc(self.coll, "DataStore.cs", self.src_root),
                              "DataStore.cs not found in index")
 
     def test_blobstorage_cs_indexed(self):
-        self.assertIsNotNone(_get_doc(self.coll, "BlobStorage.cs"),
+        self.assertIsNotNone(_get_doc(self.coll, "BlobStorage.cs", self.src_root),
                              "BlobStorage.cs not found in index")
 
     def test_services_py_indexed(self):
-        hits = _search(self.coll, "services", query_by="filename,tokens")
+        hits = _search(self.coll, "services", query_by="path_tokens,tokens")
         self.assertIn("services.py", [h["filename"] for h in hits],
                       "services.py not found in index")
 
     def test_pipeline_py_indexed(self):
-        hits = _search(self.coll, "pipeline", query_by="filename,tokens")
+        hits = _search(self.coll, "pipeline", query_by="path_tokens,tokens")
         self.assertIn("pipeline.py", [h["filename"] for h in hits],
                       "pipeline.py not found in index")
 
     # ── Semantic fields: Processors.cs ───────────────────────────────────────
 
     def test_processors_base_types_has_iprocessor(self):
-        doc = _get_doc(self.coll, "Processors.cs")
-        self.assertIsNotNone(doc)
-        bt = doc.get("base_types", [])
-        self.assertIn("IProcessor", bt,
-            f"Expected IProcessor in base_types (BaseProcessor : IProcessor<T>): {bt}")
+        hits = _search(self.coll, "IProcessor", query_by="base_types")
+        self.assertIn("Processors.cs", [h["filename"] for h in hits],
+            f"Expected IProcessor in base_types (BaseProcessor : IProcessor<T>): {[h["filename"] for h in hits]}")
 
     def test_processors_base_types_has_baseprocessor(self):
-        doc = _get_doc(self.coll, "Processors.cs")
-        self.assertIsNotNone(doc)
-        bt = doc.get("base_types", [])
-        self.assertIn("BaseProcessor", bt,
-            f"Expected BaseProcessor in base_types (TextProcessor : BaseProcessor<string>): {bt}")
+        hits = _search(self.coll, "BaseProcessor", query_by="base_types")
+        self.assertIn("Processors.cs", [h["filename"] for h in hits],
+            f"Expected BaseProcessor in base_types (TextProcessor : BaseProcessor<string>): {[h["filename"] for h in hits]}")
 
     def test_processors_attr_names_has_serializable(self):
-        doc = _get_doc(self.coll, "Processors.cs")
-        self.assertIsNotNone(doc)
-        attrs = doc.get("attr_names", [])
-        self.assertIn("Serializable", attrs,
-            f"Expected Serializable attribute on BaseProcessor: {attrs}")
+        hits = _search(self.coll, "Serializable", query_by="attr_names")
+        self.assertIn("Processors.cs", [h["filename"] for h in hits],
+            f"Expected Serializable attribute on BaseProcessor: {[h["filename"] for h in hits]}")
 
     def test_processors_attr_names_has_obsolete(self):
-        doc = _get_doc(self.coll, "Processors.cs")
-        self.assertIsNotNone(doc)
-        attrs = doc.get("attr_names", [])
-        self.assertIn("Obsolete", attrs,
-            f"Expected Obsolete attribute on TextProcessor: {attrs}")
+        hits = _search(self.coll, "Obsolete", query_by="attr_names")
+        self.assertIn("Processors.cs", [h["filename"] for h in hits],
+            f"Expected Obsolete attribute on TextProcessor: {[h["filename"] for h in hits]}")
 
     def test_processors_call_sites_has_process(self):
-        doc = _get_doc(self.coll, "Processors.cs")
-        self.assertIsNotNone(doc)
-        cs = doc.get("call_sites", [])
-        self.assertIn("Process", cs,
-            f"Expected Process in call_sites (processor.Process(input)): {cs}")
+        hits = _search(self.coll, "Process", query_by="call_sites")
+        self.assertIn("Processors.cs", [h["filename"] for h in hits],
+            f"Expected Process in call_sites (processor.Process(input)): {[h["filename"] for h in hits]}")
 
     def test_processors_call_sites_has_create(self):
-        doc = _get_doc(self.coll, "Processors.cs")
-        self.assertIsNotNone(doc)
-        cs = doc.get("call_sites", [])
-        self.assertIn("Create", cs,
-            f"Expected Create in call_sites (ProcessorFactory.Create(...)): {cs}")
+        hits = _search(self.coll, "Create", query_by="call_sites")
+        self.assertIn("Processors.cs", [h["filename"] for h in hits],
+            f"Expected Create in call_sites (ProcessorFactory.Create(...)): {[h["filename"] for h in hits]}")
 
     def test_processors_usings_has_system(self):
-        doc = _get_doc(self.coll, "Processors.cs")
-        self.assertIsNotNone(doc)
-        usings = doc.get("usings", [])
-        self.assertIn("System", usings, f"Expected System in usings: {usings}")
+        hits = _search(self.coll, "System", query_by="usings")
+        self.assertIn("Processors.cs", [h["filename"] for h in hits], f"Expected System in usings: {[h["filename"] for h in hits]}")
 
     def test_processors_class_names_has_textprocessor(self):
-        doc = _get_doc(self.coll, "Processors.cs")
-        self.assertIsNotNone(doc)
-        cn = doc.get("class_names", [])
-        self.assertIn("TextProcessor", cn, f"class_names: {cn}")
+        hits = _search(self.coll, "TextProcessor", query_by="class_names")
+        self.assertIn("Processors.cs", [h["filename"] for h in hits], f"class_names: {[h["filename"] for h in hits]}")
 
     # ── Semantic fields: DataStore.cs ─────────────────────────────────────────
 
     def test_datastore_base_types_has_idatastore(self):
-        doc = _get_doc(self.coll, "DataStore.cs")
-        self.assertIsNotNone(doc)
-        bt = doc.get("base_types", [])
-        self.assertIn("IDataStore", bt,
-            f"Expected IDataStore in base_types (SqlDataStore : IDataStore): {bt}")
+        hits = _search(self.coll, "IDataStore", query_by="base_types")
+        self.assertIn("DataStore.cs", [h["filename"] for h in hits],
+            f"Expected IDataStore in base_types (SqlDataStore : IDataStore): {[h["filename"] for h in hits]}")
 
     def test_datastore_base_types_has_idisposable(self):
-        doc = _get_doc(self.coll, "DataStore.cs")
-        self.assertIsNotNone(doc)
-        bt = doc.get("base_types", [])
-        self.assertIn("IDisposable", bt,
-            f"Expected IDisposable in base_types (SqlDataStore : ..., IDisposable): {bt}")
+        hits = _search(self.coll, "IDisposable", query_by="base_types")
+        self.assertIn("DataStore.cs", [h["filename"] for h in hits],
+            f"Expected IDisposable in base_types (SqlDataStore : ..., IDisposable): {[h["filename"] for h in hits]}")
 
     def test_datastore_type_refs_has_idatastore(self):
-        doc = _get_doc(self.coll, "DataStore.cs")
-        self.assertIsNotNone(doc)
-        refs = doc.get("type_refs", [])
-        self.assertIn("IDataStore", refs,
-            f"Expected IDataStore in type_refs (fields, params, local vars): {refs}")
+        hits = _search(self.coll, "IDataStore", query_by="type_refs")
+        self.assertIn("DataStore.cs", [h["filename"] for h in hits],
+            f"Expected IDataStore in type_refs (fields, params, local vars): {[h["filename"] for h in hits]}")
 
     # ── Semantic fields: BlobStorage.cs ──────────────────────────────────────
 
     def test_blobstorage_class_names_has_blobstore(self):
-        doc = _get_doc(self.coll, "BlobStorage.cs")
-        self.assertIsNotNone(doc)
-        cn = doc.get("class_names", [])
-        self.assertIn("BlobStore", cn, f"class_names: {cn}")
+        hits = _search(self.coll, "BlobStore", query_by="class_names")
+        self.assertIn("BlobStorage.cs", [h["filename"] for h in hits], f"class_names: {[h["filename"] for h in hits]}")
 
     def test_blobstorage_type_refs_has_blobstore(self):
-        doc = _get_doc(self.coll, "BlobStorage.cs")
-        self.assertIsNotNone(doc)
-        refs = doc.get("type_refs", [])
-        self.assertIn("BlobStore", refs,
-            f"Expected BlobStore in type_refs (field, param, cast, return types): {refs}")
+        hits = _search(self.coll, "BlobStore", query_by="type_refs")
+        self.assertIn("BlobStorage.cs", [h["filename"] for h in hits],
+            f"Expected BlobStore in type_refs (field, param, cast, return types): {[h["filename"] for h in hits]}")
 
     # ── Search-mode queries ───────────────────────────────────────────────────
 
     def test_implements_search_finds_processors_for_iprocessor(self):
-        hits = _search(self.coll, "IProcessor", query_by="base_types,class_names,filename")
+        hits = _search(self.coll, "IProcessor", query_by="base_types,class_names,path_tokens")
         self.assertIn("Processors.cs", [h["filename"] for h in hits],
             "Processors.cs not found via base_types search for IProcessor")
 
     def test_implements_search_finds_datastore_for_idatastore(self):
-        hits = _search(self.coll, "IDataStore", query_by="base_types,class_names,filename")
+        hits = _search(self.coll, "IDataStore", query_by="base_types,class_names,path_tokens")
         self.assertIn("DataStore.cs", [h["filename"] for h in hits],
             "DataStore.cs not found via base_types search for IDataStore")
 
     def test_attrs_search_finds_processors_for_serializable(self):
-        hits = _search(self.coll, "Serializable", query_by="attr_names,filename")
+        hits = _search(self.coll, "Serializable", query_by="attr_names,path_tokens")
         self.assertIn("Processors.cs", [h["filename"] for h in hits],
             "Processors.cs not found via attr_names search for Serializable")
 
     def test_calls_search_finds_processors_for_create(self):
-        hits = _search(self.coll, "Create", query_by="call_sites,filename")
+        hits = _search(self.coll, "Create", query_by="call_sites,path_tokens")
         self.assertIn("Processors.cs", [h["filename"] for h in hits],
             "Processors.cs not found via call_sites search for Create")
 
     def test_uses_search_finds_datastore_for_blobstore(self):
-        hits = _search(self.coll, "BlobStore", query_by="type_refs,class_names,filename")
+        hits = _search(self.coll, "BlobStore", query_by="type_refs,class_names,path_tokens")
         self.assertIn("DataStore.cs", [h["filename"] for h in hits],
             "DataStore.cs not found via type_refs search for BlobStore")
 
@@ -287,6 +267,7 @@ class TestSampleRoot2E2E(unittest.TestCase):
         _require_server()
         from indexserver.indexer import run_index
         cls.coll = f"test_e2e_r2_{int(time.time())}"
+        cls.src_root = SAMPLE_ROOT2
         run_index(_e2e_cfg, src_root=SAMPLE_ROOT2, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
@@ -306,126 +287,108 @@ class TestSampleRoot2E2E(unittest.TestCase):
             f"Expected {expected} docs in root2, got {ndocs}")
 
     def test_widgets_cs_indexed(self):
-        self.assertIsNotNone(_get_doc(self.coll, "Widgets.cs"),
+        self.assertIsNotNone(_get_doc(self.coll, "Widgets.cs", self.src_root),
                              "Widgets.cs not found in index")
 
     def test_repositories_cs_indexed(self):
-        self.assertIsNotNone(_get_doc(self.coll, "Repositories.cs"),
+        self.assertIsNotNone(_get_doc(self.coll, "Repositories.cs", self.src_root),
                              "Repositories.cs not found in index")
 
     def test_synthtypes_cs_indexed(self):
-        self.assertIsNotNone(_get_doc(self.coll, "SynthTypes.cs"),
+        self.assertIsNotNone(_get_doc(self.coll, "SynthTypes.cs", self.src_root),
                              "SynthTypes.cs not found in index")
 
     def test_models_py_indexed(self):
-        hits = _search(self.coll, "models", query_by="filename,tokens")
+        hits = _search(self.coll, "models", query_by="path_tokens,tokens")
         self.assertIn("models.py", [h["filename"] for h in hits],
                       "models.py not found in index")
 
     def test_notifier_py_indexed(self):
-        hits = _search(self.coll, "notifier", query_by="filename,tokens")
+        hits = _search(self.coll, "notifier", query_by="path_tokens,tokens")
         self.assertIn("notifier.py", [h["filename"] for h in hits],
                       "notifier.py not found in index")
 
     # ── Semantic fields: Widgets.cs ───────────────────────────────────────────
 
     def test_widgets_base_types_has_iwidgetservice(self):
-        doc = _get_doc(self.coll, "Widgets.cs")
-        self.assertIsNotNone(doc)
-        bt = doc.get("base_types", [])
-        self.assertIn("IWidgetService", bt,
-            f"Expected IWidgetService in base_types (WidgetService : IWidgetService): {bt}")
+        hits = _search(self.coll, "IWidgetService", query_by="base_types")
+        self.assertIn("Widgets.cs", [h["filename"] for h in hits],
+            f"Expected IWidgetService in base_types (WidgetService : IWidgetService): {[h["filename"] for h in hits]}")
 
     def test_widgets_call_sites_has_fetchwidget(self):
-        doc = _get_doc(self.coll, "Widgets.cs")
-        self.assertIsNotNone(doc)
-        cs = doc.get("call_sites", [])
-        self.assertIn("FetchWidget", cs,
-            f"Expected FetchWidget in call_sites (WidgetClient.Run): {cs}")
+        hits = _search(self.coll, "FetchWidget", query_by="call_sites")
+        self.assertIn("Widgets.cs", [h["filename"] for h in hits],
+            f"Expected FetchWidget in call_sites (WidgetClient.Run): {[h["filename"] for h in hits]}")
 
     def test_widgets_class_names_has_widgetclient(self):
-        doc = _get_doc(self.coll, "Widgets.cs")
-        self.assertIsNotNone(doc)
-        cn = doc.get("class_names", [])
-        self.assertIn("WidgetClient", cn, f"class_names: {cn}")
+        hits = _search(self.coll, "WidgetClient", query_by="class_names")
+        self.assertIn("Widgets.cs", [h["filename"] for h in hits], f"class_names: {[h["filename"] for h in hits]}")
 
     # ── Semantic fields: Repositories.cs ──────────────────────────────────────
 
     def test_repositories_attr_names_has_cacheable(self):
-        doc = _get_doc(self.coll, "Repositories.cs")
-        self.assertIsNotNone(doc)
-        attrs = doc.get("attr_names", [])
-        self.assertIn("Cacheable", attrs,
-            f"Expected Cacheable in attr_names (ProductRepository [Cacheable]): {attrs}")
+        hits = _search(self.coll, "Cacheable", query_by="attr_names")
+        self.assertIn("Repositories.cs", [h["filename"] for h in hits],
+            f"Expected Cacheable in attr_names (ProductRepository [Cacheable]): {[h["filename"] for h in hits]}")
 
     def test_repositories_attr_names_has_obsolete(self):
-        doc = _get_doc(self.coll, "Repositories.cs")
-        self.assertIsNotNone(doc)
-        attrs = doc.get("attr_names", [])
-        self.assertIn("Obsolete", attrs,
-            f"Expected Obsolete in attr_names (LegacyRepository [Obsolete]): {attrs}")
+        hits = _search(self.coll, "Obsolete", query_by="attr_names")
+        self.assertIn("Repositories.cs", [h["filename"] for h in hits],
+            f"Expected Obsolete in attr_names (LegacyRepository [Obsolete]): {[h["filename"] for h in hits]}")
 
     def test_repositories_class_names_has_inventorymanager(self):
-        doc = _get_doc(self.coll, "Repositories.cs")
-        self.assertIsNotNone(doc)
-        cn = doc.get("class_names", [])
-        self.assertIn("InventoryManager", cn, f"class_names: {cn}")
+        hits = _search(self.coll, "InventoryManager", query_by="class_names")
+        self.assertIn("Repositories.cs", [h["filename"] for h in hits], f"class_names: {[h["filename"] for h in hits]}")
 
     def test_repositories_method_names_has_processinventory(self):
-        doc = _get_doc(self.coll, "Repositories.cs")
-        self.assertIsNotNone(doc)
-        mn = doc.get("method_names", [])
-        self.assertIn("ProcessInventory", mn,
-            f"Expected ProcessInventory in method_names (WarehouseService): {mn}")
+        hits = _search(self.coll, "ProcessInventory", query_by="method_names")
+        self.assertIn("Repositories.cs", [h["filename"] for h in hits],
+            f"Expected ProcessInventory in method_names (WarehouseService): {[h["filename"] for h in hits]}")
 
-    def test_repositories_member_sigs_has_blobstore_param(self):
-        doc = _get_doc(self.coll, "Repositories.cs")
-        self.assertIsNotNone(doc)
-        sigs = doc.get("member_sigs", [])
-        self.assertTrue(any("BlobStore" in s for s in sigs),
-            f"Expected a member_sig containing BlobStore (DataPipeline.Store/Retrieve): {sigs}")
+    def test_repositories_param_types_has_blobstore(self):
+        # Repositories.cs has BlobStore as a method parameter type
+        # (DataPipeline.Store/Retrieve).
+        hits = _search(self.coll, "BlobStore", query_by="param_types")
+        self.assertIn("Repositories.cs", [h["filename"] for h in hits],
+            f"Expected Repositories.cs in param_types[BlobStore]: "
+            f"{[h['filename'] for h in hits]}")
 
     # ── Semantic fields: SynthTypes.cs ────────────────────────────────────────
 
     def test_synthtypes_class_names_has_findme(self):
-        doc = _get_doc(self.coll, "SynthTypes.cs")
-        self.assertIsNotNone(doc)
-        cn = doc.get("class_names", [])
-        self.assertIn("FindMe", cn, f"class_names: {cn}")
+        hits = _search(self.coll, "FindMe", query_by="class_names")
+        self.assertIn("SynthTypes.cs", [h["filename"] for h in hits], f"class_names: {[h["filename"] for h in hits]}")
 
     def test_synthtypes_class_names_has_paramsdemo(self):
-        doc = _get_doc(self.coll, "SynthTypes.cs")
-        self.assertIsNotNone(doc)
-        cn = doc.get("class_names", [])
-        self.assertIn("ParamsDemo", cn, f"class_names: {cn}")
+        hits = _search(self.coll, "ParamsDemo", query_by="class_names")
+        self.assertIn("SynthTypes.cs", [h["filename"] for h in hits], f"class_names: {[h["filename"] for h in hits]}")
 
     def test_synthtypes_usings_has_system(self):
-        doc = _get_doc(self.coll, "SynthTypes.cs")
-        self.assertIsNotNone(doc)
-        usings = doc.get("usings", [])
-        self.assertGreater(len(usings), 0,
-            "Expected at least one using directive in SynthTypes.cs")
+        # SynthTypes.cs has ``using System;`` at the top.
+        hits = _search(self.coll, "System", query_by="usings")
+        self.assertIn("SynthTypes.cs", [h["filename"] for h in hits],
+            f"Expected SynthTypes.cs in usings[System]: {[h['filename'] for h in hits]}")
 
     # ── Search-mode queries ───────────────────────────────────────────────────
 
     def test_implements_search_finds_widgets_for_iwidgetservice(self):
-        hits = _search(self.coll, "IWidgetService", query_by="base_types,class_names,filename")
+        hits = _search(self.coll, "IWidgetService", query_by="base_types,class_names,path_tokens")
         self.assertIn("Widgets.cs", [h["filename"] for h in hits],
             "Widgets.cs not found via base_types search for IWidgetService")
 
     def test_calls_search_finds_widgets_for_fetchwidget(self):
-        hits = _search(self.coll, "FetchWidget", query_by="call_sites,filename")
+        hits = _search(self.coll, "FetchWidget", query_by="call_sites,path_tokens")
         self.assertIn("Widgets.cs", [h["filename"] for h in hits],
             "Widgets.cs not found via call_sites search for FetchWidget")
 
     def test_attrs_search_finds_repositories_for_cacheable(self):
-        hits = _search(self.coll, "Cacheable", query_by="attr_names,filename")
+        hits = _search(self.coll, "Cacheable", query_by="attr_names,path_tokens")
         self.assertIn("Repositories.cs", [h["filename"] for h in hits],
             "Repositories.cs not found via attr_names search for Cacheable")
 
     def test_symbols_search_finds_repositories_for_inventorymanager(self):
         hits = _search(self.coll, "InventoryManager",
-                       query_by="class_names,method_names,filename")
+                       query_by="class_names,method_names,path_tokens")
         self.assertIn("Repositories.cs", [h["filename"] for h in hits],
             "Repositories.cs not found via symbols search for InventoryManager")
 
@@ -449,6 +412,7 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
         _require_server()
         from indexserver.indexer import run_index
         cls.coll = f"test_e2e_langs_{int(time.time())}"
+        cls.src_root = SAMPLE_ROOT1
         run_index(_e2e_cfg, src_root=SAMPLE_ROOT1, collection=cls.coll, resethard=True, verbose=False)
         time.sleep(0.5)
 
@@ -460,156 +424,133 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
     # ── Rust ──────────────────────────────────────────────────────────────────
 
     def test_rust_fixture_indexed(self):
-        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.rs"),
+        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.rs", self.src_root),
                              "query_fixture.rs not found in index")
 
     def test_rust_class_names_has_processresult(self):
-        doc = _get_doc(self.coll, "query_fixture.rs")
-        self.assertIsNotNone(doc)
-        self.assertIn("ProcessResult", doc.get("class_names", []))
+        hits = _search(self.coll, "ProcessResult", query_by="class_names")
+        self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
 
     def test_rust_class_names_has_processor_trait(self):
-        doc = _get_doc(self.coll, "query_fixture.rs")
-        self.assertIsNotNone(doc)
-        self.assertIn("Processor", doc.get("class_names", []))
+        hits = _search(self.coll, "Processor", query_by="class_names")
+        self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
 
     def test_rust_method_names_has_create_processor(self):
-        doc = _get_doc(self.coll, "query_fixture.rs")
-        self.assertIsNotNone(doc)
-        self.assertIn("create_processor", doc.get("method_names", []))
+        hits = _search(self.coll, "create_processor", query_by="method_names")
+        self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
 
     def test_rust_base_types_has_processor(self):
-        doc = _get_doc(self.coll, "query_fixture.rs")
-        self.assertIsNotNone(doc)
-        self.assertIn("Processor", doc.get("base_types", []))
+        hits = _search(self.coll, "Processor", query_by="base_types")
+        self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
 
     def test_rust_call_sites_has_process(self):
-        doc = _get_doc(self.coll, "query_fixture.rs")
-        self.assertIsNotNone(doc)
-        self.assertIn("process", doc.get("call_sites", []))
+        hits = _search(self.coll, "process", query_by="call_sites")
+        self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
 
     def test_rust_usings_has_std(self):
-        doc = _get_doc(self.coll, "query_fixture.rs")
-        self.assertIsNotNone(doc)
-        self.assertIn("std", doc.get("usings", []))
+        hits = _search(self.coll, "std", query_by="usings")
+        self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
 
     def test_rust_searchable_via_base_types(self):
-        hits = _search(self.coll, "Processor", query_by="base_types,class_names,filename")
+        hits = _search(self.coll, "Processor", query_by="base_types,class_names,path_tokens")
         self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
 
     # ── JavaScript ────────────────────────────────────────────────────────────
 
     def test_js_fixture_indexed(self):
-        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.js"),
+        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.js", self.src_root),
                              "query_fixture.js not found in index")
 
     def test_js_class_names_has_textprocessor(self):
-        doc = _get_doc(self.coll, "query_fixture.js")
-        self.assertIsNotNone(doc)
-        self.assertIn("TextProcessor", doc.get("class_names", []))
+        hits = _search(self.coll, "TextProcessor", query_by="class_names")
+        self.assertIn("query_fixture.js", [h["filename"] for h in hits])
 
     def test_js_method_names_has_createprocessor(self):
-        doc = _get_doc(self.coll, "query_fixture.js")
-        self.assertIsNotNone(doc)
-        self.assertIn("createProcessor", doc.get("method_names", []))
+        hits = _search(self.coll, "createProcessor", query_by="method_names")
+        self.assertIn("query_fixture.js", [h["filename"] for h in hits])
 
     def test_js_base_types_has_processor(self):
-        doc = _get_doc(self.coll, "query_fixture.js")
-        self.assertIsNotNone(doc)
-        self.assertIn("Processor", doc.get("base_types", []))
+        hits = _search(self.coll, "Processor", query_by="base_types")
+        self.assertIn("query_fixture.js", [h["filename"] for h in hits])
 
     def test_js_call_sites_has_process(self):
-        doc = _get_doc(self.coll, "query_fixture.js")
-        self.assertIsNotNone(doc)
-        self.assertIn("process", doc.get("call_sites", []))
+        hits = _search(self.coll, "process", query_by="call_sites")
+        self.assertIn("query_fixture.js", [h["filename"] for h in hits])
 
     def test_js_usings_has_events(self):
-        doc = _get_doc(self.coll, "query_fixture.js")
-        self.assertIsNotNone(doc)
-        self.assertIn("events", doc.get("usings", []))
+        hits = _search(self.coll, "events", query_by="usings")
+        self.assertIn("query_fixture.js", [h["filename"] for h in hits])
 
     def test_js_searchable_via_call_sites(self):
-        hits = _search(self.coll, "createProcessor", query_by="call_sites,method_names,filename")
+        hits = _search(self.coll, "createProcessor", query_by="call_sites,method_names,path_tokens")
         self.assertIn("query_fixture.js", [h["filename"] for h in hits])
 
     # ── TypeScript ────────────────────────────────────────────────────────────
 
     def test_ts_fixture_indexed(self):
-        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.ts"),
+        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.ts", self.src_root),
                              "query_fixture.ts not found in index")
 
     def test_ts_class_names_has_textprocessor(self):
-        doc = _get_doc(self.coll, "query_fixture.ts")
-        self.assertIsNotNone(doc)
-        self.assertIn("TextProcessor", doc.get("class_names", []))
+        hits = _search(self.coll, "TextProcessor", query_by="class_names")
+        self.assertIn("query_fixture.ts", [h["filename"] for h in hits])
 
     def test_ts_class_names_has_interface(self):
-        doc = _get_doc(self.coll, "query_fixture.ts")
-        self.assertIsNotNone(doc)
-        self.assertIn("IProcessor", doc.get("class_names", []))
+        hits = _search(self.coll, "IProcessor", query_by="class_names")
+        self.assertIn("query_fixture.ts", [h["filename"] for h in hits])
 
     def test_ts_base_types_has_baseprocessor(self):
-        doc = _get_doc(self.coll, "query_fixture.ts")
-        self.assertIsNotNone(doc)
-        self.assertIn("BaseProcessor", doc.get("base_types", []))
+        hits = _search(self.coll, "BaseProcessor", query_by="base_types")
+        self.assertIn("query_fixture.ts", [h["filename"] for h in hits])
 
     def test_ts_base_types_has_iprocessor(self):
-        doc = _get_doc(self.coll, "query_fixture.ts")
-        self.assertIsNotNone(doc)
-        self.assertIn("IProcessor", doc.get("base_types", []))
+        hits = _search(self.coll, "IProcessor", query_by="base_types")
+        self.assertIn("query_fixture.ts", [h["filename"] for h in hits])
 
     def test_ts_attr_names_has_serializable(self):
-        doc = _get_doc(self.coll, "query_fixture.ts")
-        self.assertIsNotNone(doc)
-        self.assertIn("serializable", doc.get("attr_names", []))
+        hits = _search(self.coll, "serializable", query_by="attr_names")
+        self.assertIn("query_fixture.ts", [h["filename"] for h in hits])
 
     def test_ts_call_sites_has_process(self):
-        doc = _get_doc(self.coll, "query_fixture.ts")
-        self.assertIsNotNone(doc)
-        self.assertIn("process", doc.get("call_sites", []))
+        hits = _search(self.coll, "process", query_by="call_sites")
+        self.assertIn("query_fixture.ts", [h["filename"] for h in hits])
 
     def test_ts_searchable_via_attr_names(self):
-        hits = _search(self.coll, "serializable", query_by="attr_names,filename")
+        hits = _search(self.coll, "serializable", query_by="attr_names,path_tokens")
         self.assertIn("query_fixture.ts", [h["filename"] for h in hits])
 
     # ── C++ ───────────────────────────────────────────────────────────────────
 
     def test_cpp_fixture_indexed(self):
-        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.cpp"),
+        self.assertIsNotNone(_get_doc(self.coll, "query_fixture.cpp", self.src_root),
                              "query_fixture.cpp not found in index")
 
     def test_cpp_class_names_has_textprocessor(self):
-        doc = _get_doc(self.coll, "query_fixture.cpp")
-        self.assertIsNotNone(doc)
-        self.assertIn("TextProcessor", doc.get("class_names", []))
+        hits = _search(self.coll, "TextProcessor", query_by="class_names")
+        self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
 
     def test_cpp_class_names_has_processresult(self):
-        doc = _get_doc(self.coll, "query_fixture.cpp")
-        self.assertIsNotNone(doc)
-        self.assertIn("ProcessResult", doc.get("class_names", []))
+        hits = _search(self.coll, "ProcessResult", query_by="class_names")
+        self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
 
     def test_cpp_method_names_has_createprocessor(self):
-        doc = _get_doc(self.coll, "query_fixture.cpp")
-        self.assertIsNotNone(doc)
-        self.assertIn("createProcessor", doc.get("method_names", []))
+        hits = _search(self.coll, "createProcessor", query_by="method_names")
+        self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
 
     def test_cpp_base_types_has_baseprocessor(self):
-        doc = _get_doc(self.coll, "query_fixture.cpp")
-        self.assertIsNotNone(doc)
-        self.assertIn("BaseProcessor", doc.get("base_types", []))
+        hits = _search(self.coll, "BaseProcessor", query_by="base_types")
+        self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
 
     def test_cpp_call_sites_has_process(self):
-        doc = _get_doc(self.coll, "query_fixture.cpp")
-        self.assertIsNotNone(doc)
-        self.assertIn("process", doc.get("call_sites", []))
+        hits = _search(self.coll, "process", query_by="call_sites")
+        self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
 
     def test_cpp_usings_has_string(self):
-        doc = _get_doc(self.coll, "query_fixture.cpp")
-        self.assertIsNotNone(doc)
-        self.assertIn("string", doc.get("usings", []))
+        hits = _search(self.coll, "string", query_by="usings")
+        self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
 
     def test_cpp_searchable_via_base_types(self):
-        hits = _search(self.coll, "BaseProcessor", query_by="base_types,class_names,filename")
+        hits = _search(self.coll, "BaseProcessor", query_by="base_types,class_names,path_tokens")
         self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
 
 
@@ -646,22 +587,22 @@ class TestSampleMultiRootE2E(unittest.TestCase):
                              f"root2 collection {self.coll_r2!r} not found")
 
     def test_root1_has_processors(self):
-        hits = _search(self.coll_r1, "TextProcessor", query_by="class_names,filename")
+        hits = _search(self.coll_r1, "TextProcessor", query_by="class_names,path_tokens")
         self.assertIn("Processors.cs", [h["filename"] for h in hits],
             "Processors.cs should be in root1")
 
     def test_root2_has_widgets(self):
-        hits = _search(self.coll_r2, "WidgetClient", query_by="class_names,filename")
+        hits = _search(self.coll_r2, "WidgetClient", query_by="class_names,path_tokens")
         self.assertIn("Widgets.cs", [h["filename"] for h in hits],
             "Widgets.cs should be in root2")
 
     def test_root1_missing_widget_content(self):
-        hits = _search(self.coll_r1, "WidgetClient", query_by="class_names,filename")
+        hits = _search(self.coll_r1, "WidgetClient", query_by="class_names,path_tokens")
         self.assertNotIn("Widgets.cs", [h["filename"] for h in hits],
             "Widgets.cs must NOT appear in root1")
 
     def test_root2_missing_processor_content(self):
-        hits = _search(self.coll_r2, "TextProcessor", query_by="class_names,filename")
+        hits = _search(self.coll_r2, "TextProcessor", query_by="class_names,path_tokens")
         self.assertNotIn("Processors.cs", [h["filename"] for h in hits],
             "Processors.cs must NOT appear in root2")
 

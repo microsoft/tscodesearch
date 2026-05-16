@@ -14,7 +14,7 @@ Gaps tested:
   - A file with no .MEMBER accesses returns empty.
   - Accesses in comments and string literals are NOT returned.
 
-Run (no Typesense):
+Run (no daemon):
     pytest query/tests/test_mode_accesses_of.py -v
 """
 from __future__ import annotations

@@ -32,7 +32,7 @@ export class FileWatcher {
                     path,
                     method:   'POST',
                     headers:  {
-                        'X-TYPESENSE-API-KEY': this.apiKey,
+                        'X-API-KEY': this.apiKey,
                         ...(body ? {
                             'Content-Type':   'application/json',
                             'Content-Length': Buffer.byteLength(bodyStr),
@@ -63,7 +63,7 @@ export class FileWatcher {
                     port:     this.apiPort,
                     path,
                     method:   'GET',
-                    headers:  { 'X-TYPESENSE-API-KEY': this.apiKey },
+                    headers:  { 'X-API-KEY': this.apiKey },
                 },
                 (res) => {
                     let data = '';
