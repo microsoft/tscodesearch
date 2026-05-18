@@ -6,7 +6,7 @@ method/call) in exactly one structural role per file. Each search-by-field
 test asserts the file with that role comes back and the files that mention
 the identifier in other roles do not.
 
-TestPySemanticFieldDiscrim — end-to-end against a real Tantivy index.
+TestPySemanticFieldDiscrim -- end-to-end against a real Tantivy index.
 """
 from __future__ import annotations
 import os, sys, shutil, time, unittest
@@ -24,7 +24,7 @@ from indexserver.indexer import run_index
 _cfg = _load_config()
 
 
-# ── Fixtures: each file places identifiers in exactly one role ───────────────
+# -- Fixtures: each file places identifiers in exactly one role ---------------
 
 _BASE_IMPLEMENTOR_PY = """\
 import os
@@ -108,7 +108,7 @@ class TestPySemanticFieldDiscrim(unittest.TestCase):
         hits = _search(self.coll, q, query_by=query_by, per_page=20)
         return {h["filename"] for h in hits}
 
-    # ── class_names: only declared classes ────────────────────────────────────
+    # -- class_names: only declared classes ------------------------------------
 
     def test_class_names_finds_declaring_file(self):
         # ``Implementor`` is declared in impl.py and used as a param type in
@@ -116,7 +116,7 @@ class TestPySemanticFieldDiscrim(unittest.TestCase):
         self.assertEqual(self._files("Implementor", "class_names"),
                          {"impl.py"})
 
-    # ── method_names: only declared methods ───────────────────────────────────
+    # -- method_names: only declared methods -----------------------------------
 
     def test_method_names_finds_only_declaring_files(self):
         # Both ``IFoo`` and ``Implementor`` (in impl.py) declare ``process``.
@@ -124,27 +124,27 @@ class TestPySemanticFieldDiscrim(unittest.TestCase):
         self.assertEqual(self._files("process", "method_names"),
                          {"impl.py"})
 
-    # ── base_types: subclass-of relationship ──────────────────────────────────
+    # -- base_types: subclass-of relationship ----------------------------------
 
     def test_base_types_finds_only_subclass(self):
         # ``Implementor(IFoo)`` is the only subclass relation referencing IFoo.
         self.assertEqual(self._files("IFoo", "base_types"),
                          {"impl.py"})
 
-    # ── call_sites: only the call expression ──────────────────────────────────
+    # -- call_sites: only the call expression ----------------------------------
 
     def test_call_sites_finds_only_caller(self):
         # caller.py calls .process(); impl.py declares it.
         self.assertEqual(self._files("process", "call_sites"),
                          {"caller.py"})
 
-    # ── attr_names: only decorator usages ─────────────────────────────────────
+    # -- attr_names: only decorator usages -------------------------------------
 
     def test_attr_names_finds_only_decorated_file(self):
         self.assertEqual(self._files("dataclass", "attr_names"),
                          {"decorated.py"})
 
-    # ── imports: only the importing file ──────────────────────────────────────
+    # -- imports: only the importing file --------------------------------------
 
     def test_imports_finds_only_importer(self):
         self.assertEqual(self._files("json", "imports"),
@@ -156,7 +156,7 @@ class TestPySemanticFieldDiscrim(unittest.TestCase):
         self.assertEqual(files, {"impl.py"},
             f"only impl.py imports os, got {files}")
 
-    # ── string-literal mentions don't leak into structured fields ─────────────
+    # -- string-literal mentions don't leak into structured fields -------------
 
     def test_string_mentions_excluded_from_structured_fields(self):
         for field in ("class_names", "method_names", "base_types",
@@ -170,7 +170,7 @@ class TestPySemanticFieldDiscrim(unittest.TestCase):
                 f"string_mention.py leaked into {field} (string literal)",
             )
 
-    # ── unrelated files never come back ───────────────────────────────────────
+    # -- unrelated files never come back ---------------------------------------
 
     def test_unrelated_file_excluded_from_every_search(self):
         for ident, field in (

@@ -23,7 +23,7 @@ _CPP_LANG   = Language(tscpp.language())
 _cpp_parser = Parser(_CPP_LANG)
 
 
-# ── Node type sets ─────────────────────────────────────────────────────────────
+# -- Node type sets -------------------------------------------------------------
 
 _TYPE_DECL_NODES = {
     "class_specifier",
@@ -61,7 +61,7 @@ def _CppIndex(src: bytes, tree, wanted, collect_refs: bool = False) -> TreeIndex
     )
 
 
-# ── Basic helpers ──────────────────────────────────────────────────────────────
+# -- Basic helpers --------------------------------------------------------------
 
 def _find_all(node, predicate, results=None):
     if results is None:
@@ -92,7 +92,7 @@ def _line(node) -> int:
     return node.start_point[0] + 1
 
 
-# ── C++-specific helpers ───────────────────────────────────────────────────────
+# -- C++-specific helpers -------------------------------------------------------
 
 def _class_name(node, src: bytes) -> str:
     """Get name from class_specifier / struct_specifier."""
@@ -103,7 +103,7 @@ def _class_name(node, src: bytes) -> str:
 def _base_class_names(node, src: bytes) -> list:
     """Get base class names from a class_specifier's base_class_clause.
 
-    Iterates direct children only — does NOT recurse — so template type
+    Iterates direct children only -- does NOT recurse -- so template type
     arguments (e.g. the T in Base<T>) are never mistaken for base classes.
     Handles simple types (Foo), qualified types (A::Foo), and template
     types (Foo<T>).
@@ -118,7 +118,7 @@ def _base_class_names(node, src: bytes) -> list:
                 if t not in ("public", "private", "protected", "virtual") and t:
                     names.append(t)
             elif item.type == "qualified_identifier":
-                # A::B::Foo → Foo  /  A::B::Foo<T> → Foo
+                # A::B::Foo -> Foo  /  A::B::Foo<T> -> Foo
                 name_node = item.child_by_field_name("name")
                 if name_node:
                     if name_node.type == "template_type":
@@ -128,7 +128,7 @@ def _base_class_names(node, src: bytes) -> list:
                     else:
                         names.append(_text(name_node, src).strip())
             elif item.type == "template_type":
-                # Foo<T> → Foo (ignore template args)
+                # Foo<T> -> Foo (ignore template args)
                 name_node = item.child_by_field_name("name")
                 if name_node:
                     names.append(_text(name_node, src).strip())
@@ -178,20 +178,20 @@ def _member_fn_sig(node, src: bytes) -> str:
 
 def _fn_declarator_name(node, src: bytes) -> str:
     """Recursively extract the identifier name from a declarator node."""
-    # function_declarator → declarator → (pointer_declarator →)* identifier / qualified_identifier
+    # function_declarator -> declarator -> (pointer_declarator ->)* identifier / qualified_identifier
     if node.type in ("identifier", "field_identifier"):
         return _text(node, src).strip()
     if node.type == "qualified_identifier":
-        # A::B::foo → just return the last part (may itself be operator_name)
+        # A::B::foo -> just return the last part (may itself be operator_name)
         name_node = node.child_by_field_name("name")
         if name_node:
             return _fn_declarator_name(name_node, src)
         return _text(node, src).strip()
     if node.type == "operator_name":
-        # operator+, operator[], operator=, etc. — return the full token
+        # operator+, operator[], operator=, etc. -- return the full token
         return _text(node, src).strip()
     if node.type == "destructor_name":
-        # ~ClassName — return as-is so it's distinguishable from the constructor
+        # ~ClassName -- return as-is so it's distinguishable from the constructor
         return _text(node, src).strip()
     # recurse into declarator / pointer_declarator
     decl = node.child_by_field_name("declarator")
@@ -237,7 +237,7 @@ def _fn_sig(node, src: bytes) -> str:
     return f"{ret_txt} {name}{params_txt}".strip()
 
 
-# ── Data extraction functions ──────────────────────────────────────────────────
+# -- Data extraction functions --------------------------------------------------
 
 def _cpp_q_classes_data(src, idx: TreeIndex) -> list:
     """Return list[ClassInfo] for all class/struct/union/enum declarations."""
@@ -303,7 +303,7 @@ def _cpp_q_methods_data(src, idx: TreeIndex) -> list:
     return results
 
 
-# ── Query functions ───────────────────────────────────────────────────────────
+# -- Query functions -----------------------------------------------------------
 
 def cpp_q_classes(src, tree, lines):
     """List class/struct/union/enum declarations."""
@@ -366,7 +366,7 @@ def cpp_q_calls(src, tree, lines, func_name):
                 seen_rows.add(row)
                 raw = _text(node, src).replace("\n", " ")
                 if len(raw) > 140:
-                    raw = raw[:140] + "…"
+                    raw = raw[:140] + "..."
                 results.append((_line(node), raw))
 
     return results
@@ -516,7 +516,7 @@ def cpp_q_params(src, tree, lines, func_name):
     return results
 
 
-# ── Process function ──────────────────────────────────────────────────────────
+# -- Process function ----------------------------------------------------------
 
 def query_cpp_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False, **kwargs):
     """Parse C/C++ bytes and return list[{"line": N, "text": "..."}] for the given mode."""
@@ -570,7 +570,7 @@ def describe_cpp_file(src_bytes: bytes, ext: str = "") -> FileDescription:
                 if nn:
                     call_sites_raw.append(_text(nn, src_bytes).strip())
 
-    # #include → ImportInfo (header name without path/extension as module)
+    # #include -> ImportInfo (header name without path/extension as module)
     imports_list = []
     for node in idx.of("preproc_include"):
         path_node = node.child_by_field_name("path")

@@ -1,7 +1,7 @@
 """
 Tests for JavaScript and TypeScript support: extract metadata and query functions.
 
-No daemon needed — all tests run against sample/root1/query_fixture.js and
+No daemon needed -- all tests run against sample/root1/query_fixture.js and
 sample/root1/query_fixture.ts.
 
 Run:
@@ -57,11 +57,11 @@ def has(results, sub):
     return any(sub in t for _, t in results)
 
 
-# ── JavaScript tests ──────────────────────────────────────────────────────────
+# -- JavaScript tests ----------------------------------------------------------
 
 @unittest.skipIf(_SKIP_JS, _SKIP_MSG_JS)
 class TestExtractJsMetadata(unittest.TestCase):
-    """Unit tests for extract_metadata — no server needed."""
+    """Unit tests for extract_metadata -- no server needed."""
 
     @classmethod
     def setUpClass(cls):
@@ -175,11 +175,11 @@ class TestQueryJs(unittest.TestCase):
         self.assertGreater(len(r), 0)
 
 
-# ── TypeScript tests ──────────────────────────────────────────────────────────
+# -- TypeScript tests ----------------------------------------------------------
 
 @unittest.skipIf(_SKIP_TS, _SKIP_MSG_TS)
 class TestExtractTsMetadata(unittest.TestCase):
-    """Unit tests for extract_metadata — no server needed."""
+    """Unit tests for extract_metadata -- no server needed."""
 
     @classmethod
     def setUpClass(cls):
@@ -273,7 +273,7 @@ class TestQueryTs(unittest.TestCase):
 
 @unittest.skipIf(_SKIP_JS, _SKIP_MSG_JS)
 class TestProcessJsFile(unittest.TestCase):
-    """Tests for process_js_file — uses actual file I/O."""
+    """Tests for process_js_file -- uses actual file I/O."""
 
     @classmethod
     def setUpClass(cls):
@@ -331,7 +331,7 @@ class TestProcessJsFile(unittest.TestCase):
         tmpdir_norm = self.tmpdir.replace("\\", "/")
         self.assertNotIn(tmpdir_norm, out)
 
-    # ── consistency: process_js_file ↔ extract_metadata ───────────────────
+    # -- consistency: process_js_file <-> extract_metadata -------------------
 
     def test_class_names_consistent(self):
         from indexserver.indexer import extract_metadata

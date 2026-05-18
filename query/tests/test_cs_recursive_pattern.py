@@ -1,7 +1,7 @@
 """
 Tests for recursive_pattern support in uses_kind=locals and accesses_on.
 
-Round 17 — uses_kind=locals and accesses_on missed bindings from property
+Round 17 -- uses_kind=locals and accesses_on missed bindings from property
             pattern matching (recursive_pattern):
 
       if (obj is Widget { Size: 0 } wp)   // recursive_pattern
@@ -50,21 +50,21 @@ class TestRecursivePatternLocals(unittest.TestCase):
     """uses_kind=locals must find bindings in recursive (property) patterns."""
 
     def test_prop_pattern_binding_found(self):
-        """if (obj is Widget { Size: 0 } wp) — wp must be found."""
+        """if (obj is Widget { Size: 0 } wp) -- wp must be found."""
         r = q_uses(*_PARSED, type_name="Widget", uses_kind="locals")
         assert _line_no("obj is Widget { Size: 0 } wp") in _lns(r), (
             f"Property pattern binding missing: {r}"
         )
 
     def test_switch_prop_pattern_binding_found(self):
-        """case Widget { Size: > 0 } ws: — ws must be found."""
+        """case Widget { Size: > 0 } ws: -- ws must be found."""
         r = q_uses(*_PARSED, type_name="Widget", uses_kind="locals")
         assert _line_no("case Widget { Size: > 0 } ws") in _lns(r), (
             f"Switch prop-pattern binding missing: {r}"
         )
 
     def test_plain_pattern_regression(self):
-        """if (obj is Widget w) — plain declaration_pattern must still be found."""
+        """if (obj is Widget w) -- plain declaration_pattern must still be found."""
         r = q_uses(*_PARSED, type_name="Widget", uses_kind="locals")
         assert _line_no("if (obj is Widget w)") in _lns(r), (
             f"Plain declaration_pattern regression: {r}"
@@ -83,7 +83,7 @@ class TestRecursivePatternLocals(unittest.TestCase):
         """Bindings of type Other must not appear in Widget results."""
         r = q_uses(*_PARSED, type_name="Widget", uses_kind="locals")
         r_other = q_uses(*_PARSED, type_name="Other", uses_kind="locals")
-        # Other has its own binding op — must appear in Other results, not Widget results
+        # Other has its own binding op -- must appear in Other results, not Widget results
         other_line = _line_no("obj is Other { Size: 1 } op")
         assert other_line not in _lns(r), (
             f"Other-typed binding leaked into Widget results: {r}"

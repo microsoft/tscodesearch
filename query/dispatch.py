@@ -1,5 +1,5 @@
 """
-AST query dispatch — routes query_file and describe_file to the right language module.
+AST query dispatch -- routes query_file and describe_file to the right language module.
 
 Each language module owns its parser, preprocessing, and query_*_bytes / describe_*_file.
 """
@@ -39,7 +39,7 @@ from .cpp import (
 from .sql import query_sql_bytes, describe_sql_file
 
 
-# ── Extension routing tables ──────────────────────────────────────────────────
+# -- Extension routing tables --------------------------------------------------
 
 def _make_js_query(ext):
     """Return a query_bytes function that passes ext to query_js_bytes."""
@@ -77,7 +77,7 @@ def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
     Returns ``list[{"line": N, "text": "..."}]`` on success.
 
     Raises ``ValueError`` if the extension has no registered language or if
-    the mode isn't supported for that language — explicit errors beat silent
+    the mode isn't supported for that language -- explicit errors beat silent
     empties for tool-using agents. Use ``mode='capabilities'`` to ask which
     modes a given file supports.
 

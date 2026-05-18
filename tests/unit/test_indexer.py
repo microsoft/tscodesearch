@@ -1,9 +1,9 @@
 """
 Unit tests for the indexer: extract_metadata, index_file_list, and IndexQueue.
 
-TestExtractCsMetadata — tree-sitter C# extractor unit tests (no backend)
-TestIndexFileList     — shared batch-upsert pipeline (real Tantivy on tempdir)
-TestIndexQueue        — queue enqueue/dedup/mtime/worker behavior (real Tantivy on tempdir)
+TestExtractCsMetadata -- tree-sitter C# extractor unit tests (no backend)
+TestIndexFileList     -- shared batch-upsert pipeline (real Tantivy on tempdir)
+TestIndexQueue        -- queue enqueue/dedup/mtime/worker behavior (real Tantivy on tempdir)
 
 The broader end-to-end indexer tests live in tests/integration/test_indexer.py.
 """
@@ -24,10 +24,10 @@ from indexserver.indexer import (
 from indexserver.index_queue import IndexQueue, MTIME_DELETE
 
 
-# ── TestExtractCsMetadata ─────────────────────────────────────────────────────
+# -- TestExtractCsMetadata -----------------------------------------------------
 
 class TestExtractCsMetadata(unittest.TestCase):
-    """Unit tests for the tree-sitter C# extractor — no backend required."""
+    """Unit tests for the tree-sitter C# extractor -- no backend required."""
 
     def test_class_names(self):
         src = b"namespace N { public class MyClass { } }"
@@ -66,14 +66,14 @@ class TestExtractCsMetadata(unittest.TestCase):
         self.assertIn("IRepository.Save", meta["qualified_calls"])
 
     def test_qualified_calls_no_resolution_for_unknown_var(self):
-        """``var x = Get(); x.Save()`` — no qualified form (just bare ``Save``)."""
+        """``var x = Get(); x.Save()`` -- no qualified form (just bare ``Save``)."""
         src = b"class C { void M() { var x = Get(); x.Save(); } }"
         meta = extract_metadata(src, ".cs")
         self.assertNotIn("x.Save", meta["qualified_calls"])
         self.assertIn("Save", meta["call_sites"])
 
     def test_qualified_calls_conflict_suppressed_same_block(self):
-        """Two same-name declarations *in one block* → no qualified emission."""
+        """Two same-name declarations *in one block* -> no qualified emission."""
         src = b"""class C {
             void M() {
                 Repo x = null;
@@ -89,7 +89,7 @@ class TestExtractCsMetadata(unittest.TestCase):
         self.assertIn("Save", meta["call_sites"])
 
     def test_qualified_calls_independent_branches_both_emitted(self):
-        """if/else branches each resolve independently — both forms appear."""
+        """if/else branches each resolve independently -- both forms appear."""
         src = b"""class C {
             void M(bool b) {
                 if (b) { Repo x = null; x.Save(); }
@@ -109,7 +109,7 @@ class TestExtractCsMetadata(unittest.TestCase):
         meta = extract_metadata(src, ".cs")
         self.assertIn("Repo.Save", meta["qualified_calls"])
         self.assertIn("Customer.Touch", meta["qualified_calls"])
-        # Cross-pollination would yield these — they must not appear.
+        # Cross-pollination would yield these -- they must not appear.
         self.assertNotIn("Repo.Touch", meta["qualified_calls"])
         self.assertNotIn("Customer.Save", meta["qualified_calls"])
 
@@ -155,10 +155,10 @@ class TestExtractCsMetadata(unittest.TestCase):
                       f"IBlobStore (Task<IBlobStore> return type arg) should be in type_refs: {meta['type_refs']}")
 
 
-# ── TestIndexFileList ─────────────────────────────────────────────────────────
+# -- TestIndexFileList ---------------------------------------------------------
 
 class TestIndexFileList(unittest.TestCase):
-    """Unit tests for index_file_list — runs against a real Tantivy index on a tempdir."""
+    """Unit tests for index_file_list -- runs against a real Tantivy index on a tempdir."""
 
     COLL = "test_coll"
 
@@ -196,7 +196,7 @@ class TestIndexFileList(unittest.TestCase):
         )
         self.assertEqual(total, 7)
         self.assertEqual(errors, 0)
-        # batch_size=3: batches of 3, 3, 1 → 3 callbacks
+        # batch_size=3: batches of 3, 3, 1 -> 3 callbacks
         self.assertEqual(len(calls), 3)
         self.assertEqual(calls[-1][0], 7)
 
@@ -254,10 +254,10 @@ class TestIndexFileList(unittest.TestCase):
         self.assertEqual(errors, 1)
 
 
-# ── TestIndexQueue ────────────────────────────────────────────────────────────
+# -- TestIndexQueue ------------------------------------------------------------
 
 class TestIndexQueue(unittest.TestCase):
-    """Unit tests for IndexQueue — runs against a real Tantivy index on a tempdir."""
+    """Unit tests for IndexQueue -- runs against a real Tantivy index on a tempdir."""
 
     COLL = "test_coll"
 
@@ -285,7 +285,7 @@ class TestIndexQueue(unittest.TestCase):
             time.sleep(0.05)
         time.sleep(0.1)
 
-    # ── enqueue behavior ───────────────────────────────────────────────────────
+    # -- enqueue behavior -------------------------------------------------------
 
     def test_enqueue_upsert_returns_true(self):
         full, rel = self._file("Foo.cs")
@@ -353,7 +353,7 @@ class TestIndexQueue(unittest.TestCase):
         self.assertEqual(n_new, 0)
         self.assertEqual(n_dedup, 1)
 
-    # ── stats ──────────────────────────────────────────────────────────────────
+    # -- stats ------------------------------------------------------------------
 
     def test_stats_enqueued_counter(self):
         self.queue._stop.set()
@@ -373,7 +373,7 @@ class TestIndexQueue(unittest.TestCase):
         for key in ("depth", "enqueued", "deduped", "upserted", "deleted", "errors"):
             self.assertIn(key, stats, f"stats() missing key: {key}")
 
-    # ── worker / flush behavior ────────────────────────────────────────────────
+    # -- worker / flush behavior ------------------------------------------------
 
     def test_worker_upserts_to_backend(self):
         full, rel = self._file("MyFile.cs", "namespace T { public class MyClass {} }")

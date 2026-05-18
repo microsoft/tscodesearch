@@ -1,7 +1,7 @@
 """
 Integration tests for the file watcher.
 
-TestSourceChangeHandlerIntegration — uses a real IndexQueue against a Tantivy backend.
+TestSourceChangeHandlerIntegration -- uses a real IndexQueue against a Tantivy backend.
 """
 from __future__ import annotations
 import os, sys, shutil, time, unittest, subprocess, tempfile
@@ -16,7 +16,7 @@ from indexserver.indexer import ensure_backend
 
 
 class TestSourceChangeHandlerIntegration(unittest.TestCase):
-    """Integration tests: SourceChangeHandler → IndexQueue → real Tantivy collection."""
+    """Integration tests: SourceChangeHandler -> IndexQueue -> real Tantivy collection."""
 
     @classmethod
     def setUpClass(cls):

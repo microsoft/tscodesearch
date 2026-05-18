@@ -133,15 +133,15 @@ The integration tests open a fresh Tantivy index in `<repo>/.tantivy/test_*` for
 | File / dir | What it tests |
 |------------|---------------|
 | `query/tests/` | All language AST query modes against synthetic fixtures |
-| `tests/unit/` | Indexer, queue, watcher, verifier, MCP server helpers — all use `_FakeBackend` |
-| `tests/integration/` | Indexer, verifier, watcher, search modes, sample E2E — open real Tantivy indexes |
+| `tests/unit/` | Indexer, queue, watcher, verifier, MCP server helpers -- all use `_FakeBackend` |
+| `tests/integration/` | Indexer, verifier, watcher, search modes, sample E2E -- open real Tantivy indexes |
 
 ## Direct CLI usage
 
 ### Management API via curl
 
 ```bash
-# Read key/port from config.json — never hard-code
+# Read key/port from config.json -- never hard-code
 API_KEY=$(node -e "const c=require('./config.json'); process.stdout.write(c.api_key)")
 API_PORT=$(node -e "const c=require('./config.json'); process.stdout.write(String(c.port??8108))")
 curl -s -X POST http://localhost:$API_PORT/query-codebase \
@@ -149,7 +149,7 @@ curl -s -X POST http://localhost:$API_PORT/query-codebase \
   -d '{"mode":"declarations","pattern":"SaveChanges","root":""}' | python -m json.tool
 ```
 
-The daemon authenticates every request by matching the `X-API-KEY` header against `config.json`'s `api_key`. The HTTP server binds `localhost` only, but the key still matters: any process on the same machine — a browser background page, another dev tool, a malicious dependency — can reach `localhost:PORT`. Requiring a shared secret means a random local process can't query or mutate the index without first reading `config.json`.
+The daemon authenticates every request by matching the `X-API-KEY` header against `config.json`'s `api_key`. The HTTP server binds `localhost` only, but the key still matters: any process on the same machine -- a browser background page, another dev tool, a malicious dependency -- can reach `localhost:PORT`. Requiring a shared secret means a random local process can't query or mutate the index without first reading `config.json`.
 
 ### Standalone search CLI (`scripts/search.py`)
 
@@ -169,15 +169,15 @@ This opens the on-disk Tantivy index in read-only mode, so it works whether or n
 
 ## AST query modes
 
-One canonical mode name per concept across every language. Listing modes take no pattern; pattern modes expect a single identifier (or `LINE:COL` for `at`). Unknown modes raise `ValueError` with the supported-mode list — use `capabilities` to introspect which modes a given file's language actually supports.
+One canonical mode name per concept across every language. Listing modes take no pattern; pattern modes expect a single identifier (or `LINE:COL` for `at`). Unknown modes raise `ValueError` with the supported-mode list -- use `capabilities` to introspect which modes a given file's language actually supports.
 
 | Mode | Arg | Concept | Languages |
 |------|-----|---------|-----------|
-| `capabilities` | — | List the modes supported for this file's language | all |
-| `classes` | — | Type declarations (class/interface/struct/enum/record/…) | all |
-| `methods` | — | Method/ctor/property/field/event declarations | all |
-| `fields` | — | Field / property / column declarations | C#, SQL |
-| `imports` | — | `using` / `import` / `include` directives | all except SQL |
+| `capabilities` | -- | List the modes supported for this file's language | all |
+| `classes` | -- | Type declarations (class/interface/struct/enum/record/...) | all |
+| `methods` | -- | Method/ctor/property/field/event declarations | all |
+| `fields` | -- | Field / property / column declarations | C#, SQL |
+| `imports` | -- | `using` / `import` / `include` directives | all except SQL |
 | `params` | METHOD | Parameter list for METHOD | C#, Python, JS, Rust, C++ |
 | `declarations` | NAME | Declaration(s) of NAME (narrow with `symbol_kind`) | all |
 | `body` | NAME | Full source of NAME's declaration | C# only |
@@ -189,38 +189,38 @@ One canonical mode name per concept across every language. Listing modes take no
 | `attrs` | NAME? | `[Attribute]` / `@decorator` / `#[attribute]` usages (omit NAME to list all) | C#, Python, JS |
 | `accesses_of` | MEMBER | Access sites of property/field by name (`Order.Status` restricts) | C# only |
 | `accesses_on` | TYPE | `.Member` accesses on locals/params/fields typed as TYPE | C# only |
-| `all_refs` | NAME | Every identifier occurrence (broadest — AST-only, skips strings/comments). For SQL this is a plain substring scan over lines. | all |
+| `all_refs` | NAME | Every identifier occurrence (broadest -- AST-only, skips strings/comments). For SQL this is a plain substring scan over lines. | all |
 
 ## Architecture
 
 ### Two-layer search
 
-1. **Tantivy** — fast keyword/semantic search over pre-indexed metadata (class names, method names, base types, call sites, signatures, attributes, etc.). Data stored at `<repo>/.tantivy/<collection>/`.
+1. **Tantivy** -- fast keyword/semantic search over pre-indexed metadata (class names, method names, base types, call sites, signatures, attributes, etc.). Data stored at `<repo>/.tantivy/<collection>/`.
 
-2. **tree-sitter** — precise AST queries on the file set returned by Tantivy. Skips comments and string literals, understands syntax.
+2. **tree-sitter** -- precise AST queries on the file set returned by Tantivy. Skips comments and string literals, understands syntax.
 
-Typical flow: Tantivy narrows the haystack to ~50 candidate files → tree-sitter parses each one and applies the structural query.
+Typical flow: Tantivy narrows the haystack to ~50 candidate files -> tree-sitter parses each one and applies the structural query.
 
 ### Process topology
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  MCP CLIENT  (Claude ↔ tools)                                │
-│  mcp_server.py  (.client-venv — runs on Windows)             │
-│  Claude Code → mcp.cmd → .client-venv\python.exe             │
-└────────────────────────────┬─────────────────────────────────┘
-                             │  HTTP  localhost:PORT
-┌────────────────────────────▼─────────────────────────────────┐
-│  DAEMON  tsquery_server.py  (.client-venv — runs on Windows) │
-│    • HTTP server   (management API on PORT)                  │
-│    • watcher       (ReadDirectoryChangesW)                   │
-│    • IndexQueue    (batch Tantivy writes)                    │
-│    • syncer        (on-demand, via POST /verify/start)       │
-│    • Tantivy indexes  (one per root, on disk in .tantivy/)   │
-└──────────────────────────────────────────────────────────────┘
+,----------------------------------------------------------------,
+|  MCP CLIENT  (Claude <-> tools)                                |
+|  mcp_server.py  (.client-venv -- runs on Windows)             |
+|  Claude Code -> mcp.cmd -> .client-venv\python.exe             |
+`------------------------------T-----------------------------------'
+                             |  HTTP  localhost:PORT
+,-----------------------------v----------------------------------,
+|  DAEMON  tsquery_server.py  (.client-venv -- runs on Windows) |
+|    * HTTP server   (management API on PORT)                  |
+|    * watcher       (ReadDirectoryChangesW)                   |
+|    * IndexQueue    (batch Tantivy writes)                    |
+|    * syncer        (on-demand, via POST /verify/start)       |
+|    * Tantivy indexes  (one per root, on disk in .tantivy/)   |
+`----------------------------------------------------------------'
 ```
 
-There is no longer a separate Typesense / Docker / WSL service — the index lives in-process via `tantivy-py`.
+There is no longer a separate Typesense / Docker / WSL service -- the index lives in-process via `tantivy-py`.
 
 ### File map
 
@@ -242,7 +242,7 @@ There is no longer a separate Typesense / Docker / WSL service — the index liv
 | `query/dispatch.py` | Pure query dispatcher. `query_file(src_bytes, ext, mode, pattern, ...)`. No backend dependency. |
 | `query/__main__.py` | CLI: `python -m query --mode methods --file Widget.cs` |
 
-`TreeIndex` walks the AST once with tree-sitter's `TreeCursor`, buckets nodes by type, and (optionally) collects literal-aware identifier refs in the same pass. `describe_*_file` covers the union of types every extractor needs in one walk; per-query wrappers (`q_classes`, `q_methods`, …) pass a narrow type set so they pay the cost of a single targeted walk.
+`TreeIndex` walks the AST once with tree-sitter's `TreeCursor`, buckets nodes by type, and (optionally) collects literal-aware identifier refs in the same pass. `describe_*_file` covers the union of types every extractor needs in one walk; per-query wrappers (`q_classes`, `q_methods`, ...) pass a narrow type set so they pay the cost of a single targeted walk.
 
 **Indexer (`indexserver/`)**
 
@@ -265,9 +265,9 @@ There is no longer a separate Typesense / Docker / WSL service — the index liv
 
 ### Backend schema
 
-Every text field uses Tantivy's `raw` tokenizer: each entry is one verbatim term (case-sensitive, no underscore splitting, no length cap). All domain-aware splitting happens in the indexer before storage — long identifiers stay whole, `add_text_field` is one token, `Acme.Billing.Service` is three `namespace` entries.
+Every text field uses Tantivy's `raw` tokenizer: each entry is one verbatim term (case-sensitive, no underscore splitting, no length cap). All domain-aware splitting happens in the indexer before storage -- long identifiers stay whole, `add_text_field` is one token, `Acme.Billing.Service` is three `namespace` entries.
 
-**Indexed search fields** — populated by the AST extractors and indexed for `query_by` matching; `stored=False`, so values are not retrievable from a search hit:
+**Indexed search fields** -- populated by the AST extractors and indexed for `query_by` matching; `stored=False`, so values are not retrievable from a search hit:
 
 | Field | Populated from | Used by MCP mode |
 |-------|----------------|------------------|
@@ -280,22 +280,22 @@ Every text field uses Tantivy's `raw` tokenizer: each entry is one verbatim term
 | `cast_types` | `(T)expr`, `as T`, declaration/recursive patterns | `casts`, `uses` (default and `uses_kind=cast`) |
 | `type_refs` | union of `field_types` + `param_types` + `return_types` + `base_types` + `local_types` + capitalised call receivers | `uses` (default), `accesses_on` |
 | `member_accesses` | RHS of `.Member` access expressions | `accesses_of` |
-| `member_sig_tokens` | every identifier in any member signature — attribute names, parameter names, generic args, default-value identifiers | — (auxiliary; covers signature content) |
+| `member_sig_tokens` | every identifier in any member signature -- attribute names, parameter names, generic args, default-value identifiers | -- (auxiliary; covers signature content) |
 | `attr_names` | `[Attribute]` decorations | `attrs` |
 | `imports` | `using`/`import`/`include` modules | `imports` |
-| `namespace` | per-component split of the file's primary namespace (e.g. `Acme.Billing.Service` → 3 entries) | — (auxiliary) |
+| `namespace` | per-component split of the file's primary namespace (e.g. `Acme.Billing.Service` -> 3 entries) | -- (auxiliary) |
 | `class_names`, `method_names` | type and method/property/field declarations | `declarations`, `all_refs` |
-| `tokens` | deduped bag of every identifier in the file (code only — no strings or comments) | `all_refs` |
-| `path_tokens` | per-directory + filename components — `services/billing/Foo.cs` → `["services", "billing", "Foo.cs", "Foo", "cs"]` | every mode (path/filename fallback) |
+| `tokens` | deduped bag of every identifier in the file (code only -- no strings or comments) | `all_refs` |
+| `path_tokens` | per-directory + filename components -- `services/billing/Foo.cs` -> `["services", "billing", "Foo.cs", "Foo", "cs"]` | every mode (path/filename fallback) |
 
-**Stored fields** — retrievable from the index at search time:
+**Stored fields** -- retrievable from the index at search time:
 
 | Field | Purpose |
 |-------|---------|
 | `id`, `relative_path` | Document identity, returned with every hit. |
 | `filename` | Basename, used for display. |
 | `extension`, `language` | Exact-match filters (`extension:=cs`) and status display. |
-| `path_segments` | Cumulative ancestor folders for the `sub=` filter (`services/billing/Foo.cs` → `["services", "services/billing"]`). |
+| `path_segments` | Cumulative ancestor folders for the `sub=` filter (`services/billing/Foo.cs` -> `["services", "services/billing"]`). |
 | `mtime` | Verifier diff between filesystem and index. |
 
 Nothing else is stored. The daemon pre-filters with Tantivy then runs tree-sitter on the candidate files; the AST output is what carries line-level results to the caller. Display-only stored payload would just bloat the index.
@@ -314,4 +314,4 @@ The daemon resolves `query_by`/`weights` server-side from the mode (and `uses_ki
 }
 ```
 
-This file is **not checked in** (listed in `.gitignore`). It is created by `setup.mjs` with an auto-generated API key. Roots use Windows-style paths (`C:/...`) and are added via `ts root --add` or the VS Code extension. Root entries may also be bare strings — see *Adding roots* above.
+This file is **not checked in** (listed in `.gitignore`). It is created by `setup.mjs` with an auto-generated API key. Roots use Windows-style paths (`C:/...`) and are added via `ts root --add` or the VS Code extension. Root entries may also be bare strings -- see *Adding roots* above.

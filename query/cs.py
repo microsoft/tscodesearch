@@ -18,7 +18,7 @@ _CS_LANG = Language(tscsharp.language())
 _cs_parser = Parser(_CS_LANG)
 
 
-# ── C# preprocessor normaliser ────────────────────────────────────────────────
+# -- C# preprocessor normaliser ------------------------------------------------
 
 _PP_RE = re.compile(rb'^\s*#\s*(\w+)')
 
@@ -51,7 +51,7 @@ def _strip_else_branches(src_bytes: bytes) -> bytes:
             result.append(b"\n" if _skipping() else line)
     return b"".join(result)
 
-# ── Inlined from src/ast/cs.py ──────────────────────────────────────────────
+# -- Inlined from src/ast/cs.py ----------------------------------------------
 
 _TYPE_DECL_NODES = {
     "class_declaration", "interface_declaration", "struct_declaration",
@@ -141,7 +141,7 @@ _QUALIFIED_RE = re.compile(r'(?:[A-Za-z_]\w*\.)+([A-Za-z_]\w*)')
 
 
 def _unqualify(name: str) -> str:
-    """Strip namespace prefix: 'A.B.IFoo' → 'IFoo'."""
+    """Strip namespace prefix: 'A.B.IFoo' -> 'IFoo'."""
     return name.rsplit(".", 1)[-1]
 
 
@@ -186,7 +186,7 @@ def _collect_ctor_names(idx: TreeIndex, src: bytes) -> list:
                 names.append(_text(idents[-1], src))
     return names
 
-# ── AST helpers ───────────────────────────────────────────────────────────────
+# -- AST helpers ---------------------------------------------------------------
 
 def _line(node) -> int:
     return node.start_point[0] + 1
@@ -209,7 +209,7 @@ def _type_names(type_txt: str) -> set:
 def _truncate_raw(node, src, limit: int = 140) -> str:
     """Return the node's text as a single line, truncated to `limit` chars."""
     raw = _text(node, src).replace("\n", " ").replace("\r", "")
-    return raw[:limit] + "…" if len(raw) > limit else raw
+    return raw[:limit] + "..." if len(raw) > limit else raw
 
 
 def _node_kind(node) -> str:
@@ -257,7 +257,7 @@ def _sig_tokens(node, src) -> list:
     those inside the method body.
 
     Captures the bits of a signature that aren't already stored in dedicated
-    structured fields — attribute names, parameter names, default-value
+    structured fields -- attribute names, parameter names, default-value
     identifiers, generic args, constraint targets, etc. Modifiers like
     ``public`` / ``async`` are tree-sitter keywords (not ``identifier``
     nodes), so they're naturally excluded.
@@ -331,7 +331,7 @@ def _cs_explicit_visibility(node) -> str:
     if "private" in seen and "protected" in seen:
         return "private"     # private protected = most restricted
     if "protected" in seen and "internal" in seen:
-        return "protected"   # protected internal — reachable via inheritance
+        return "protected"   # protected internal -- reachable via inheritance
     # Single-keyword forms.
     for tok in _CS_VISIBILITY_TOKENS:
         if tok in seen:
@@ -346,8 +346,8 @@ def _cs_type_visibility(node) -> str:
     explicit = _cs_explicit_visibility(node)
     if explicit:
         return explicit
-    # Walk up to find the immediate scope: another type → private; else
-    # namespace / compilation_unit → internal.
+    # Walk up to find the immediate scope: another type -> private; else
+    # namespace / compilation_unit -> internal.
     p = node.parent
     while p is not None:
         if p.type in _TYPE_DECL_NODES:
@@ -391,17 +391,17 @@ def _enclosing_type_name(node, src) -> str:
     return ""
 
 
-# ── Block-scoped variable-type resolver ───────────────────────────────────────
+# -- Block-scoped variable-type resolver ---------------------------------------
 
 # Node types that introduce a new variable scope. A call site inside one of
 # these nodes resolves variable names against this node's local map first,
 # then walks outward through every enclosing scope. The grammar's ``block``
 # nodes are included so sibling blocks (if/else branches, try and each catch,
-# the two arms of a switch) isolate their declarations — without that, real
+# the two arms of a switch) isolate their declarations -- without that, real
 # code like ``if (b) { Foo x = ...; } else { Bar x = ...; }`` collides under
 # a single method-wide map.
 _SCOPE_NODES = frozenset({
-    # Method-like containers (carry parameters but no body locals — those
+    # Method-like containers (carry parameters but no body locals -- those
     # live in the body block, which is its own scope below).
     "method_declaration", "constructor_declaration", "destructor_declaration",
     "operator_declaration", "conversion_operator_declaration",
@@ -417,7 +417,7 @@ _SCOPE_NODES = frozenset({
     "using_statement",
 })
 
-# Subset of scope nodes that carry a ``parameters`` field — used to decide
+# Subset of scope nodes that carry a ``parameters`` field -- used to decide
 # which declaration channels the per-scope walker should consult.
 _PARAMETERIZED_SCOPES = frozenset({
     "method_declaration", "constructor_declaration", "destructor_declaration",
@@ -429,7 +429,7 @@ _PARAMETERIZED_SCOPES = frozenset({
 
 
 class _VarTypeMap:
-    """Method-scoped variable name → resolved type.
+    """Method-scoped variable name -> resolved type.
 
     ``resolve_at(name, node)`` walks up from ``node`` through every enclosing
     scope node, returning the first matching declared/inferred type. A name
@@ -438,7 +438,7 @@ class _VarTypeMap:
 
     Scope identity is keyed by ``tree_sitter.Node.id`` (the underlying C-side
     node pointer) rather than Python ``id()``, because tree-sitter creates
-    fresh Python wrapper objects for each traversal — ``node.parent`` from
+    fresh Python wrapper objects for each traversal -- ``node.parent`` from
     one call site produces a different Python object than the same node
     found via a top-down walk, even though both wrap the same AST node.
     """
@@ -470,7 +470,7 @@ _MISSING = object()
 
 
 def _scope_add(m: dict, name: str, type_txt: str) -> None:
-    """Insert name→type into m, suppressing on conflict (set to None)."""
+    """Insert name->type into m, suppressing on conflict (set to None)."""
     if not name or not type_txt:
         return
     existing = m.get(name, _MISSING)
@@ -497,13 +497,13 @@ def _infer_var_type(expr, src, scope_map: dict) -> str:
     """Best-effort syntactic type inference for a ``var`` initialiser.
 
     Handles, in order:
-      * ``await E``                            — unwrap and recurse
-      * ``new T(...)`` / ``new T[...]``        — exact type
-      * ``(T)expr`` / ``expr as T``            — cast/as target
-      * ``arr[i]`` where ``arr: T[]``          — element type from scope
-      * ``GenericMethod<T>(...)``              — first type arg (DI/factory idiom)
-      * ``recv.GenericMethod<T>(...)``         — same; ignores the receiver
-      * ``TypeName.Method(...)``               — assume TypeName is the result
+      * ``await E``                            -- unwrap and recurse
+      * ``new T(...)`` / ``new T[...]``        -- exact type
+      * ``(T)expr`` / ``expr as T``            -- cast/as target
+      * ``arr[i]`` where ``arr: T[]``          -- element type from scope
+      * ``GenericMethod<T>(...)``              -- first type arg (DI/factory idiom)
+      * ``recv.GenericMethod<T>(...)``         -- same; ignores the receiver
+      * ``TypeName.Method(...)``               -- assume TypeName is the result
                                                  (static factory idiom)
 
     The factory and generic heuristics deliberately favour over-emission:
@@ -516,7 +516,7 @@ def _infer_var_type(expr, src, scope_map: dict) -> str:
     if expr is None:
         return ""
 
-    # Strip await wrappers — ``await E`` has the same observed type as E for
+    # Strip await wrappers -- ``await E`` has the same observed type as E for
     # our purposes (we don't model Task<T> unwrapping, but the inner type
     # is almost always more useful than nothing).
     if expr.type == "await_expression":
@@ -547,7 +547,7 @@ def _infer_var_type(expr, src, scope_map: dict) -> str:
         fn = expr.child_by_field_name("function")
         if fn is None:
             return ""
-        # Bare ``GenericMethod<T>(...)`` — the type argument is almost
+        # Bare ``GenericMethod<T>(...)`` -- the type argument is almost
         # always the return type (DI ``Resolve<T>``, ``Get<T>`` patterns).
         if fn.type == "generic_name":
             ta = _generic_type_arg(fn, src)
@@ -556,12 +556,12 @@ def _infer_var_type(expr, src, scope_map: dict) -> str:
         if fn.type == "member_access_expression":
             name     = fn.child_by_field_name("name")
             receiver = fn.child_by_field_name("expression")
-            # ``recv.GenericMethod<T>(...)`` — same heuristic.
+            # ``recv.GenericMethod<T>(...)`` -- same heuristic.
             if name is not None and name.type == "generic_name":
                 ta = _generic_type_arg(name, src)
                 if ta:
                     return ta
-            # ``TypeName.Method(...)`` — static factory pattern. Receiver is
+            # ``TypeName.Method(...)`` -- static factory pattern. Receiver is
             # a bare PascalCase identifier and isn't a declared variable in
             # this scope. False-positive friendly: a static method that
             # returns something other than its enclosing type still yields
@@ -580,19 +580,19 @@ def _infer_var_type(expr, src, scope_map: dict) -> str:
         receiver = expr.child_by_field_name("expression")
         if name is None:
             return ""
-        # Static property access: ``TypeName.Member`` — guess TypeName.
+        # Static property access: ``TypeName.Member`` -- guess TypeName.
         # Mirrors the invocation-side factory heuristic.
         if (receiver is not None and receiver.type == "identifier"):
             rtxt = _text(receiver, src).strip()
             if (rtxt and rtxt[:1].isupper()
                     and scope_map.get(rtxt, _MISSING) is _MISSING):
                 return rtxt
-        # Instance property access: ``obj.PascalProperty`` — guess that the
+        # Instance property access: ``obj.PascalProperty`` -- guess that the
         # property's type matches its name (.NET convention; very common
         # for typed wrapper/sub-object properties like
         # ``request.RequestMetrics``, ``ctx.AuthContext``). False positives
         # for primitive-named properties (``Count``, ``Length``, ``Name``)
-        # are tolerated — the qualified form they produce doesn't match
+        # are tolerated -- the qualified form they produce doesn't match
         # any real call line at the AST stage.
         if name.type == "identifier":
             ptxt = _text(name, src).strip()
@@ -601,7 +601,7 @@ def _infer_var_type(expr, src, scope_map: dict) -> str:
         return ""
 
     if t == "conditional_expression":
-        # ``cond ? A : B`` — try each branch in turn; the first that yields
+        # ``cond ? A : B`` -- try each branch in turn; the first that yields
         # a type wins. Captures patterns like
         # ``var x = useNear ? group.Near : group.Far`` where both branches
         # are property accesses (instance heuristic above resolves them
@@ -652,19 +652,19 @@ def _collect_scope_locals(scope_node, src, scope_map: dict,
     """Populate scope_map with every variable declared **directly** in scope_node.
 
     Declarations inside nested scope nodes (other blocks, catch clauses,
-    nested methods, lambdas, …) belong to their own maps and are skipped.
+    nested methods, lambdas, ...) belong to their own maps and are skipped.
     The resolver walks the parent chain at lookup time, so an inner scope
     transparently inherits names from outer scopes without needing the
     inner map to copy them.
 
     ``scope_maps`` and ``file_map`` are the partial-state used for
-    cross-scope lookups at construction time — chiefly to resolve
+    cross-scope lookups at construction time -- chiefly to resolve
     ``foreach (var x in coll)`` where ``coll`` is a field or outer-method
     parameter and the iterator type can be derived from its element type.
     """
     nt = scope_node.type
 
-    # ── Method-like nodes own their parameters; their body is a separate
+    # -- Method-like nodes own their parameters; their body is a separate
     #    block scope that handles its own locals.
     if nt in _PARAMETERIZED_SCOPES:
         params = scope_node.child_by_field_name("parameters")
@@ -675,14 +675,14 @@ def _collect_scope_locals(scope_node, src, scope_map: dict,
                 if pt and pn:
                     _scope_add(scope_map, _text(pn, src).strip(),
                                _text(pt, src).strip())
-        # Lambdas may have an expression body (no block) — pattern/decl
+        # Lambdas may have an expression body (no block) -- pattern/decl
         # bindings inside the expression head still bind into this scope.
         body = scope_node.child_by_field_name("body")
         if body is not None and body.type != "block":
             _absorb_pattern_bindings(body, src, scope_map)
         return
 
-    # ── catch_clause: (TypeName ident) declares ``ident: TypeName``.
+    # -- catch_clause: (TypeName ident) declares ``ident: TypeName``.
     if nt == "catch_clause":
         decl = next((c for c in scope_node.children if c.type == "catch_declaration"), None)
         if decl is not None:
@@ -692,7 +692,7 @@ def _collect_scope_locals(scope_node, src, scope_map: dict,
                            _text(idents[0], src).strip())
         return
 
-    # ── for_statement: initializer may carry a variable_declaration.
+    # -- for_statement: initializer may carry a variable_declaration.
     if nt == "for_statement":
         explicit: list = []
         var_inferred: list = []
@@ -707,7 +707,7 @@ def _collect_scope_locals(scope_node, src, scope_map: dict,
                 _scope_add(scope_map, _text(vn, src).strip(), inferred)
         return
 
-    # ── foreach_statement: declares ``left: type``.
+    # -- foreach_statement: declares ``left: type``.
     if nt == "foreach_statement":
         tn = scope_node.child_by_field_name("type")
         nm = scope_node.child_by_field_name("left")
@@ -716,7 +716,7 @@ def _collect_scope_locals(scope_node, src, scope_map: dict,
         if tn.type != "implicit_type":
             _scope_add(scope_map, _text(nm, src).strip(), _text(tn, src).strip())
             return
-        # ``foreach (var x in coll)`` — derive x's type from coll's
+        # ``foreach (var x in coll)`` -- derive x's type from coll's
         # collection element type. We need to look up ``coll`` across the
         # enclosing scopes (it's commonly a field or method param, not a
         # local in the foreach itself), which means consulting the partial
@@ -733,7 +733,7 @@ def _collect_scope_locals(scope_node, src, scope_map: dict,
             _scope_add(scope_map, _text(nm, src).strip(), elem)
         return
 
-    # ── using_statement: ``using (var x = ...)`` or ``using (T x = ...)``.
+    # -- using_statement: ``using (var x = ...)`` or ``using (T x = ...)``.
     if nt == "using_statement":
         explicit = []
         var_inferred = []
@@ -748,7 +748,7 @@ def _collect_scope_locals(scope_node, src, scope_map: dict,
                 _scope_add(scope_map, _text(vn, src).strip(), inferred)
         return
 
-    # ── block: walk direct children, stopping at nested scope nodes. Picks
+    # -- block: walk direct children, stopping at nested scope nodes. Picks
     #    up local_declaration_statement (variable_declaration), declaration
     #    patterns inside expressions, and out-var declarations.
     explicit = []
@@ -816,7 +816,7 @@ def _walk_partial_scopes(name: str, start_node, scope_maps: dict,
                          file_map: dict):
     """Walk up the parent chain looking for ``name`` in the partial state.
 
-    Called from inside scope construction — ``scope_maps`` only contains
+    Called from inside scope construction -- ``scope_maps`` only contains
     scopes built so far. The DFS-preorder iteration in
     ``_build_var_type_map`` guarantees that every *enclosing* scope is
     already built by the time we look at an inner one, so this works for
@@ -838,9 +838,9 @@ def _collection_element_type(type_txt: str) -> str:
     """Best-guess element type for a collection type string.
 
     Handles ``T[]`` (most precise), and PascalCase-generic forms with one
-    type arg (``List<T>``, ``IEnumerable<T>``, ``HashSet<T>``, …). For
+    type arg (``List<T>``, ``IEnumerable<T>``, ``HashSet<T>``, ...). For
     multi-arg generics (``Dictionary<K, V>``, ``KeyValuePair<K, V>``) the
-    element type isn't a single name, so we return "" — callers fall back
+    element type isn't a single name, so we return "" -- callers fall back
     to leaving the iterator unresolved rather than guessing wrong.
     """
     t = type_txt.strip()
@@ -857,7 +857,7 @@ def _collection_element_type(type_txt: str) -> str:
 
 
 def _build_var_type_map(tree, src) -> _VarTypeMap:
-    """Build a block-scoped variable-name → resolved-type map for the file.
+    """Build a block-scoped variable-name -> resolved-type map for the file.
 
     File scope holds fields/properties/events declared at the type level;
     every block/catch/loop/method gets its own per-scope map layered on
@@ -867,7 +867,7 @@ def _build_var_type_map(tree, src) -> _VarTypeMap:
     """
     file_map: dict[str, str | None] = {}
 
-    # Fields and properties at the type level — visible inside every method
+    # Fields and properties at the type level -- visible inside every method
     # of the enclosing type, so they belong to file scope for resolution.
     for node in _find_all(tree.root_node, lambda n: n.type in (
             "field_declaration", "event_field_declaration")):
@@ -903,7 +903,7 @@ def _build_var_type_map(tree, src) -> _VarTypeMap:
     return _VarTypeMap(scope_maps, file_map)
 
 
-# ── Shared traversal helpers ───────────────────────────────────────────────────
+# -- Shared traversal helpers ---------------------------------------------------
 
 def _iter_single_field_locals(tree, src, type_name, node_types, name_field, *,
                                skip_implicit=False):
@@ -961,7 +961,7 @@ def _iter_all_locals(tree, src, type_name):
     yield from _iter_single_field_locals(
         tree, src, type_name, ("declaration_expression",), "name", skip_implicit=True)
     # is-pattern: if (s is Circle c), switch case Circle ci:
-    # recursive pattern: if (s is Circle { Prop: v } c) — same type/name fields
+    # recursive pattern: if (s is Circle { Prop: v } c) -- same type/name fields
     yield from _iter_single_field_locals(
         tree, src, type_name, ("declaration_pattern", "recursive_pattern"), "name")
     # catch clause: catch (Connection ex)
@@ -1041,7 +1041,7 @@ def _iter_with_members(tree, src):
                 yield wi, src_ident, prop
 
 
-# ── Data extraction functions ─────────────────────────────────────────────────
+# -- Data extraction functions -------------------------------------------------
 
 def _q_namespace(src, idx: TreeIndex) -> str:
     """Extract the primary namespace name."""
@@ -1221,7 +1221,7 @@ def _q_all_call_site_infos(src, idx: TreeIndex, var_map: _VarTypeMap | None = No
     provided, resolves that receiver to its declared/inferred type so the
     indexer can emit a stable ``Type.Method`` token. Receivers whose name
     isn't in scope or maps to conflicting types in the same scope leave
-    ``resolved_type`` empty — the bare-name + literal-receiver fallback in
+    ``resolved_type`` empty -- the bare-name + literal-receiver fallback in
     the indexer keeps the call discoverable either way.
     """
     result = []
@@ -1289,13 +1289,13 @@ def _q_all_local_types_data(src, idx: TreeIndex) -> list:
     return types
 
 
-# ── Query functions ────────────────────────────────────────────────────────────
+# -- Query functions ------------------------------------------------------------
 
 def _parse_visibility_filter(visibility):
     """Normalise the optional visibility filter into a set of canonical
     tokens (or None when no filter is requested). Accepts a single value
     (``"public"``), a comma-separated string (``"public,internal"``), or
-    any iterable. Unknown tokens are dropped silently — callers shouldn't
+    any iterable. Unknown tokens are dropped silently -- callers shouldn't
     crash on a typo, just get back nothing matching their typo."""
     if not visibility:
         return None
@@ -1311,7 +1311,7 @@ def _visibility_keep(info_visibility: str, allowed) -> bool:
     """True when ``info_visibility`` passes the optional filter.
 
     Empty string on the info means "language didn't capture a visibility"
-    and is treated as a hard miss — searching ``visibility="public"`` over
+    and is treated as a hard miss -- searching ``visibility="public"`` over
     e.g. SQL files never matches, which is the right answer.
     """
     if allowed is None:
@@ -1346,7 +1346,7 @@ def q_calls(src, tree, lines, method_name):
     else:
         qualifier, bare_name = None, method_name
 
-    # Build the var-type map lazily — only when a qualified pattern is
+    # Build the var-type map lazily -- only when a qualified pattern is
     # supplied. Bare-method searches don't need receiver resolution.
     var_map = _build_var_type_map(tree, src) if qualifier else None
 
@@ -1375,7 +1375,7 @@ def q_calls(src, tree, lines, method_name):
 
         Reports the line of ``name_node`` (where the matched identifier
         actually appears) rather than the start of the surrounding
-        invocation — for chained calls like ``a.B().Method(...)`` that
+        invocation -- for chained calls like ``a.B().Method(...)`` that
         means the result lands on the line of ``Method``, not on
         whichever line the chain begins. Source text is the single line
         containing the name, not the multi-line invocation node.
@@ -1385,7 +1385,7 @@ def q_calls(src, tree, lines, method_name):
         line_text = lines[row].strip() if 0 <= row < len(lines) else ""
         if not line_text:
             # Fall back to a truncated render of the node when the source
-            # row is empty/missing (defensive — shouldn't happen for real
+            # row is empty/missing (defensive -- shouldn't happen for real
             # call sites).
             line_text = _truncate_raw(node, src)
         return (_line(anchor), line_text)
@@ -1409,7 +1409,7 @@ def q_calls(src, tree, lines, method_name):
                     if not _qualifier_matches(expr):
                         matched = None
         elif fn.type == "conditional_access_expression":
-            # f?.Method(...) — method name is in the trailing
+            # f?.Method(...) -- method name is in the trailing
             # member_binding_expression; receiver is the ``condition``
             # field on the conditional_access_expression.
             binding = next((c for c in fn.children
@@ -1443,7 +1443,7 @@ def q_calls(src, tree, lines, method_name):
             if not idents:
                 continue
             if _strip_generic(_text(idents[-1], src)) == bare_name:
-                # ``new T(...)`` — anchor at the type name token.
+                # ``new T(...)`` -- anchor at the type name token.
                 results.append(_report(node, idents[-1]))
     return results
 
@@ -1485,7 +1485,7 @@ def q_accesses_of(src, tree, lines, member_name):
         # member_binding_expression appears inside conditional_access_expression (?.member)
         _check_access(node.child_by_field_name("name"), None, node)
 
-    # Object-initializer member assignments — new Widget { Value = 5 }
+    # Object-initializer member assignments -- new Widget { Value = 5 }
     for assign, type_node, lhs in _iter_initializer_members(tree, src):
         if _in_literal(assign):
             continue
@@ -1500,7 +1500,7 @@ def q_accesses_of(src, tree, lines, member_name):
         seen_rows.add(row)
         results.append((_line(assign), _truncate_raw(assign, src)))
 
-    # With-expression member mutations — w with { Value = 10 }
+    # With-expression member mutations -- w with { Value = 10 }
     for wi, src_ident, prop in _iter_with_members(tree, src):
         if _strip_generic(_text(prop, src)) != bare_name:
             continue
@@ -1597,7 +1597,7 @@ def q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None,
             continue
         if allowed is not None:
             # Use the same defaults as the indexer so the AST stage stays
-            # consistent with the index pre-filter — type kinds get the
+            # consistent with the index pre-filter -- type kinds get the
             # type-level default, members get the member-level default.
             if node.type in _TYPE_DECL_NODES:
                 vis = _cs_type_visibility(node)
@@ -1672,7 +1672,7 @@ def q_at(src, tree, lines, position: str):
 
     # Walk the tree finding the deepest node whose range covers the target
     # (row, col). Tree-sitter rows/cols are 0-indexed; ``end_point`` is the
-    # position AFTER the last char (exclusive) — half-open range [start, end).
+    # position AFTER the last char (exclusive) -- half-open range [start, end).
     root = tree.root_node
     er, ec = root.end_point
     if (target_row, target_col) >= (er, ec):
@@ -1712,7 +1712,7 @@ def q_at(src, tree, lines, position: str):
         if walker.type in _SCOPE_NODE_NAMES:
             name_node = walker.child_by_field_name("name")
             # ``field_declaration`` / ``event_field_declaration`` carry their
-            # name inside a nested ``variable_declaration`` → ``variable_declarator``
+            # name inside a nested ``variable_declaration`` -> ``variable_declarator``
             # rather than on a direct ``name`` field. Pick the declarator
             # whose range contains the target, else the first declarator.
             if name_node is None and walker.type in (
@@ -1727,7 +1727,7 @@ def q_at(src, tree, lines, position: str):
                 })
         walker = walker.parent
 
-    # Render — one entry, with the chain in the text.
+    # Render -- one entry, with the chain in the text.
     token = _text(deepest, src)
     if len(token) > 60:
         token = token[:57] + "..."
@@ -1946,7 +1946,7 @@ def q_accesses_on(src, tree, lines, type_name):
             return
         seen_rows.add(row)
         line_text = lines[row].strip() if row < len(lines) else ""
-        results.append((_line(node), f".{member_name}  ← {line_text}"))
+        results.append((_line(node), f".{member_name}  <- {line_text}"))
 
     # Direct member access: var.Member
     for node in _find_all(tree.root_node, lambda n: n.type == "member_access_expression"):
@@ -1978,7 +1978,7 @@ def q_accesses_on(src, tree, lines, type_name):
             if member:
                 _emit(node, _text(member, src).strip())
 
-    # Object-initializer member assignments — new T { Prop = val }
+    # Object-initializer member assignments -- new T { Prop = val }
     # Each assignment is emitted independently so multiple members on the same
     # line are all reported.
     for assign, type_node, lhs in _iter_initializer_members(tree, src):
@@ -1986,16 +1986,16 @@ def q_accesses_on(src, tree, lines, type_name):
             continue
         row = assign.start_point[0]
         line_text = lines[row].strip() if row < len(lines) else ""
-        results.append((_line(assign), f".{_text(lhs, src).strip()}  ← {line_text}"))
+        results.append((_line(assign), f".{_text(lhs, src).strip()}  <- {line_text}"))
 
-    # With-expression member mutations (C# 9 records) — obj with { Prop = val }
+    # With-expression member mutations (C# 9 records) -- obj with { Prop = val }
     # Each member is emitted independently for the same reason as above.
     for wi, src_ident, prop in _iter_with_members(tree, src):
         if not _matches(_text(src_ident, src).strip(), wi):
             continue
         row = wi.start_point[0]
         line_text = lines[row].strip() if row < len(lines) else ""
-        results.append((_line(wi), f".{_text(prop, src).strip()}  ← {line_text}"))
+        results.append((_line(wi), f".{_text(prop, src).strip()}  <- {line_text}"))
 
     results.sort(key=lambda x: x[0])
     return results
@@ -2031,7 +2031,7 @@ def q_var_type(src, tree, lines, name):
 
     Identical (line, resolved) pairs are deduped so a name used multiple
     times on the same line reports once. Identifiers inside string
-    literals or comments are skipped — matches mirror ``all_refs``.
+    literals or comments are skipped -- matches mirror ``all_refs``.
     """
     var_map = _build_var_type_map(tree, src)
     results = []
@@ -2058,11 +2058,11 @@ def q_var_type(src, tree, lines, name):
             continue
         seen.add(key)
         line_text = lines[row].strip() if row < len(lines) else ""
-        results.append((_line(node), f"{name} : {label}  ← {line_text}"))
+        results.append((_line(node), f"{name} : {label}  <- {line_text}"))
     return results
 
 
-# ── Process function ──────────────────────────────────────────────────────────
+# -- Process function ----------------------------------------------------------
 
 def query_cs_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False,
                    symbol_kind=None, uses_kind=None, visibility=None, **kwargs):

@@ -5,8 +5,8 @@ Three independent things being verified, all against a real Tantivy index
 opened on a temp directory:
 
   1. ``extract_metadata`` preserves long identifiers verbatim in
-     per-identifier multi-value fields — no truncation, no underscore split.
-  2. The backend, indexed via the same path build_document → backend.add
+     per-identifier multi-value fields -- no truncation, no underscore split.
+  2. The backend, indexed via the same path build_document -> backend.add
      uses in production, can store and retrieve documents that contain
      identifiers far longer than Tantivy's default 40-char tokenizer limit.
   3. Querying via ``search()`` with a 50-char identifier returns the file
@@ -31,7 +31,7 @@ from indexserver.indexer import build_document, extract_metadata
 from indexserver.search import search as _search
 
 
-# A 50-char C# identifier — longer than Tantivy's 40-char tokenizer limit.
+# A 50-char C# identifier -- longer than Tantivy's 40-char tokenizer limit.
 _LONG_CLASS = "InitializeNotificationHistoryAcrossDataCentersUSA"
 assert len(_LONG_CLASS) == 49
 
@@ -56,7 +56,7 @@ def _make_source() -> bytes:
 """).encode()
 
 
-# ── Metadata extraction (no backend) ──────────────────────────────────────────
+# -- Metadata extraction (no backend) ------------------------------------------
 
 class TestExtractMetadataPreservesLongIdentifiers(unittest.TestCase):
     """flat_from_fd / extract_metadata stores long identifiers verbatim."""
@@ -72,7 +72,7 @@ class TestExtractMetadataPreservesLongIdentifiers(unittest.TestCase):
 
     def test_snake_case_class_name_is_single_entry(self):
         self.assertIn(_SNAKE_CLASS, self.meta["class_names"])
-        # Each entry stays a single identifier — the indexer must NOT split
+        # Each entry stays a single identifier -- the indexer must NOT split
         # snake_case into pieces.
         self.assertNotIn("add", self.meta["class_names"])
         self.assertNotIn("text", self.meta["class_names"])
@@ -87,7 +87,7 @@ class TestExtractMetadataPreservesLongIdentifiers(unittest.TestCase):
         self.assertIn(_SNAKE_CLASS, tokens)
 
 
-# ── Backend round-trip (real Tantivy index) ──────────────────────────────────
+# -- Backend round-trip (real Tantivy index) ----------------------------------
 
 class TestBackendStoresLongIdentifiers(unittest.TestCase):
     """A real Tantivy backend accepts and returns long identifier values."""
@@ -143,10 +143,10 @@ class TestBackendStoresLongIdentifiers(unittest.TestCase):
             "match 'add_text_field' in class_names with raw tokenizer.")
 
 
-# ── Full daemon pipeline: index + search + AST ───────────────────────────────
+# -- Full daemon pipeline: index + search + AST -------------------------------
 
 class TestQueryCodebasePipelineFindsLongIdentifier(unittest.TestCase):
-    """The full /query-codebase pipeline (Tantivy pre-filter → AST post-filter)
+    """The full /query-codebase pipeline (Tantivy pre-filter -> AST post-filter)
     returns the file containing a long identifier when the caller passes the
     full long pattern."""
 

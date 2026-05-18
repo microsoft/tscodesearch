@@ -4,18 +4,18 @@ Tests for null-conditional member access (?.) in q_calls, q_accesses_on, q_acces
 Replicates behavior discovered in Round 7 of guided testing:
 
   q_calls METHOD
-    → missed calls via `?.`: `obj?.Method(args)` uses a
+    -> missed calls via `?.`: `obj?.Method(args)` uses a
       `conditional_access_expression` as the invocation function node, not a
       plain `member_access_expression`. The method name is in a nested
       `member_binding_expression` (field "name").
 
   accesses_on TYPE
-    → missed `var?.Member` accesses: the result-collection loop only walked
+    -> missed `var?.Member` accesses: the result-collection loop only walked
       `member_access_expression`; `conditional_access_expression` nodes
       (where the condition is the tracked variable) were not walked.
 
   accesses_of MEMBER
-    → same gap: `member_binding_expression` nodes (inside conditional_access)
+    -> same gap: `member_binding_expression` nodes (inside conditional_access)
       were not walked by q_accesses_of.
 
   All three bugs fixed together since they share the same root cause.
@@ -56,7 +56,7 @@ def _line_no(fragment):
 
 
 class TestCallsNullConditional(unittest.TestCase):
-    """q_calls misses `obj?.Method()` — conditional_access_expression not handled."""
+    """q_calls misses `obj?.Method()` -- conditional_access_expression not handled."""
 
     def test_null_conditional_call_found(self):
         r = q_calls(*_PARSED, method_name="LogInfo")
@@ -75,7 +75,7 @@ class TestCallsNullConditional(unittest.TestCase):
 
 
 class TestAccessesOnNullConditional(unittest.TestCase):
-    """accesses_on misses `var?.Member` — conditional_access_expression not walked."""
+    """accesses_on misses `var?.Member` -- conditional_access_expression not walked."""
 
     def test_null_conditional_member_access_found(self):
         r = q_accesses_on(*_PARSED, type_name="Result")
@@ -97,7 +97,7 @@ class TestAccessesOnNullConditional(unittest.TestCase):
 
 
 class TestAccessesOfNullConditional(unittest.TestCase):
-    """accesses_of misses `?.Member` — member_binding_expression not walked."""
+    """accesses_of misses `?.Member` -- member_binding_expression not walked."""
 
     def test_null_conditional_access_of_member_found(self):
         r = q_accesses_of(*_PARSED, member_name="Message")

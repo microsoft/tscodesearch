@@ -52,7 +52,7 @@ class TestExtFilterExpansion(unittest.TestCase):
                 parts.append(f"path_segments:!=[{','.join(excluded)}]")
         return " && ".join(parts)
 
-    # ── C++ expansion ──────────────────────────────────────────────────────────
+    # -- C++ expansion ----------------------------------------------------------
 
     def test_cpp_includes_headers(self):
         """ext='cpp' must include h, hpp, hxx in the filter."""
@@ -76,7 +76,7 @@ class TestExtFilterExpansion(unittest.TestCase):
         f = self._filter("cpp")
         self.assertIn("extension:=[", f)
 
-    # ── Non-C++ extensions not expanded ───────────────────────────────────────
+    # -- Non-C++ extensions not expanded ---------------------------------------
 
     def test_cs_not_expanded(self):
         """ext='cs' must NOT include C++ headers."""
@@ -93,7 +93,7 @@ class TestExtFilterExpansion(unittest.TestCase):
         f = self._filter("h")
         self.assertEqual(f, "extension:=h")
 
-    # ── Empty ext = no filter ──────────────────────────────────────────────────
+    # -- Empty ext = no filter --------------------------------------------------
 
     def test_empty_ext_no_filter(self):
         f = self._filter("")
@@ -103,7 +103,7 @@ class TestExtFilterExpansion(unittest.TestCase):
         f = self._filter(None)
         self.assertEqual(f, "")
 
-    # ── Sub filter composition ─────────────────────────────────────────────────
+    # -- Sub filter composition -------------------------------------------------
 
     def test_cpp_with_sub(self):
         f = self._filter("cpp", sub="AP_HAL_ChibiOS")
@@ -120,7 +120,7 @@ class TestExtFilterExpansion(unittest.TestCase):
         f = self._filter("cs", sub="services/billing")
         self.assertEqual(f, "extension:=cs && path_segments:=services/billing")
 
-    # ── exclude_path ───────────────────────────────────────────────────────────
+    # -- exclude_path -----------------------------------------------------------
 
     def test_exclude_single_folder(self):
         f = self._filter("cs", exclude_path="tests")

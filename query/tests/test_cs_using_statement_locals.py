@@ -3,7 +3,7 @@ Tests for uses_kind=locals with various local variable declaration forms.
 
 Replicates bugs discovered in Rounds 8 and 9 of guided testing:
 
-  Round 8 — uses_kind=locals missed using-statement and for-statement variables:
+  Round 8 -- uses_kind=locals missed using-statement and for-statement variables:
 
         using (MemoryStream stm = new MemoryStream(...))
         for (Connection cur = arr[0]; ...)
@@ -13,18 +13,18 @@ Replicates bugs discovered in Rounds 8 and 9 of guided testing:
         lambda n: n.type in ("local_declaration_statement", "using_statement",
                              "for_statement")
 
-  Round 11 — uses_kind=locals missed declaration_expression variables:
+  Round 11 -- uses_kind=locals missed declaration_expression variables:
 
         if (TryParse(input, out Connection opened))   // out variable
         (Connection first, Connection second) = MakePair()  // tuple decon
 
       Both forms produce `declaration_expression` nodes (field layout: `type`,
       `name`) that appear directly inside `argument` or `tuple_expression`
-      nodes — not inside a `local_declaration_statement`.
+      nodes -- not inside a `local_declaration_statement`.
       Fix: added a loop over all `declaration_expression` nodes, skipping
       `implicit_type` (var-inferred), mirroring the Round 6 `accesses_on` fix.
 
-  Round 10 — uses_kind=locals missed catch-clause variables:
+  Round 10 -- uses_kind=locals missed catch-clause variables:
 
         catch (Connection ex) { ... }
 
@@ -34,7 +34,7 @@ Replicates bugs discovered in Rounds 8 and 9 of guided testing:
       Fix: added a loop over `catch_clause` nodes that reads the two
       `identifier` children from the `catch_declaration`.
 
-  Round 9 — uses_kind=locals missed foreach-statement iteration variables:
+  Round 9 -- uses_kind=locals missed foreach-statement iteration variables:
 
         foreach (Connection item in arr)
 
@@ -80,7 +80,7 @@ def _line_no(fragment):
 
 class TestUsingStatementLocals(unittest.TestCase):
     """
-    uses_kind=locals missed variables declared in `using (Type var = ...)` —
+    uses_kind=locals missed variables declared in `using (Type var = ...)` --
     the variable_declaration is a direct child of using_statement, not inside
     a local_declaration_statement.
     """
@@ -136,7 +136,7 @@ class TestUsingStatementLocals(unittest.TestCase):
         assert _line_no("foreach (Connection item") in _lns(r)
 
     def test_foreach_var_inferred_not_tracked(self):
-        """foreach (var item in arr) must NOT appear — type is implicit."""
+        """foreach (var item in arr) must NOT appear -- type is implicit."""
         r = self._locals("Connection")
         # There's only one 'item' in the fixture (the explicit-type foreach),
         # so we check the var-inferred foreach line is absent, not the name.
@@ -145,7 +145,7 @@ class TestUsingStatementLocals(unittest.TestCase):
             f"var-inferred foreach line must not appear: {r}"
 
     def test_out_var_explicit_type_found(self):
-        """if (TryOpen(out Connection opened)) — out variable must appear."""
+        """if (TryOpen(out Connection opened)) -- out variable must appear."""
         r = self._locals("Connection")
         assert "opened" in _texts(r), f"'opened' from out-var missing: {r}"
 
@@ -154,7 +154,7 @@ class TestUsingStatementLocals(unittest.TestCase):
         assert _line_no("out Connection opened") in _lns(r)
 
     def test_tuple_decon_both_vars_found(self):
-        """(Connection first, Connection second) = MakePair() — both must appear."""
+        """(Connection first, Connection second) = MakePair() -- both must appear."""
         r = self._locals("Connection")
         assert "first" in _texts(r), f"'first' from tuple decon missing: {r}"
         assert "second" in _texts(r), f"'second' from tuple decon missing: {r}"
@@ -176,7 +176,7 @@ class TestUsingStatementLocals(unittest.TestCase):
         """catch (Transaction) with no variable must NOT produce a result."""
         r = self._locals("Transaction")
         # Transaction appears in OtherType() and CatchNoVar(); only the using()
-        # version (with variable tx) should be in results — no bare catch entry
+        # version (with variable tx) should be in results -- no bare catch entry
         texts = _texts(r)
         # confirm tx is found (from using-statement)
         assert "tx" in texts, f"'tx' from using-statement missing: {r}"

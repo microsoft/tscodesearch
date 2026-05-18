@@ -2,12 +2,12 @@
 Tests verifying consistency between the indexer (extract_metadata) and the
 query functions (q_*), and documenting known gaps between the two systems.
 
-These tests run purely in-memory — no daemon required.
+These tests run purely in-memory -- no daemon required.
 
 Gap taxonomy used in this file:
-  CONSISTENT  – both systems produce equivalent data for this property
-  GAP         – indexer and query diverge; documented with details
-  MISSING     – a query mode has no corresponding indexed field at all
+  CONSISTENT  - both systems produce equivalent data for this property
+  GAP         - indexer and query diverge; documented with details
+  MISSING     - a query mode has no corresponding indexed field at all
 """
 
 import os
@@ -40,7 +40,7 @@ def _texts(results):
 
 
 # ---------------------------------------------------------------------------
-# Shared fixture — exercises all metadata categories
+# Shared fixture -- exercises all metadata categories
 # ---------------------------------------------------------------------------
 
 _FIXTURE = b"""\
@@ -119,7 +119,7 @@ def meta():
 # ===========================================================================
 
 class TestBaseTypesConsistency:
-    """CONSISTENT — indexer base_types matches what q_classes / q_implements sees."""
+    """CONSISTENT -- indexer base_types matches what q_classes / q_implements sees."""
 
     def test_indexer_finds_iwidget_in_base_types(self, meta):
         assert "IWidget" in meta["base_types"], \
@@ -180,7 +180,7 @@ class TestBaseTypesConsistency:
 # ===========================================================================
 
 class TestCallSitesConsistency:
-    """CONSISTENT — indexer call_sites and q_calls both use _collect_ctor_names
+    """CONSISTENT -- indexer call_sites and q_calls both use _collect_ctor_names
     and share the same AST traversal via ast_cs helpers."""
 
     def test_indexer_includes_method_call(self, meta):
@@ -216,7 +216,7 @@ class TestCallSitesConsistency:
 # ===========================================================================
 
 class TestClassNamesConsistency:
-    """CONSISTENT — both systems enumerate the same set of type declaration names."""
+    """CONSISTENT -- both systems enumerate the same set of type declaration names."""
 
     def test_indexer_finds_all_type_names(self, meta):
         for name in ("IWidget", "BaseWidget", "ConcreteWidget",
@@ -248,7 +248,7 @@ class TestClassNamesConsistency:
 # ===========================================================================
 
 class TestAttributesConsistency:
-    """CONSISTENT — both systems strip "Attribute" suffix and unqualify."""
+    """CONSISTENT -- both systems strip "Attribute" suffix and unqualify."""
 
     def test_indexer_strips_attribute_suffix(self, meta):
         assert "Serializable" in meta["attr_names"], \
@@ -281,7 +281,7 @@ class TestAttributesConsistency:
 
 
 # ===========================================================================
-# GAP: member_sigs — indexer uses "returns" field; query uses "type" field
+# GAP: member_sigs -- indexer uses "returns" field; query uses "type" field
 # ===========================================================================
 
 class TestMethodSigsFieldNameGap:
@@ -331,7 +331,7 @@ class TestMethodSigsFieldNameGap:
 
 
 # ===========================================================================
-# GAP: type_refs — indexer is narrower than q_uses
+# GAP: type_refs -- indexer is narrower than q_uses
 # ===========================================================================
 
 class TestTypeRefsVsUsesGap:
@@ -340,18 +340,18 @@ class TestTypeRefsVsUsesGap:
 
     COVERED (type_refs AND q_uses):
       - field/property types, method return types, method/ctor parameter types
-      - base_types (implements clause)  — added: base_types merged into type_refs
-      - local variable declaration types — gap CLOSED: indexer now scans local decls
-      - PascalCase static call receivers  — gap CLOSED: indexer now extracts these
+      - base_types (implements clause)  -- added: base_types merged into type_refs
+      - local variable declaration types -- gap CLOSED: indexer now scans local decls
+      - PascalCase static call receivers  -- gap CLOSED: indexer now extracts these
 
     SPLIT (explicit casts go to cast_types, not type_refs):
-      - explicit cast targets — in cast_types (new T1 field) but NOT in type_refs
+      - explicit cast targets -- in cast_types (new T1 field) but NOT in type_refs
     """
 
-    # ── items that SHOULD be in type_refs ────────────────────────────────────
+    # -- items that SHOULD be in type_refs ------------------------------------
 
     def test_field_type_in_type_refs(self, meta):
-        """Field 'IWidget _inner' → 'IWidget' must appear in type_refs."""
+        """Field 'IWidget _inner' -> 'IWidget' must appear in type_refs."""
         assert "IWidget" in meta["type_refs"], \
             f"type_refs: {meta['type_refs']}"
 
@@ -365,13 +365,13 @@ class TestTypeRefsVsUsesGap:
         """Constructor parameter types must appear in type_refs."""
         assert "IWidget" in meta["type_refs"]
 
-    # ── items that q_uses finds but type_refs does NOT ───────────────────────
+    # -- items that q_uses finds but type_refs does NOT -----------------------
 
     def test_cast_target_in_cast_types_not_type_refs(self):
         """
         Explicit casts go to cast_types (T1 field), NOT type_refs.
         This keeps type_refs for declaration-site usages and cast_types
-        for explicit narrowing casts — different query semantics.
+        for explicit narrowing casts -- different query semantics.
         """
         src2 = b"""
 namespace N {
@@ -391,7 +391,7 @@ namespace N {
 
     def test_local_variable_type_in_type_refs(self):
         """
-        GAP CLOSED: local variable 'LocalOnly x = ...' — the declared type
+        GAP CLOSED: local variable 'LocalOnly x = ...' -- the declared type
         'LocalOnly' is now indexed in type_refs.
         """
         src = b"""
@@ -410,7 +410,7 @@ namespace N {
 
     def test_typeof_not_in_type_refs(self):
         """
-        GAP: typeof(TypeOfOnly) — the type is found by q_uses but not by indexer.
+        GAP: typeof(TypeOfOnly) -- the type is found by q_uses but not by indexer.
         """
         src = b"""
 namespace N {
@@ -458,13 +458,13 @@ namespace N {
 
 
 # ===========================================================================
-# GAP: imports — indexer stores top-level prefix only
+# GAP: imports -- indexer stores top-level prefix only
 # ===========================================================================
 
 class TestImportsCoarsenessGap:
     """
     GAP: indexer stores only the top-level namespace prefix from each using
-    directive (e.g. 'System.Collections.Generic' → 'System'), while q_imports
+    directive (e.g. 'System.Collections.Generic' -> 'System'), while q_imports
     returns the full directive text.
 
     This is an intentional design choice for index performance (faceting by
@@ -492,19 +492,19 @@ class TestImportsCoarsenessGap:
         src = b"using System; using System.IO; using System.Text;"
         m = extract_metadata(src, ".cs")
         count = sum(1 for u in m["imports"] if u == "System")
-        assert count == 1, f"'System' appears {count} times — expected 1 (deduped)"
+        assert count == 1, f"'System' appears {count} times -- expected 1 (deduped)"
 
 
 # ===========================================================================
-# GAP: event_declaration — indexed in method_names/type_refs but absent from q_fields
+# GAP: event_declaration -- indexed in method_names/type_refs but absent from q_fields
 # ===========================================================================
 
 class TestEventDeclarationGap:
     """
     GAP: tree-sitter-c-sharp parses events in two different node types:
 
-      event_field_declaration  — 'public event EventHandler OnChanged;'  (common form)
-      event_declaration        — 'public event EventHandler E { add{} remove{} }'
+      event_field_declaration  -- 'public event EventHandler OnChanged;'  (common form)
+      event_declaration        -- 'public event EventHandler E { add{} remove{} }'
 
     Only event_declaration is in _MEMBER_DECL_NODES.  event_field_declaration is
     NOT processed by the indexer or q_methods, so field-style events are invisible
@@ -517,7 +517,7 @@ class TestEventDeclarationGap:
     so they miss event_declaration too.
     """
 
-    # Field-style events (the common form) — event_field_declaration
+    # Field-style events (the common form) -- event_field_declaration
     _SRC_FIELD = b"""
 namespace N {
     public class C {
@@ -528,7 +528,7 @@ namespace N {
 }
 """
 
-    # Accessor-style events — event_declaration (in _MEMBER_DECL_NODES)
+    # Accessor-style events -- event_declaration (in _MEMBER_DECL_NODES)
     _SRC_ACCESSOR = b"""
 namespace N {
     public class C {
@@ -538,7 +538,7 @@ namespace N {
 """
 
     def test_field_style_event_found_by_indexer(self):
-        """event_field_declaration is now in _MEMBER_DECL_NODES — indexer captures it."""
+        """event_field_declaration is now in _MEMBER_DECL_NODES -- indexer captures it."""
         m = extract_metadata(self._SRC_FIELD, ".cs")
         assert "OnChanged" in m["method_names"], \
             f"event_field_declaration name missing from method_names: {m['method_names']}"
@@ -589,7 +589,7 @@ namespace N {
 
 
 # ===========================================================================
-# cast_types — dedicated T1 field for explicit cast targets
+# cast_types -- dedicated T1 field for explicit cast targets
 # ===========================================================================
 
 class TestCastSitesMissing:
@@ -597,7 +597,7 @@ class TestCastSitesMissing:
     GAP CLOSED: cast_types is now a T1 field.
     q_casts finds explicit (TYPE)expr cast expressions; the indexer now extracts
     the same types into cast_types for the Tantivy pre-filter.
-    Cast targets do NOT bleed into type_refs — they remain in cast_types only.
+    Cast targets do NOT bleed into type_refs -- they remain in cast_types only.
     """
 
     def test_q_casts_finds_explicit_cast(self, fx):
@@ -626,7 +626,7 @@ namespace N {
 
 
 # ===========================================================================
-# MISSING: q_ident — no indexed equivalent
+# MISSING: q_ident -- no indexed equivalent
 # ===========================================================================
 
 class TestIdentMissing:
@@ -643,7 +643,7 @@ class TestIdentMissing:
         assert len(r) >= 4
 
     def test_q_ident_skips_strings(self, fx):
-        # "IDENT_IN_STRING" — not in fixture, so 0 results
+        # "IDENT_IN_STRING" -- not in fixture, so 0 results
         r = q_all_refs(*fx,"COMMENT_CALL")
         assert len(r) == 0
 
@@ -672,7 +672,7 @@ class TestIdentMissing:
 # ===========================================================================
 
 class TestMethodNamesConsistency:
-    """CONSISTENT — indexer method_names and q_methods enumerate the same members."""
+    """CONSISTENT -- indexer method_names and q_methods enumerate the same members."""
 
     def test_indexer_includes_field_names(self, meta):
         assert "_inner" in meta["method_names"] or "_prefix" in meta["method_names"], \
@@ -706,7 +706,7 @@ class TestMethodNamesConsistency:
 # ===========================================================================
 
 class TestFieldParamTypeConsistency:
-    """CONSISTENT for declared types — q_field_type and q_param_type results
+    """CONSISTENT for declared types -- q_field_type and q_param_type results
     are a subset of what the indexer puts in type_refs."""
 
     def test_field_type_results_in_type_refs(self, fx, meta):
@@ -725,7 +725,7 @@ class TestFieldParamTypeConsistency:
 
     def test_generic_type_arg_in_type_refs(self):
         """
-        Indexer expands generic types: IList<IBlobStore> → stores both 'IList'
+        Indexer expands generic types: IList<IBlobStore> -> stores both 'IList'
         and 'IBlobStore'.  q_field_type finds the field by either component name.
         """
         src = b"""
@@ -752,10 +752,10 @@ namespace N {
 # ===========================================================================
 
 class TestNamespaceConsistency:
-    """CONSISTENT — both indexer and q_usings work from the same source."""
+    """CONSISTENT -- both indexer and q_usings work from the same source."""
 
     def test_indexer_extracts_namespace(self, meta):
-        # namespace is multi-value raw — one entry per dot-separated component.
+        # namespace is multi-value raw -- one entry per dot-separated component.
         assert meta["namespace"] == ["TestApp"], \
             f"namespace: {meta['namespace']!r}"
 

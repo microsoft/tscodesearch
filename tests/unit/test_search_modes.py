@@ -1,7 +1,7 @@
 """
 Unit tests for ``indexserver.search_modes.resolve_query_params``.
 
-Verifies the mode → ``(query_by, weights)`` mapping the daemon and the
+Verifies the mode -> ``(query_by, weights)`` mapping the daemon and the
 standalone search CLI share.
 """
 from __future__ import annotations

@@ -2,9 +2,9 @@
 Index verifier: scan the file system and repair the Tantivy index.
 
 Two-phase design:
-  Phase 1 — collect: walk fs + read backend.export_id_mtime(); diff into
+  Phase 1 -- collect: walk fs + read backend.export_id_mtime(); diff into
             missing/stale/orphaned sets.
-  Phase 2 — batch-upsert via indexer.index_file_list (sync) or via the
+  Phase 2 -- batch-upsert via indexer.index_file_list (sync) or via the
             IndexQueue (async, lets writes stream while we walk).
 
 Orphan deletion runs after Phase 2.
@@ -43,7 +43,7 @@ def _fmt_time(seconds: float) -> str:
     return f"{m}m{s:02d}s"
 
 
-# ── ready check ───────────────────────────────────────────────────────────────
+# -- ready check ---------------------------------------------------------------
 
 def check_ready(cfg, src_root: str | None = None,
                 collection: str | None = None,
@@ -103,7 +103,7 @@ def check_ready(cfg, src_root: str | None = None,
     }
 
 
-# ── main ───────────────────────────────────────────────────────────────────────
+# -- main -----------------------------------------------------------------------
 
 def run_verify(cfg, src_root: str | None = None,
                collection: str | None = None,
@@ -156,9 +156,9 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
     print(f"[verifier] source root: {src_root}", flush=True)
     t0 = time.time()
 
-    # ── Phase 1: collect ──────────────────────────────────────────────────────
-    print("[verifier] Phase 1/2: collecting changes…", flush=True)
-    print("[verifier]   exporting current index…", flush=True)
+    # -- Phase 1: collect ------------------------------------------------------
+    print("[verifier] Phase 1/2: collecting changes...", flush=True)
+    print("[verifier]   exporting current index...", flush=True)
     progress["phase"] = "collecting: exporting index"
     if on_progress: on_progress(progress)
 
@@ -166,14 +166,14 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
     progress["index_docs"] = len(index_map)
     print(f"[verifier]   {len(index_map):,} documents in index", flush=True)
 
-    print("[verifier]   scanning file system…", flush=True)
+    print("[verifier]   scanning file system...", flush=True)
     progress["phase"] = "collecting: scanning filesystem"
     if on_progress: on_progress(progress)
 
     remaining: set[str] = set(index_map)
     # to_update collects pairs only when no queue was passed in; when ``queue``
     # is supplied the caller wants enqueue-on-the-fly, but we still keep the
-    # list around for the post-walk totals — just leave it empty.
+    # list around for the post-walk totals -- just leave it empty.
     to_update: list[tuple[str, str]] = []
     n_enqueued = 0
     n_fs = 0
@@ -254,7 +254,7 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
 
     if queue is not None:
         if delete_orphans and orphaned_ids:
-            print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries…", flush=True)
+            print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries...", flush=True)
             progress["phase"] = "removing orphans"
             if on_progress: on_progress(progress)
             try:
@@ -327,7 +327,7 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
             return
 
         if delete_orphans and orphaned_ids:
-            print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries…", flush=True)
+            print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries...", flush=True)
             progress["phase"] = "removing orphans"
             if on_progress: on_progress(progress)
             try:
@@ -351,7 +351,7 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
             on_complete()
 
 
-# ── entry point ────────────────────────────────────────────────────────────────
+# -- entry point ----------------------------------------------------------------
 
 if __name__ == "__main__":
     from indexserver.config import load_config as _load_config

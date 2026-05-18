@@ -1,7 +1,7 @@
 """
 Tests for Rust support: extract_metadata and query_rust functions.
 
-No daemon needed — all tests run against sample/root1/query_fixture.rs.
+No daemon needed -- all tests run against sample/root1/query_fixture.rs.
 
 Run:
     .client-venv/Scripts/python.exe -m pytest tests/unit/test_rust.py -v
@@ -47,7 +47,7 @@ def has(results, sub):
 
 @unittest.skipIf(_SKIP, _SKIP_MSG)
 class TestExtractRustMetadata(unittest.TestCase):
-    """Unit tests for extract_metadata — no server needed."""
+    """Unit tests for extract_metadata -- no server needed."""
 
     @classmethod
     def setUpClass(cls):
@@ -92,7 +92,7 @@ class TestQueryRust(unittest.TestCase):
     def _fx(self):
         return self.src, self.tree, self.lines
 
-    # ── classes ──────────────────────────────────────────────────────────────
+    # -- classes --------------------------------------------------------------
 
     def test_classes_finds_struct(self):
         from query.rust import rust_q_classes
@@ -115,7 +115,7 @@ class TestQueryRust(unittest.TestCase):
         structs = [t for _, t in r if "[struct]" in t]
         self.assertTrue(any("ProcessResult" in t for t in structs))
 
-    # ── methods ──────────────────────────────────────────────────────────────
+    # -- methods --------------------------------------------------------------
 
     def test_methods_finds_function(self):
         from query.rust import rust_q_methods
@@ -132,7 +132,7 @@ class TestQueryRust(unittest.TestCase):
         r = rust_q_methods(*self._fx())
         self.assertTrue(any("[in " in t for _, t in r))
 
-    # ── calls ─────────────────────────────────────────────────────────────────
+    # -- calls -----------------------------------------------------------------
 
     def test_calls_finds_function_call(self):
         from query.rust import rust_q_calls
@@ -156,7 +156,7 @@ class TestQueryRust(unittest.TestCase):
         for ln, text in r:
             self.assertNotIn("COMMENT", text)
 
-    # ── implements ──────────────────────────────────────────────────────────
+    # -- implements ----------------------------------------------------------
 
     def test_implements_finds_processor_impl(self):
         from query.rust import rust_q_implements
@@ -174,7 +174,7 @@ class TestQueryRust(unittest.TestCase):
         r = rust_q_implements(*self._fx(), "INonExistent999")
         self.assertEqual(len(r), 0)
 
-    # ── declarations ────────────────────────────────────────────────────────
+    # -- declarations --------------------------------------------------------
 
     def test_declarations_finds_struct(self):
         from query.rust import rust_q_declarations
@@ -192,7 +192,7 @@ class TestQueryRust(unittest.TestCase):
         r = rust_q_declarations(*self._fx(), "ZZZNonExistentXXX")
         self.assertEqual(len(r), 0)
 
-    # ── all_refs ────────────────────────────────────────────────────────────
+    # -- all_refs ------------------------------------------------------------
 
     def test_all_refs_finds_type(self):
         from query.rust import rust_q_all_refs
@@ -204,7 +204,7 @@ class TestQueryRust(unittest.TestCase):
         r = rust_q_all_refs(*self._fx(), "ZZZNonExistentXXX")
         self.assertEqual(len(r), 0)
 
-    # ── imports ─────────────────────────────────────────────────────────────
+    # -- imports -------------------------------------------------------------
 
     def test_imports_found(self):
         from query.rust import rust_q_imports
@@ -217,7 +217,7 @@ class TestQueryRust(unittest.TestCase):
         r = rust_q_imports(*self._fx())
         self.assertTrue(any("std" in t for _, t in r))
 
-    # ── params ──────────────────────────────────────────────────────────────
+    # -- params --------------------------------------------------------------
 
     def test_params_found(self):
         from query.rust import rust_q_params
@@ -232,7 +232,7 @@ class TestQueryRust(unittest.TestCase):
 
 @unittest.skipIf(_SKIP, _SKIP_MSG)
 class TestProcessRustFile(unittest.TestCase):
-    """Tests for process_rust_file — uses actual file I/O."""
+    """Tests for process_rust_file -- uses actual file I/O."""
 
     @classmethod
     def setUpClass(cls):
@@ -289,7 +289,7 @@ class TestProcessRustFile(unittest.TestCase):
         tmpdir_norm = self.tmpdir.replace("\\", "/")
         self.assertNotIn(tmpdir_norm, out)
 
-    # ── consistency: process_rust_file ↔ extract_metadata ───────────────
+    # -- consistency: process_rust_file <-> extract_metadata ---------------
 
     def test_class_names_consistent(self):
         from indexserver.indexer import extract_metadata

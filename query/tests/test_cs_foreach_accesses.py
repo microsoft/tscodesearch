@@ -4,16 +4,16 @@ Tests for q_accesses_on with foreach iteration variables.
 Replicates behavior discovered in Round 4 of guided testing:
 
   accesses_on TYPE
-    → was NOT tracking explicit-type foreach iteration variables:
-      `foreach (Item item in items)` — 'item' was silently omitted from the
+    -> was NOT tracking explicit-type foreach iteration variables:
+      `foreach (Item item in items)` -- 'item' was silently omitted from the
       tracked variable set because the implementation walked variable_declaration,
       parameter, and property_declaration, but NOT foreach_statement.
 
       foreach_statement in the tree-sitter C# grammar exposes:
-        field "type"  — the declared type (identifier, or implicit_type for var)
-        field "left"  — the iteration variable name
-        field "right" — the collection expression
-        field "body"  — the loop body
+        field "type"  -- the declared type (identifier, or implicit_type for var)
+        field "left"  -- the iteration variable name
+        field "right" -- the collection expression
+        field "body"  -- the loop body
 
       Fix: added a foreach_statement loop in q_accesses_on, mirroring the
       parameter loop. Skips implicit_type (var) nodes since the element type
@@ -49,7 +49,7 @@ def _texts(results):
 class TestAccessesOnForeach(unittest.TestCase):
     """
     q_accesses_on walked variable_declaration (covers local + field),
-    parameter, and property_declaration — but not foreach_statement.
+    parameter, and property_declaration -- but not foreach_statement.
     A variable declared as the iteration variable of a foreach loop was
     therefore never tracked, and any member access on it was silently missed.
     """
@@ -58,7 +58,7 @@ class TestAccessesOnForeach(unittest.TestCase):
         return q_accesses_on(*_PARSED, type_name=type_name)
 
     def test_explicit_foreach_variable_tracked(self):
-        """foreach (Item item in items) — item.Name must be found."""
+        """foreach (Item item in items) -- item.Name must be found."""
         r = self._on("Item")
         assert r, "Expected Item member accesses via foreach iteration variable"
         texts = _texts(r)
@@ -95,7 +95,7 @@ class TestAccessesOnForeach(unittest.TestCase):
 
     def test_nested_foreach_outer_variable_tracked(self):
         """
-        ProcessNested has foreach (Item a in outer) — a.Name must be found.
+        ProcessNested has foreach (Item a in outer) -- a.Name must be found.
         """
         r = self._on("Item")
         src_lines = _SRC.splitlines()

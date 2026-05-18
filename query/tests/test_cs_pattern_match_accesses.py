@@ -4,15 +4,15 @@ Tests for q_accesses_on with C# pattern-matching variable bindings.
 Replicates behavior discovered in Round 5 of guided testing:
 
   accesses_on TYPE
-    → was NOT tracking variables bound by is-pattern expressions or
+    -> was NOT tracking variables bound by is-pattern expressions or
       switch-case declaration patterns:
 
         if (child is Widget w) { w.Name ... }     // is_pattern_expression
         case Widget w: w.Name ...                  // switch_section / declaration_pattern
 
       Both forms produce a `declaration_pattern` AST node:
-        field "type" — the matched type
-        field "name" — the bound variable identifier
+        field "type" -- the matched type
+        field "name" -- the bound variable identifier
 
       Fix: added a declaration_pattern loop in q_accesses_on, mirroring the
       foreach_statement loop added in Round 4.
@@ -54,7 +54,7 @@ def _line_no(fragment):
 
 class TestIsPatternBinding(unittest.TestCase):
     """
-    `if (s is Circle c)` — 'c' was silently omitted from the tracked variable
+    `if (s is Circle c)` -- 'c' was silently omitted from the tracked variable
     set even though its type is explicitly stated in the is-pattern.
     """
 
@@ -62,12 +62,12 @@ class TestIsPatternBinding(unittest.TestCase):
         return q_accesses_on(*_PARSED, type_name=type_name)
 
     def test_if_is_pattern_radius_found(self):
-        """if (s is Circle c) { Render(c.Radius) } — c.Radius must appear."""
+        """if (s is Circle c) { Render(c.Radius) } -- c.Radius must appear."""
         r = self._on("Circle")
         assert "Radius" in _texts(r), f"c.Radius missing: {r}"
 
     def test_if_is_pattern_color_found(self):
-        """if (s is Circle c) { Log(c.Color) } — c.Color must appear."""
+        """if (s is Circle c) { Log(c.Color) } -- c.Color must appear."""
         r = self._on("Circle")
         assert "Color" in _texts(r), f"c.Color missing: {r}"
 
@@ -83,7 +83,7 @@ class TestIsPatternBinding(unittest.TestCase):
 
 class TestSwitchCasePattern(unittest.TestCase):
     """
-    `case Rectangle r:` — 'r' typed as Rectangle via a switch-case pattern.
+    `case Rectangle r:` -- 'r' typed as Rectangle via a switch-case pattern.
     Same `declaration_pattern` AST node as if-is, different syntactic context.
     """
 
@@ -111,7 +111,7 @@ class TestSwitchCasePattern(unittest.TestCase):
 
 class TestCombinedCondition(unittest.TestCase):
     """
-    `if (obj is Circle combo && combo.Radius > 0)` — the binding and its first
+    `if (obj is Circle combo && combo.Radius > 0)` -- the binding and its first
     use are on the same line; a second use is on the next line.
     """
 

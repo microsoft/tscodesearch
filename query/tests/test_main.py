@@ -1,5 +1,5 @@
 """
-Tests for query/__main__.py — both CLI and --json modes.
+Tests for query/__main__.py -- both CLI and --json modes.
 
 Runs query as a subprocess so the full entry-point path is exercised.
 Uses sample files from sample/root1/.

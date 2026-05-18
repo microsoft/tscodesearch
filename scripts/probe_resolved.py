@@ -1,6 +1,6 @@
 """Diagnostic: for each call site in a file, report whether the qualified-call
-indexer pinned a resolved type. Surfaces the gap cases — receivers that look
-identifier-like but produce no qualified form — so we can spot patterns the
+indexer pinned a resolved type. Surfaces the gap cases -- receivers that look
+identifier-like but produce no qualified form -- so we can spot patterns the
 var-type map should learn to handle.
 
 Usage:
@@ -55,7 +55,7 @@ def _scan(path: str, show_lower: int = 5):
     # so we re-walk in the same order to align.
     inv_nodes = idx.of("invocation_expression")
     # Build aligned (info, node) pairs for the invocation-only prefix
-    # (constructors come after — without receivers — and aren't interesting
+    # (constructors come after -- without receivers -- and aren't interesting
     # for this diagnostic).
     for i, info in enumerate(infos):
         if i >= len(inv_nodes):

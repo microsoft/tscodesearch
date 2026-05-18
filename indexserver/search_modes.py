@@ -19,7 +19,7 @@ from __future__ import annotations
 from indexserver.config import normalize_path
 
 
-# ── Mode → (query_by, weights) ────────────────────────────────────────────────
+# -- Mode -> (query_by, weights) ------------------------------------------------
 
 def resolve_query_params(ts_mode_flag: str, uses_kind: str = "", symbol_kind: str = ""
                         ) -> tuple[str, str]:
@@ -62,7 +62,7 @@ def resolve_query_params(ts_mode_flag: str, uses_kind: str = "", symbol_kind: st
     return "path_tokens,class_names,method_names,tokens", "5,4,4,1"
 
 
-# ── ext / sub / exclude_path → filter_by ──────────────────────────────────────
+# -- ext / sub / exclude_path -> filter_by --------------------------------------
 
 _CPP_SRC = frozenset({"cpp", "cc", "cxx", "c"})
 _CPP_HDR = frozenset({"h", "hpp", "hxx"})

@@ -3,7 +3,7 @@ Tests for accesses_on with C# 9 with-expression record mutation syntax.
 
 Replicates bug discovered in Round 15 of guided testing:
 
-  Round 15 — accesses_on missed members mutated via with-expression:
+  Round 15 -- accesses_on missed members mutated via with-expression:
 
         Point moved = p with { X = 10 };
         Point both  = p with { X = 1, Y = 2 };
@@ -42,7 +42,7 @@ def _lns(results):
     return {ln for ln, _ in results}
 
 def _members(results):
-    return {txt.split("  ←")[0].lstrip(".") for _, txt in results}
+    return {txt.split("  <-")[0].lstrip(".") for _, txt in results}
 
 def _line_no(fragment):
     for i, ln in enumerate(_LINES):
@@ -58,12 +58,12 @@ class TestWithExpressionAccesses(unittest.TestCase):
         return q_accesses_on(*_PARSED, type_name=type_name)
 
     def test_single_member_with_found(self):
-        """c with { X = 0 } — X must appear in accesses_on results."""
+        """c with { X = 0 } -- X must appear in accesses_on results."""
         r = self._accesses("Coord")
         assert _line_no("c with { X = 0 }") in _lns(r), f"Single-member with line missing: {r}"
 
     def test_multi_member_both_found(self):
-        """c with { X = 0, Y = 0 } — both X and Y must appear."""
+        """c with { X = 0, Y = 0 } -- both X and Y must appear."""
         r = self._accesses("Coord")
         members = _members(r)
         assert "X" in members, f"'X' from multi-member with missing: {r}"
@@ -74,7 +74,7 @@ class TestWithExpressionAccesses(unittest.TestCase):
         r = self._accesses("Coord")
         line = _line_no("X = 0, Y = 0")
         line_results = [(ln, txt) for ln, txt in r if ln == line]
-        names = {txt.split("  ←")[0].lstrip(".") for _, txt in line_results}
+        names = {txt.split("  <-")[0].lstrip(".") for _, txt in line_results}
         assert "X" in names and "Y" in names, \
             f"Both X and Y must appear on same-line with result: {line_results}"
 

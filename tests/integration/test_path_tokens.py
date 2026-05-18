@@ -7,7 +7,7 @@ Verifies the new schema's domain-appropriate splitting:
     search for "billing" finds files under services/billing/ at any depth
   * namespaces split on `.` (C#/Python/Java/TypeScript style), so a search
     for "Billing" finds files in the Acme.Billing.Service namespace
-  * raw tokenizer is case-sensitive and never splits on underscore — so
+  * raw tokenizer is case-sensitive and never splits on underscore -- so
     ``add_text_field`` is one token, not three
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ from indexserver.indexer import (
 from indexserver.search import search as _search
 
 
-# ── path_tokens_from_path (pure helper) ───────────────────────────────────────
+# -- path_tokens_from_path (pure helper) ---------------------------------------
 
 class TestPathTokensFromPath(unittest.TestCase):
 
@@ -43,7 +43,7 @@ class TestPathTokensFromPath(unittest.TestCase):
 
     def test_deep_path_each_directory_is_a_token(self):
         out = path_tokens_from_path("services/billing/legacy/Foo.cs")
-        # Each ancestor directory name is its own token — order is shallow-first.
+        # Each ancestor directory name is its own token -- order is shallow-first.
         self.assertEqual(out[:3], ["services", "billing", "legacy"])
         # Followed by filename components.
         self.assertIn("Foo.cs", out)
@@ -51,7 +51,7 @@ class TestPathTokensFromPath(unittest.TestCase):
         self.assertIn("cs", out)
 
     def test_filename_multi_dot(self):
-        # Widget.Test.cs → keep the full basename + every dot-separated piece.
+        # Widget.Test.cs -> keep the full basename + every dot-separated piece.
         out = path_tokens_from_path("Widget.Test.cs")
         self.assertIn("Widget.Test.cs", out)
         self.assertIn("Widget", out)
@@ -71,7 +71,7 @@ class TestPathTokensFromPath(unittest.TestCase):
         self.assertEqual(out.count("services"), 1)
 
 
-# ── _split_namespace ──────────────────────────────────────────────────────────
+# -- _split_namespace ----------------------------------------------------------
 
 class TestSplitNamespace(unittest.TestCase):
 
@@ -93,7 +93,7 @@ class TestSplitNamespace(unittest.TestCase):
                          ["std", "collections", "HashMap"])
 
 
-# ── _split_filename ───────────────────────────────────────────────────────────
+# -- _split_filename -----------------------------------------------------------
 
 class TestSplitFilename(unittest.TestCase):
 
@@ -108,7 +108,7 @@ class TestSplitFilename(unittest.TestCase):
                          ["Widget.Test.cs", "Widget", "Test", "cs"])
 
 
-# ── End-to-end: real Tantivy backend, subpath search ──────────────────────────
+# -- End-to-end: real Tantivy backend, subpath search --------------------------
 
 class TestSubpathSearchAgainstRealIndex(unittest.TestCase):
     """A query for any directory name in the path returns every file under
@@ -163,7 +163,7 @@ class TestSubpathSearchAgainstRealIndex(unittest.TestCase):
     def test_search_filename_stem_finds_file(self):
         # Filename stem is a token, so a query for ``InvoiceTests`` finds the
         # test file even though no class named ``InvoiceTests`` is what we're
-        # querying — we hit on filename.
+        # querying -- we hit on filename.
         self.assertEqual(self._rels("InvoiceTests"),
                          {"tests/billing/InvoiceTests.cs"})
 
@@ -178,10 +178,10 @@ class TestSubpathSearchAgainstRealIndex(unittest.TestCase):
         self.assertEqual(len(self._rels("cs")), 3)
 
 
-# ── End-to-end: namespace component search ────────────────────────────────────
+# -- End-to-end: namespace component search ------------------------------------
 
 class TestNamespaceComponentSearch(unittest.TestCase):
-    """A dot-separated namespace is stored as multi-value raw — a search for
+    """A dot-separated namespace is stored as multi-value raw -- a search for
     any component returns the file."""
 
     def setUp(self):
@@ -216,7 +216,7 @@ class TestNamespaceComponentSearch(unittest.TestCase):
         self.assertEqual(self._rels("Storage"), {"src/Widget.cs"})
 
     def test_leaf_namespace_component_matches_both(self):
-        # Both files end in ``.Service`` — the leaf is shared.
+        # Both files end in ``.Service`` -- the leaf is shared.
         self.assertEqual(self._rels("Service"),
                          {"src/Order.cs", "src/Widget.cs"})
 
@@ -229,10 +229,10 @@ class TestNamespaceComponentSearch(unittest.TestCase):
         self.assertEqual(self._rels("Acme.Billing.Service"), set())
 
 
-# ── Case sensitivity at index level ──────────────────────────────────────────
+# -- Case sensitivity at index level ------------------------------------------
 
 class TestRawTokenizerIsCaseSensitive(unittest.TestCase):
-    """Per-identifier fields use the raw tokenizer — index lookups are now
+    """Per-identifier fields use the raw tokenizer -- index lookups are now
     case-sensitive. Wrong-case queries return zero index hits (the AST stage
     would also reject them, so end-user behavior is unchanged)."""
 

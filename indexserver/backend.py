@@ -4,11 +4,11 @@ by a "collection" name (e.g. ``codesearch_default``).
 
 Three roles a process can play against an index directory:
 
-    Backend(path, write=True)   — index owner; writes, deletes, commits.
+    Backend(path, write=True)   -- index owner; writes, deletes, commits.
                                   Tantivy enforces a single concurrent writer
                                   per directory; the management daemon owns it.
-    Backend(path, write=False)  — read-only client; CLIs and other helpers.
-    drop(path)                  — remove the index directory entirely (used by
+    Backend(path, write=False)  -- read-only client; CLIs and other helpers.
+    drop(path)                  -- remove the index directory entirely (used by
                                   --resethard before recreating).
 
 The backend deliberately does not depend on indexserver.config so that tests
@@ -29,11 +29,11 @@ from pathlib import Path
 import tantivy
 
 
-# ── Transient Windows IO retry ────────────────────────────────────────────────
+# -- Transient Windows IO retry ------------------------------------------------
 #
 # On Windows, ``IndexWriter.commit()`` occasionally fails with
 # ``Access is denied`` / ``PermissionDenied`` when opening a new segment
-# file for write — even for a freshly-created collection directory.
+# file for write -- even for a freshly-created collection directory.
 # Suspected causes include Windows Defender scanning newly created files,
 # stale mmap handles from earlier reader Backends releasing asynchronously
 # in the same process, and the OS taking a moment to make a just-deleted
@@ -60,15 +60,15 @@ def _is_transient_windows_io_error(err: BaseException) -> bool:
     )
 
 
-# Schema definition — kept here because the same field set is consulted by
-# writer (build_document → backend.add) and reader (search.search).
+# Schema definition -- kept here because the same field set is consulted by
+# writer (build_document -> backend.add) and reader (search.search).
 #
 # Every text field in this schema uses the ``raw`` tokenizer: Tantivy stores
 # each entry verbatim as a single term, with no splitting on punctuation/case
 # and no length filter. The indexer is responsible for producing the right
-# tokens for each field — including domain-appropriate splits like dotted
-# namespaces (``Acme.Billing.Service`` → three entries) and per-directory
-# path components (``services/billing/Foo.cs`` → ``services``, ``billing``,
+# tokens for each field -- including domain-appropriate splits like dotted
+# namespaces (``Acme.Billing.Service`` -> three entries) and per-directory
+# path components (``services/billing/Foo.cs`` -> ``services``, ``billing``,
 # ``Foo``, ``cs``, ``Foo.cs``). Putting all splitting in the indexer means
 # every language can decide its own rules and no token is ever silently
 # dropped because Tantivy's SimpleTokenizer didn't like it.
@@ -108,7 +108,7 @@ RAW_FIELDS: frozenset[str] = frozenset({
 # Fields kept ``stored=True`` so values can be retrieved at search time:
 # the document id, what file matched, when it was indexed (verifier diff),
 # and the basename + ext/language for display & filtering. Every other text
-# field on the schema is ``stored=False`` — indexed for search but not
+# field on the schema is ``stored=False`` -- indexed for search but not
 # retrievable. The AST stage is what actually produces line-level output,
 # so the index doesn't need to carry display-only payload.
 STORED_FIELDS: frozenset[str] = frozenset({
@@ -119,7 +119,7 @@ STORED_FIELDS: frozenset[str] = frozenset({
 
 def build_schema() -> tantivy.Schema:
     sb = tantivy.SchemaBuilder()
-    # ── Stored fields: retrievable at search time ─────────────────────────
+    # -- Stored fields: retrievable at search time -------------------------
     sb.add_text_field("id",            stored=True, tokenizer_name="raw")
     sb.add_text_field("relative_path", stored=True, tokenizer_name="raw")
     sb.add_text_field("extension",     stored=True, tokenizer_name="raw")
@@ -127,7 +127,7 @@ def build_schema() -> tantivy.Schema:
     sb.add_text_field("path_segments", stored=True, tokenizer_name="raw")
     sb.add_text_field("filename",      stored=True, tokenizer_name="raw")
 
-    # ── Search-only multi-value raw fields (stored=False) ────────────────
+    # -- Search-only multi-value raw fields (stored=False) ----------------
     # Indexed for query_by matching, not retrievable from the document.
     # The AST post-filter produces the line-level output; the index only
     # needs to know whether each file CONTAINS a given identifier so it can
@@ -153,7 +153,7 @@ def build_schema() -> tantivy.Schema:
     ):
         sb.add_text_field(f, stored=False, tokenizer_name="raw")
 
-    # File modification time — fast field so export_id_mtime() stays cheap.
+    # File modification time -- fast field so export_id_mtime() stays cheap.
     sb.add_unsigned_field("mtime", stored=True, fast=True)
     return sb.build()
 
@@ -165,7 +165,7 @@ def build_schema() -> tantivy.Schema:
 class Backend:
     """One Tantivy index, with optional writer."""
 
-    HEAP_BYTES = 50_000_000  # 50 MB — default index buffer
+    HEAP_BYTES = 50_000_000  # 50 MB -- default index buffer
 
     def __init__(self, path: str, write: bool = False, create: bool = True):
         self.path = str(path)
@@ -190,7 +190,7 @@ class Backend:
         # tantivy's default reader policy (``OnCommitWithDelay``) spawns a
         # background watcher thread that polls the directory every 50 ms.
         # For read-only backends that thread:
-        #   * is wasted work — short-lived test backends don't need auto-reload
+        #   * is wasted work -- short-lived test backends don't need auto-reload
         #   * keeps an ``Arc<Index>`` reference until it joins on Drop, which
         #     on Windows delays mmap release long enough that the next
         #     ``drop()`` hits ``PermissionDenied`` and silently corrupts state
@@ -203,7 +203,7 @@ class Backend:
         if write:
             self._writer = self._index.writer(heap_size=self.HEAP_BYTES)
 
-    # ── lifecycle ────────────────────────────────────────────────────────────
+    # -- lifecycle ------------------------------------------------------------
 
     def close(self, quick: bool = False) -> None:
         """Release the writer and the underlying index handle.
@@ -213,7 +213,7 @@ class Backend:
         the next startup.
 
         On Windows, ``tantivy.Index`` keeps memory-mapped file handles even for
-        read-only access. Dropping the writer alone is not enough — the mmap
+        read-only access. Dropping the writer alone is not enough -- the mmap
         survives, ``drop()`` can't ``rmtree`` the locked files, and the next
         writer fails on commit with ``PermissionDenied``. Clearing the index
         reference and forcing a GC pass releases the Rust-side handles so a
@@ -295,7 +295,7 @@ class Backend:
         """Commit buffered changes. On failure, rollback and reopen the writer.
 
         Raises the underlying exception so callers can react (e.g. requeue).
-        Resets ``has_pending`` regardless of outcome — committed items move
+        Resets ``has_pending`` regardless of outcome -- committed items move
         forward; rolled-back items are gone from the writer's memory and the
         caller is expected to requeue them.
         """
@@ -343,7 +343,7 @@ class Backend:
         self._writer = None
         gc.collect()
         # Reload the index handle so the new writer sees the post-rollback state.
-        # If no commit has ever succeeded, meta.json may not exist yet — fall
+        # If no commit has ever succeeded, meta.json may not exist yet -- fall
         # back to creating a fresh index against the same schema.
         if _has_index_files(self.path):
             self._index = tantivy.Index.open(self.path)
@@ -352,14 +352,14 @@ class Backend:
         self._schema = self._index.schema
         self._writer = self._index.writer(heap_size=self.HEAP_BYTES)
 
-    # ── writes ───────────────────────────────────────────────────────────────
+    # -- writes ---------------------------------------------------------------
 
     def upsert_many(self, docs: list[dict]) -> tuple[int, int]:
         """Add a batch of documents and commit. Convenience wrapper around
         ``add`` + ``commit`` used by tests and the synchronous indexer.
 
         Returns (n_ok, n_failed). On commit failure all docs are reported as
-        failed (Tantivy's commit is atomic — partial application isn't a
+        failed (Tantivy's commit is atomic -- partial application isn't a
         thing here). Transient Windows IO errors are retried with backoff:
         the writer's in-memory buffer is discarded on a failed commit so
         we re-run the entire add + commit sequence after a brief settle
@@ -426,7 +426,7 @@ class Backend:
             self._dirty = False
         self._require_index().reload()
 
-    # ── reads ────────────────────────────────────────────────────────────────
+    # -- reads ----------------------------------------------------------------
 
     def searcher(self) -> tantivy.Searcher:
         idx = self._require_index()
@@ -513,7 +513,7 @@ def _to_tantivy_doc(d: dict) -> tantivy.Document:
 
 
 # ---------------------------------------------------------------------------
-# Path resolution — where the index for a given root lives on disk.
+# Path resolution -- where the index for a given root lives on disk.
 # ---------------------------------------------------------------------------
 
 def index_dir_for(repo_root: str | Path, collection: str) -> str:

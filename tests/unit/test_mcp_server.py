@@ -1,5 +1,5 @@
 """
-Tests for mcp_server.py — helper functions and query_single_file tool.
+Tests for mcp_server.py -- helper functions and query_single_file tool.
 
 No daemon required. The mcp package is stubbed when absent so the tests run
 under any Python with tree-sitter installed.
@@ -16,7 +16,7 @@ _SAMPLE  = str(REPO_ROOT / "sample" / "root1")
 _CS_FILE = str(REPO_ROOT / "sample" / "root1" / "DataStore.cs")
 _PY_FILE = str(REPO_ROOT / "sample" / "root1" / "pipeline.py")
 
-# ── Stub mcp if not installed (indexserver venv lacks it) ────────────────────
+# -- Stub mcp if not installed (indexserver venv lacks it) --------------------
 
 if "mcp" not in sys.modules:
     import types
@@ -35,7 +35,7 @@ if "mcp" not in sys.modules:
     sys.modules.setdefault("mcp.server",       MagicMock())
     sys.modules["mcp.server.fastmcp"]        = _fastmcp_mod
 
-# ── Import mcp_server, skip all tests if config.json is absent ───────────────
+# -- Import mcp_server, skip all tests if config.json is absent ---------------
 
 import types as _types
 sys.path.insert(0, str(REPO_ROOT))
@@ -51,7 +51,7 @@ except Exception as e:
 _skip = unittest.skipUnless(_IMPORT_OK, f"mcp_server import failed: {_IMPORT_ERR}")
 
 
-# ── collection_for_root (indexserver.config) ─────────────────────────────────
+# -- collection_for_root (indexserver.config) ---------------------------------
 
 @_skip
 class TestCollectionForRoot(unittest.TestCase):
@@ -73,7 +73,7 @@ class TestCollectionForRoot(unittest.TestCase):
         assert collection_for_root("my-repo/src") == "codesearch_my_repo_src"
 
 
-# ── _rel_path ─────────────────────────────────────────────────────────────────
+# -- _rel_path -----------------------------------------------------------------
 
 @_skip
 class TestRelPath(unittest.TestCase):
@@ -95,7 +95,7 @@ class TestRelPath(unittest.TestCase):
         assert "Widget.cs" in result
 
 
-# ── _truncate ─────────────────────────────────────────────────────────────────
+# -- _truncate -----------------------------------------------------------------
 
 @_skip
 class TestTruncate(unittest.TestCase):
@@ -128,7 +128,7 @@ class TestTruncate(unittest.TestCase):
         assert not truncated
 
 
-# ── _to_windows_path ──────────────────────────────────────────────────────────
+# -- _to_windows_path ----------------------------------------------------------
 
 def _root(name, path):
     """Build a Root instance matching what load_config produces."""
@@ -166,7 +166,7 @@ class TestToWindowsPath(unittest.TestCase):
         assert result == "C:/myproject/src/services/Widget.cs"
 
 
-# ── _resolve_root ─────────────────────────────────────────────────────────────
+# -- _resolve_root -------------------------------------------------------------
 
 @_skip
 class TestResolveRoot(unittest.TestCase):
@@ -206,7 +206,7 @@ class TestResolveRoot(unittest.TestCase):
             _ms._resolve_root("")
 
 
-# ── query_single_file ─────────────────────────────────────────────────────────
+# -- query_single_file ---------------------------------------------------------
 
 @_skip
 class TestQuerySingleFile(unittest.TestCase):
@@ -231,7 +231,7 @@ class TestQuerySingleFile(unittest.TestCase):
         object.__setattr__(_ms._cfg, "roots", self._orig_cfg_roots)
         _ms._to_windows_path = self._orig_to_wp
 
-    # ── error cases ───────────────────────────────────────────────────────────
+    # -- error cases -----------------------------------------------------------
 
     def test_no_file_arg(self):
         assert _ms.query_single_file("methods", file="") == "file= is required."
@@ -244,7 +244,7 @@ class TestQuerySingleFile(unittest.TestCase):
         result = _ms.query_single_file("methods", file=_CS_FILE, root="nonexistent")
         assert "Error:" in result and "nonexistent" in result
 
-    # ── C# listing modes ─────────────────────────────────────────────────────
+    # -- C# listing modes -----------------------------------------------------
 
     def test_methods_returns_signatures(self):
         result = _ms.query_single_file("methods", file=_CS_FILE)
@@ -259,7 +259,7 @@ class TestQuerySingleFile(unittest.TestCase):
         result = _ms.query_single_file("classes", file=_CS_FILE)
         assert "DataStore.cs" in result
 
-    # ── C# pattern modes ─────────────────────────────────────────────────────
+    # -- C# pattern modes -----------------------------------------------------
 
     def test_calls_with_pattern(self):
         result = _ms.query_single_file("calls", pattern="Write", file=_CS_FILE)
@@ -281,7 +281,7 @@ class TestQuerySingleFile(unittest.TestCase):
         result = _ms.query_single_file("calls", pattern="NoSuchMethod", file=_CS_FILE)
         assert "No matches found" in result
 
-    # ── all_refs mode ─────────────────────────────────────────────────────────
+    # -- all_refs mode ---------------------------------------------------------
 
     def test_all_refs_cs_finds_identifier(self):
         result = _ms.query_single_file("all_refs", pattern="IDataStore", file=_CS_FILE)
@@ -303,7 +303,7 @@ class TestQuerySingleFile(unittest.TestCase):
         assert "Error" in result
         assert "all_refs" in result or "Supported modes" in result
 
-    # ── Python ────────────────────────────────────────────────────────────────
+    # -- Python ----------------------------------------------------------------
 
     def test_python_methods(self):
         result = _ms.query_single_file("methods", file=_PY_FILE)
@@ -314,7 +314,7 @@ class TestQuerySingleFile(unittest.TestCase):
         # May or may not have matches; just confirm it doesn't crash
         assert "pipeline.py" in result
 
-    # ── pagination ────────────────────────────────────────────────────────────
+    # -- pagination ------------------------------------------------------------
 
     def test_head_limit_restricts_results(self):
         full    = _ms.query_single_file("methods", file=_CS_FILE)
@@ -342,7 +342,7 @@ class TestQuerySingleFile(unittest.TestCase):
             assert "of" in result
 
 
-# ── query_codebase listing-mode redirect ─────────────────────────────────────
+# -- query_codebase listing-mode redirect -------------------------------------
 
 @_skip
 class TestQueryCodbaseListingRedirect(unittest.TestCase):
@@ -359,13 +359,13 @@ class TestQueryCodbaseListingRedirect(unittest.TestCase):
     def test_imports(self):   self._assert_redirects("imports")
 
     def test_valid_pattern_mode_does_not_redirect(self):
-        # declarations is a valid pattern mode — should not redirect
+        # declarations is a valid pattern mode -- should not redirect
         # (will fail to reach indexserver; that's fine for this test)
         result = _ms.query_codebase("declarations", "SaveChanges")
         assert "query_single_file" not in result
 
 
-# ── query_codebase overflow drill-down (multi-sub) ───────────────────────────
+# -- query_codebase overflow drill-down (multi-sub) ---------------------------
 
 @_skip
 class TestQueryCodebaseOverflowDrilldown(unittest.TestCase):
@@ -397,7 +397,7 @@ class TestQueryCodebaseOverflowDrilldown(unittest.TestCase):
         self._install([("services", 100), ("vendor", 80),
                        ("services/billing", 50), ("vendor/aws", 30)])
         result = _ms.query_codebase("calls", "Foo")
-        # Top-level folders only — no slashes in suggested paths.
+        # Top-level folders only -- no slashes in suggested paths.
         assert 'sub="services"' in result
         assert 'sub="vendor"' in result
         assert 'sub="services/billing"' not in result
@@ -408,7 +408,7 @@ class TestQueryCodebaseOverflowDrilldown(unittest.TestCase):
                        ("services/billing", 90), ("services/orders", 60),
                        ("services/billing/legacy", 40)])
         result = _ms.query_codebase("calls", "Foo", sub="services")
-        # Next depth (depth 2) — billing and orders, but not the depth-3 legacy.
+        # Next depth (depth 2) -- billing and orders, but not the depth-3 legacy.
         assert 'sub="services/billing"' in result
         assert 'sub="services/orders"' in result
         assert 'sub="services/billing/legacy"' not in result
@@ -419,7 +419,7 @@ class TestQueryCodebaseOverflowDrilldown(unittest.TestCase):
             ("services", 200), ("vendor", 150),
             ("services/billing", 90), ("services/orders", 60),
             ("vendor/aws", 70), ("vendor/gcp", 40),
-            ("other/unrelated", 20),  # outside both scopes — must not appear
+            ("other/unrelated", 20),  # outside both scopes -- must not appear
         ])
         result = _ms.query_codebase("calls", "Foo", sub="services,vendor")
         assert 'sub="services/billing"' in result
@@ -442,17 +442,17 @@ class TestQueryCodebaseOverflowDrilldown(unittest.TestCase):
         assert result.count('sub="b/shared"') == 1
 
     def test_tier1_does_not_suggest_query_single_file(self):
-        """Tier 1 is the drill-down path — no query_single_file suggestion."""
+        """Tier 1 is the drill-down path -- no query_single_file suggestion."""
         self._install([("services", 100), ("vendor", 80)])
         result = _ms.query_codebase("calls", "Foo")
         assert "query_single_file" not in result
 
 
-# ── query_codebase tier 2 (filenames + hit counts) ───────────────────────────
+# -- query_codebase tier 2 (filenames + hit counts) ---------------------------
 
 @_skip
 class TestQueryCodebaseTier2(unittest.TestCase):
-    """Tier 2: 20+ files with AST matches → filenames + counts, sorted desc."""
+    """Tier 2: 20+ files with AST matches -> filenames + counts, sorted desc."""
 
     def setUp(self):
         self._orig_post = _ms._post
@@ -464,7 +464,7 @@ class TestQueryCodebaseTier2(unittest.TestCase):
         _ms._queue_warning = self._orig_warn
 
     def _install_files_with_matches(self, file_match_counts):
-        """file_match_counts: list[(rel, n_matches)] — synthesise AST hits."""
+        """file_match_counts: list[(rel, n_matches)] -- synthesise AST hits."""
         hits = []
         for rel, n in file_match_counts:
             hits.append({
@@ -477,7 +477,7 @@ class TestQueryCodebaseTier2(unittest.TestCase):
         _ms._post = _fake_post
 
     def test_threshold_reached_at_20(self):
-        """Exactly 20 files → tier 2 (filenames-only)."""
+        """Exactly 20 files -> tier 2 (filenames-only)."""
         self._install_files_with_matches([(f"src/F{i}.cs", 3) for i in range(20)])
         result = _ms.query_codebase("calls", "Foo")
         # Tier 2 marker: hit-count parens, no path:line: lines for content
@@ -485,14 +485,14 @@ class TestQueryCodebaseTier2(unittest.TestCase):
         # No grep-style line:content body
         assert "src/F0.cs:1:" not in result
         # Suggestion to drill into a single file: the file= argument uses the
-        # bare relative path (no $SRC_ROOT/ placeholder — the tool accepts
+        # bare relative path (no $SRC_ROOT/ placeholder -- the tool accepts
         # relative paths directly).
         assert "query_single_file" in result
         assert 'file="src/F0.cs"' in result
         assert '$SRC_ROOT' not in result
 
     def test_below_threshold_is_tier3_not_tier2(self):
-        """19 files → tier 3 (per-line content shown)."""
+        """19 files -> tier 3 (per-line content shown)."""
         self._install_files_with_matches([(f"src/F{i}.cs", 3) for i in range(19)])
         result = _ms.query_codebase("calls", "Foo")
         # Tier 3 emits path:line: content
@@ -532,11 +532,11 @@ class TestQueryCodebaseTier2(unittest.TestCase):
         assert "total matches: 80" in result
 
 
-# ── query_codebase tier 3 (per-line content, capped per file) ────────────────
+# -- query_codebase tier 3 (per-line content, capped per file) ----------------
 
 @_skip
 class TestQueryCodebaseTier3(unittest.TestCase):
-    """Tier 3: <20 files with AST matches → per-line content, ≤10 lines/file."""
+    """Tier 3: <20 files with AST matches -> per-line content, <=10 lines/file."""
 
     def setUp(self):
         self._orig_post = _ms._post
@@ -576,7 +576,7 @@ class TestQueryCodebaseTier3(unittest.TestCase):
         # Lines 11-25 absent
         for i in range(11, 26):
             assert f"src/Big.cs:{i}:" not in result
-        # Per-file suggestion appended — uses bare relative path, not the
+        # Per-file suggestion appended -- uses bare relative path, not the
         # legacy $SRC_ROOT/ placeholder.
         assert "25 total hits" in result
         assert "query_single_file" in result
@@ -615,7 +615,7 @@ class TestQueryCodebaseTier3(unittest.TestCase):
         assert "files with matches: 1" in result
 
     def test_empty_results(self):
-        """No files with AST matches → 'No AST matches found.'"""
+        """No files with AST matches -> 'No AST matches found.'"""
         self._install([])  # zero files
         result = _ms.query_codebase("calls", "Foo")
         assert "No AST matches found" in result
@@ -636,11 +636,11 @@ class TestQueryCodebaseTier3(unittest.TestCase):
         assert "15 total hits" in result
 
 
-# ── _sync_state ───────────────────────────────────────────────────────────────
+# -- _sync_state ---------------------------------------------------------------
 
 @_skip
 class TestSyncState(unittest.TestCase):
-    """Pure inspection of /status response shape — no I/O."""
+    """Pure inspection of /status response shape -- no I/O."""
 
     def test_fully_synced(self):
         synced, state = _ms._sync_state({
@@ -700,7 +700,7 @@ class TestSyncState(unittest.TestCase):
         assert state
 
 
-# ── wait_for_sync ─────────────────────────────────────────────────────────────
+# -- wait_for_sync -------------------------------------------------------------
 
 @_skip
 class TestWaitForSync(unittest.TestCase):
@@ -719,7 +719,7 @@ class TestWaitForSync(unittest.TestCase):
         # Default _resolve_root patch so root validation does not need real config.
         self._orig_resolve_root = _ms._resolve_root
         _ms._resolve_root = lambda name="": _root("default", "C:/myproject/src")
-        # Default _get patch slot — each test installs its own.
+        # Default _get patch slot -- each test installs its own.
         self._orig_get = _ms._get
 
     def tearDown(self):
@@ -747,7 +747,7 @@ class TestWaitForSync(unittest.TestCase):
         assert self._slept and self._slept[0] == 1.0
 
     def test_synced_after_drain(self):
-        """Queue=3 then 0 — should report it was busy at first."""
+        """Queue=3 then 0 -- should report it was busy at first."""
         self._set_responses([
             (200, {"typesense_ok": True, "queue": {"depth": 3}, "syncer": {"running": False}}),
             (200, {"typesense_ok": True, "queue": {"depth": 1}, "syncer": {"running": False}}),
@@ -758,7 +758,7 @@ class TestWaitForSync(unittest.TestCase):
         assert "was: queue=3" in result
 
     def test_timeout_with_remaining_work(self):
-        """All polls return queue=5 — must time out and surface what's pending."""
+        """All polls return queue=5 -- must time out and surface what's pending."""
         self._set_responses([
             (200, {"typesense_ok": True, "queue": {"depth": 5}, "syncer": {"running": False}})
         ] * 50)
@@ -768,7 +768,7 @@ class TestWaitForSync(unittest.TestCase):
         assert "verify_index" in result  # hint included
 
     def test_unreachable_indexserver(self):
-        """Persistent _get failures across the deadline → 'unreachable' message.
+        """Persistent _get failures across the deadline -> 'unreachable' message.
 
         wait_for_sync retries transient errors (a slow /status round-trip is
         not the same as a dead daemon), so the loop must run until our deadline
@@ -782,11 +782,11 @@ class TestWaitForSync(unittest.TestCase):
         assert "unreachable" in result.lower(), f"got: {result!r}"
         assert "ts start" in result
         # The old "Indexserver is NOT running" phrasing was misleading because
-        # it fired on the first transient blip — must not appear anymore.
+        # it fired on the first transient blip -- must not appear anymore.
         assert "Indexserver is NOT running" not in result
 
     def test_transient_error_retried_then_succeeds(self):
-        """A single /status timeout must NOT be reported as 'not running' —
+        """A single /status timeout must NOT be reported as 'not running' --
         wait_for_sync should retry and surface a successful sync on the next poll.
         Regression test for the user-reported bug where a slow backend
         round-trip in /status caused an immediate 'NOT running' return."""

@@ -1,5 +1,5 @@
 """
-Tests for query/cs.py — C# AST structural query functions.
+Tests for query/cs.py -- C# AST structural query functions.
 
 No daemon required; calls query functions directly.
 
@@ -19,7 +19,7 @@ from ..cs import (
 )
 from .conftest import SAMPLE_ROOT1
 
-# ── fixture setup ─────────────────────────────────────────────────────────────
+# -- fixture setup -------------------------------------------------------------
 
 _CS = Language(tscsharp.language())
 _PARSER = Parser(_CS)
@@ -36,7 +36,7 @@ def fx():
     return src, tree, lines
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# -- helpers -------------------------------------------------------------------
 
 def texts(results):
     # Listing-mode results (q_classes/q_methods/q_fields) yield 3-tuples
@@ -48,7 +48,7 @@ def has(results, sub):
     return any(sub in row[-1] for row in results)
 
 
-# ── classes ───────────────────────────────────────────────────────────────────
+# -- classes -------------------------------------------------------------------
 
 class TestClasses:
     def test_finds_interface(self, fx):
@@ -95,7 +95,7 @@ class TestClasses:
         assert has(r, "ProcessingService")
 
 
-# ── methods ───────────────────────────────────────────────────────────────────
+# -- methods -------------------------------------------------------------------
 
 class TestMethods:
     def test_finds_method_with_return_type(self, fx):
@@ -127,7 +127,7 @@ class TestMethods:
         assert len(method_texts) >= 5
 
 
-# ── fields ────────────────────────────────────────────────────────────────────
+# -- fields --------------------------------------------------------------------
 
 class TestFields:
     def test_finds_fields(self, fx):
@@ -154,7 +154,7 @@ class TestFields:
         assert "ILogger" in match
 
 
-# ── calls ─────────────────────────────────────────────────────────────────────
+# -- calls ---------------------------------------------------------------------
 
 class TestCalls:
     def test_bare_name_finds_calls(self, fx):
@@ -182,7 +182,7 @@ class TestCalls:
         assert len(r) == 0
 
     def test_skips_comment_calls(self, fx):
-        # COMMENT_CALL() appears in a comment — must not be matched
+        # COMMENT_CALL() appears in a comment -- must not be matched
         src, tree, lines = fx
         r = q_calls(src, tree, lines, "COMMENT_CALL")
         assert len(r) == 0
@@ -193,7 +193,7 @@ class TestCalls:
         assert len(r) >= 1
 
 
-# ── implements ────────────────────────────────────────────────────────────────
+# -- implements ----------------------------------------------------------------
 
 class TestImplements:
     def test_finds_classes_implementing_interface(self, fx):
@@ -230,7 +230,7 @@ class TestImplements:
             assert "ProcessingService" not in t
 
 
-# ── uses ──────────────────────────────────────────────────────────────────────
+# -- uses ----------------------------------------------------------------------
 
 class TestUses:
     def test_finds_type_references(self, fx):
@@ -275,10 +275,10 @@ class TestUses:
         r = q_uses(src, tree, lines, "ProcessResult")
         line_numbers = [lineno for lineno, _ in r]
         assert len(line_numbers) == len(set(line_numbers)), \
-            "duplicate line numbers found — same line reported more than once"
+            "duplicate line numbers found -- same line reported more than once"
 
 
-# ── attrs ─────────────────────────────────────────────────────────────────────
+# -- attrs ---------------------------------------------------------------------
 
 class TestAttrs:
     def test_finds_all_attributes(self, fx):
@@ -313,7 +313,7 @@ class TestAttrs:
         assert len(unfiltered) >= len(serializable)
 
 
-# ── usings ────────────────────────────────────────────────────────────────────
+# -- usings --------------------------------------------------------------------
 
 class TestUsings:
     def test_finds_standard_usings(self, fx):
@@ -333,7 +333,7 @@ class TestUsings:
         assert len(r) == 5  # System, Generic, Linq, Tasks, alias
 
 
-# ── find ──────────────────────────────────────────────────────────────────────
+# -- find ----------------------------------------------------------------------
 
 class TestFind:
     def test_find_method_returns_body(self, fx):
@@ -366,7 +366,7 @@ class TestFind:
         assert len(r) == 0
 
 
-# ── params ────────────────────────────────────────────────────────────────────
+# -- params --------------------------------------------------------------------
 
 class TestParams:
     def test_params_of_transform(self, fx):
@@ -415,7 +415,7 @@ class TestParams:
         assert "out" in param_txt or "ProcessResult" in param_txt
 
 
-# ── field_type ────────────────────────────────────────────────────────────────
+# -- field_type ----------------------------------------------------------------
 
 class TestFieldType:
     def test_finds_field_typed_as_interface(self, fx):
@@ -442,7 +442,7 @@ class TestFieldType:
         assert len(r) == 0
 
 
-# ── param_type ────────────────────────────────────────────────────────────────
+# -- param_type ----------------------------------------------------------------
 
 class TestParamType:
     def test_finds_in_method(self, fx):
@@ -469,7 +469,7 @@ class TestParamType:
         assert len(r) == 0
 
 
-# ── casts ─────────────────────────────────────────────────────────────────────
+# -- casts ---------------------------------------------------------------------
 
 class TestCasts:
     def test_finds_explicit_cast(self, fx):
@@ -508,7 +508,7 @@ class TestCasts:
                 f"Comment line incorrectly reported as cast: {t!r}"
 
 
-# ── ident ─────────────────────────────────────────────────────────────────────
+# -- ident ---------------------------------------------------------------------
 
 class TestIdent:
     def test_finds_multiple_occurrences(self, fx):
@@ -536,7 +536,7 @@ class TestIdent:
 
     def test_no_partial_match(self, fx):
         """Searching for 'ProcessResult' must not match the identifier
-        'ProcessResultSummary' — identifiers must match exactly."""
+        'ProcessResultSummary' -- identifiers must match exactly."""
         src, tree, lines = fx
         r = q_all_refs(src, tree, lines, "ProcessResult")
         # Lines that mention only ProcessResultSummary (never the bare token
@@ -550,7 +550,7 @@ class TestIdent:
                     f"ProcessResultSummary-only line should not be in ident results: {t!r}"
 
 
-# ── member_accesses ───────────────────────────────────────────────────────────
+# -- member_accesses -----------------------------------------------------------
 
 class TestMemberAccesses:
     def test_explicit_param_finds_accesses(self, fx):
@@ -610,7 +610,7 @@ class TestMemberAccesses:
         assert isinstance(r, list)
 
     def test_chained_access_not_leaked(self, fx):
-        """result.Output.Length — only .Output should match for ProcessResult.
+        """result.Output.Length -- only .Output should match for ProcessResult.
         .Length is on the string returned by .Output, not on ProcessResult itself."""
         src, tree, lines = fx
         r = q_accesses_on(src, tree, lines, "ProcessResult")

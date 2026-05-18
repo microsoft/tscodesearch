@@ -1,5 +1,5 @@
 """
-tsquery_server — cross-platform management server daemon.
+tsquery_server -- cross-platform management server daemon.
 
 Runs under .client-venv (Windows) or any compatible Python on Linux/macOS.
 Owns one Tantivy index per configured root and exposes an HTTP API on
@@ -19,14 +19,14 @@ Entry points
       Signal the running daemon to stop.
 
 HTTP endpoints:
-  GET  /health               → {"ok": true}  (no auth)
-  GET  /status               → watcher / queue / syncer / collections
-  POST /check-ready          → check_ready() result
-  POST /verify/start         → queue a verify/repair job
-  POST /verify/stop          → cancel running syncer
-  POST /file-events          → accept file-change notifications
-  POST /query-codebase       → backend search + AST post-process
-  POST /management/shutdown  → graceful daemon shutdown (used by ts stop)
+  GET  /health               -> {"ok": true}  (no auth)
+  GET  /status               -> watcher / queue / syncer / collections
+  POST /check-ready          -> check_ready() result
+  POST /verify/start         -> queue a verify/repair job
+  POST /verify/stop          -> cancel running syncer
+  POST /file-events          -> accept file-change notifications
+  POST /query-codebase       -> backend search + AST post-process
+  POST /management/shutdown  -> graceful daemon shutdown (used by ts stop)
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ from indexserver import search as _search_mod
 _cfg = _load_config()
 ALL_ROOTS = _cfg.roots
 
-# ── runtime paths ──────────────────────────────────────────────────────────────
+# -- runtime paths --------------------------------------------------------------
 _HOME = Path.home()
 _DEFAULT_RUN_DIR = (
     Path(os.environ.get("LOCALAPPDATA", _HOME / "AppData" / "Local")) / "tscodesearch"
@@ -70,7 +70,7 @@ _INDEXER_PID = _RUN_DIR / "indexer.pid"
 
 _QUERY_CODEBASE_MAX_LIMIT = 250
 
-# ── thread state ───────────────────────────────────────────────────────────────
+# -- thread state ---------------------------------------------------------------
 _watcher_stop:   threading.Event  = threading.Event()
 _watcher_thread: threading.Thread | None = None
 _watcher_lock    = threading.Lock()
@@ -81,7 +81,7 @@ _sync_pending:  list = []
 _sync_stop:     threading.Event | None = None
 _sync_progress: dict = {}
 
-_synced_roots: dict[str, str] = {}   # root_name → ISO timestamp of last successful sync
+_synced_roots: dict[str, str] = {}   # root_name -> ISO timestamp of last successful sync
 
 # Backends keyed by collection name. The daemon owns the writer for each.
 _backends: dict[str, Backend] = {}
@@ -92,7 +92,7 @@ _server: HTTPServer | None = None
 _shutdown_event = threading.Event()
 
 
-# ── Tree-sitter query helper ───────────────────────────────────────────────────
+# -- Tree-sitter query helper ---------------------------------------------------
 
 _query_module = None
 
@@ -127,7 +127,7 @@ def _run_query(mode: str, pattern: str, files: list[Path],
     return results
 
 
-# ── Mode mapping ───────────────────────────────────────────────────────────────
+# -- Mode mapping ---------------------------------------------------------------
 
 _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
     "declarations": ("symbols",     "declarations"),
@@ -142,7 +142,7 @@ _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
 }
 
 
-# ── Per-component status ───────────────────────────────────────────────────────
+# -- Per-component status -------------------------------------------------------
 
 def _watcher_status() -> dict:
     running     = bool(_watcher_thread and _watcher_thread.is_alive())
@@ -199,7 +199,7 @@ def _collections_status() -> dict:
     return collections
 
 
-# ── Watcher ────────────────────────────────────────────────────────────────────
+# -- Watcher --------------------------------------------------------------------
 
 def _start_watcher() -> None:
     global _watcher_thread, _watcher_stop
@@ -218,7 +218,7 @@ def _start_watcher() -> None:
         print("[tsquery_server] Watcher thread started.", flush=True)
 
 
-# ── Syncer ─────────────────────────────────────────────────────────────────────
+# -- Syncer ---------------------------------------------------------------------
 
 def _drain_sync_queue() -> None:
     global _sync_stop
@@ -264,7 +264,7 @@ def _drain_sync_queue() -> None:
     _sync_stop = None
 
 
-# ── File-event handler ─────────────────────────────────────────────────────────
+# -- File-event handler ---------------------------------------------------------
 
 def _enqueue_file_events(events: list) -> dict:
     root_map = [
@@ -304,7 +304,7 @@ def _enqueue_file_events(events: list) -> dict:
     return {"queued": n_new, "deduped": n_dedup}
 
 
-# ── Daemon initialization ──────────────────────────────────────────────────────
+# -- Daemon initialization ------------------------------------------------------
 
 def _init_backends() -> None:
     """Open one Tantivy backend per configured root and log its doc count."""
@@ -350,7 +350,7 @@ def _initialize_async(stop_event: threading.Event) -> None:
     print("[tsquery_server] Initialization complete.", flush=True)
 
 
-# ── HTTP handler ───────────────────────────────────────────────────────────────
+# -- HTTP handler ---------------------------------------------------------------
 
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:  # noqa: A002
@@ -621,7 +621,7 @@ class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     allow_reuse_address = False
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
+# -- Public API -----------------------------------------------------------------
 
 def start_daemon() -> bool:
     """Try to bind PORT and start all daemon threads."""
@@ -653,7 +653,7 @@ def start_daemon() -> bool:
 
 def run_until_shutdown() -> None:
     def _on_signal(sig, frame):
-        print(f"[tsquery_server] Signal {sig} — shutting down…", flush=True)
+        print(f"[tsquery_server] Signal {sig} -- shutting down...", flush=True)
         _shutdown_event.set()
 
     signal.signal(signal.SIGTERM, _on_signal)
@@ -687,11 +687,11 @@ def stop_daemon() -> None:
     def _elapsed() -> str:
         return f"{time.monotonic() - t0:.1f}s"
 
-    print("[tsquery_server] Stopping — signalling watcher…", flush=True)
+    print("[tsquery_server] Stopping -- signalling watcher...", flush=True)
     _watcher_stop.set()
 
     if _sync_thread and _sync_thread.is_alive():
-        print("[tsquery_server] Waiting for syncer thread…", flush=True)
+        print("[tsquery_server] Waiting for syncer thread...", flush=True)
         if _sync_stop:
             _sync_stop.set()
         _sync_thread.join(timeout=30)
@@ -700,7 +700,7 @@ def stop_daemon() -> None:
         else:
             print(f"[tsquery_server] Syncer done ({_elapsed()})", flush=True)
 
-    print(f"[tsquery_server] Draining index queue… ({_elapsed()})", flush=True)
+    print(f"[tsquery_server] Draining index queue... ({_elapsed()})", flush=True)
     # Queue worker stops pulling new items, runs one final commit to flush
     # already-buffered work, then exits. The hard-exit timer in
     # run_until_shutdown() is the backstop if anything blocks longer.
@@ -708,7 +708,7 @@ def stop_daemon() -> None:
     print(f"[tsquery_server] Queue drained ({_elapsed()})", flush=True)
 
     for collection, backend in _backends.items():
-        print(f"[tsquery_server] Closing backend {collection}… ({_elapsed()})", flush=True)
+        print(f"[tsquery_server] Closing backend {collection}... ({_elapsed()})", flush=True)
         try:
             # quick=True: skip merge-thread wait and uncommitted-work commit.
             # Any buffered work is dropped; the verifier re-indexes on next startup.
@@ -722,7 +722,7 @@ def stop_daemon() -> None:
     _backends.clear()
 
     if _server is not None:
-        print(f"[tsquery_server] Shutting down HTTP server… ({_elapsed()})", flush=True)
+        print(f"[tsquery_server] Shutting down HTTP server... ({_elapsed()})", flush=True)
         _srv_stop = threading.Thread(target=_server.shutdown, daemon=True)
         _srv_stop.start()
         _srv_stop.join(timeout=5)
@@ -735,7 +735,7 @@ def stop_daemon() -> None:
     print(f"[tsquery_server] Stopped. total={_elapsed()}", flush=True)
 
 
-# ── Daemon entry point ─────────────────────────────────────────────────────────
+# -- Daemon entry point ---------------------------------------------------------
 
 if __name__ == "__main__":
     if not start_daemon():

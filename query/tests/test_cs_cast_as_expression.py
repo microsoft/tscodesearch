@@ -3,7 +3,7 @@ Tests for uses_kind=cast with 'as' expressions.
 
 Replicates bug discovered in Round 13 of guided testing:
 
-  Round 13 — uses_kind=cast missed 'as' cast expressions:
+  Round 13 -- uses_kind=cast missed 'as' cast expressions:
 
         Dog d = a as Dog;
         Dog dog = obj as Dog;
@@ -56,14 +56,14 @@ class TestCastAsExpression(unittest.TestCase):
         return q_uses(*_PARSED, type_name=type_name, uses_kind="cast")
 
     def test_as_cast_found(self):
-        """Dog d = a as Dog — must appear in cast results."""
+        """Dog d = a as Dog -- must appear in cast results."""
         r = self._casts("Dog")
         assert r, "Expected Dog cast results"
         lns = _lns(r)
         assert _line_no("a as Dog") in lns, f"'a as Dog' line missing: {r}"
 
     def test_as_cast_nested_found(self):
-        """Dog dog = obj as Dog — second as-cast must also appear."""
+        """Dog dog = obj as Dog -- second as-cast must also appear."""
         r = self._casts("Dog")
         assert _line_no("obj as Dog") in _lns(r), f"'obj as Dog' line missing: {r}"
 

@@ -40,7 +40,7 @@ def _find(tree, types):
     return _find_all(tree.root_node, lambda n: n.type in types)
 
 
-# ── Modifier extraction ──────────────────────────────────────────────────────
+# -- Modifier extraction ------------------------------------------------------
 
 
 class TestExplicitVisibility(unittest.TestCase):
@@ -60,7 +60,7 @@ class TestExplicitVisibility(unittest.TestCase):
 
     def test_protected_internal_collapses_to_protected(self):
         # ``protected internal`` = reachable via inheritance from outside
-        # the assembly — classifies as ``protected`` for filtering.
+        # the assembly -- classifies as ``protected`` for filtering.
         src = "class O { protected internal void M() {} }"
         assert self._vis(src, "method_declaration") == "protected"
 
@@ -70,13 +70,13 @@ class TestExplicitVisibility(unittest.TestCase):
         assert self._vis(src, "method_declaration") == "private"
 
     def test_no_modifier_returns_empty(self):
-        # Bare ``void M()`` with no modifier — explicit extractor returns "".
+        # Bare ``void M()`` with no modifier -- explicit extractor returns "".
         # Defaults are applied by the higher-level _cs_member_visibility.
         src = "class O { void M() {} }"
         assert self._vis(src, "method_declaration") == ""
 
 
-# ── Language defaults ────────────────────────────────────────────────────────
+# -- Language defaults --------------------------------------------------------
 
 
 class TestTypeDefaults(unittest.TestCase):
@@ -96,8 +96,8 @@ class TestTypeDefaults(unittest.TestCase):
 
 class TestMemberDefaults(unittest.TestCase):
     """``_cs_member_visibility`` should apply C# defaults to members
-    without explicit modifiers (class ⇒ private; interface ⇒ public;
-    enum body ⇒ public)."""
+    without explicit modifiers (class => private; interface => public;
+    enum body => public)."""
 
     def test_class_member_defaults_to_private(self):
         _b, tree, _ = _parse("class C { void M() {} }")
@@ -117,7 +117,7 @@ class TestMemberDefaults(unittest.TestCase):
         assert _cs_member_visibility(m) == "private"
 
 
-# ── Visibility filter on declaration queries ─────────────────────────────────
+# -- Visibility filter on declaration queries ---------------------------------
 
 
 _SRC = """\
@@ -161,7 +161,7 @@ class TestQClassesVisibility(unittest.TestCase):
         assert names == ["Public"], names
 
     def test_internal_includes_interface_default(self):
-        # ``interface I`` has no modifier → top-level default = internal.
+        # ``interface I`` has no modifier -> top-level default = internal.
         names = self._names(q_classes(self.b, self.tree, self.lines,
                                        visibility="internal"))
         assert set(names) == {"Internal", "I"}, names
@@ -177,12 +177,12 @@ class TestQMethodsVisibility(unittest.TestCase):
         self.b, self.tree, self.lines = _parse(_SRC)
 
     def _method_names(self, results):
-        # Method text looks like "[method] <sig>" — sig has the name.
+        # Method text looks like "[method] <sig>" -- sig has the name.
         names = []
         for _, _, t in results:
             # Skip non-method lines (props, fields).
             if t.startswith("[method]"):
-                # ``[method] void PubMethod()`` → "PubMethod"
+                # ``[method] void PubMethod()`` -> "PubMethod"
                 sig = t.split("] ", 1)[1]
                 # Last whitespace-separated token before ``(``.
                 names.append(sig.split("(")[0].strip().split(" ")[-1])
@@ -203,7 +203,7 @@ class TestQMethodsVisibility(unittest.TestCase):
         assert names == ["PrivMethod"], names
 
     def test_unknown_visibility_returns_empty(self):
-        # Typo: "publik" — no match (treated as a hard filter, not a fallback).
+        # Typo: "publik" -- no match (treated as a hard filter, not a fallback).
         out = q_methods(self.b, self.tree, self.lines, visibility="publik")
         assert out == [], out
 
@@ -228,7 +228,7 @@ class TestQDeclarationsVisibility(unittest.TestCase):
         self.b, self.tree, self.lines = _parse(_SRC)
 
     def test_filter_keeps_only_named_match_with_visibility(self):
-        # Three declarations named ``OtherPub`` etc. — but searching for
+        # Three declarations named ``OtherPub`` etc. -- but searching for
         # ``Public`` restricted to public matches the public class only.
         out = q_declarations(self.b, self.tree, self.lines, "Public",
                               visibility="public")
@@ -238,7 +238,7 @@ class TestQDeclarationsVisibility(unittest.TestCase):
 
     def test_filter_drops_non_matching_visibility(self):
         # Searching for ``Internal`` (the class name) restricted to public
-        # returns nothing — the class is internal.
+        # returns nothing -- the class is internal.
         out = q_declarations(self.b, self.tree, self.lines, "Internal",
                               visibility="public")
         assert out == [], out

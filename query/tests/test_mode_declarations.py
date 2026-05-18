@@ -24,9 +24,9 @@ from tests.fixtures import FIND_TARGET
 from ..cs import q_declarations
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # q_declarations AST function
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 class TestQFind(unittest.TestCase):
 
@@ -61,7 +61,7 @@ class TestQFind(unittest.TestCase):
         import re
         r = self._find(FIND_TARGET, "TargetMethod")
         texts = [t for _, t in r]
-        # Header format: ``[method] Name S-E:`` — verify a START-END pair.
+        # Header format: ``[method] Name S-E:`` -- verify a START-END pair.
         assert any(re.search(r"\b\d+-\d+:", t) for t in texts), \
             f"Output must include line range: {texts}"
 

@@ -1,5 +1,5 @@
 """
-Unit tests for ``_build_var_type_map`` — the method-scoped variable-name →
+Unit tests for ``_build_var_type_map`` -- the method-scoped variable-name ->
 resolved-type resolver, and the qualified-call form it produces on each
 CallSiteInfo.
 """
@@ -40,7 +40,7 @@ def _vm(src: str):
     return b, tree, _build_var_type_map(tree, b)
 
 
-# ── _VarTypeMap ──────────────────────────────────────────────────────────────
+# -- _VarTypeMap --------------------------------------------------------------
 
 
 class TestParametersResolve(unittest.TestCase):
@@ -83,7 +83,7 @@ class TestExplicitLocalsResolve(unittest.TestCase):
         assert vm.resolve_at("r", call) == "Repo"
 
     def test_var_unresolvable_method_call(self):
-        # var x = GetRepo() — we don't know GetRepo's return type
+        # var x = GetRepo() -- we don't know GetRepo's return type
         src = "class C { void M() { var r = GetRepo(); r.Save(); } }"
         b, tree, vm = _vm(src)
         call = _call_at(tree, b, "r.Save")
@@ -104,7 +104,7 @@ class TestExplicitLocalsResolve(unittest.TestCase):
 
 class TestInferenceHeuristics(unittest.TestCase):
     """Best-guess inference for AI-agent use: await unwrap, generic method
-    type args, static factory pattern. False positives are acceptable —
+    type args, static factory pattern. False positives are acceptable --
     a wrong qualified form never matches a real call in the AST stage."""
 
     def test_await_unwraps_to_inner_expression(self):
@@ -118,7 +118,7 @@ class TestInferenceHeuristics(unittest.TestCase):
         assert vm.resolve_at("x", _call_at(tree, b, "x.Save")) == "Repo"
 
     def test_generic_method_first_type_arg(self):
-        # ``Resolve<T>``, ``Get<T>``, ``As<T>`` style — first type arg is
+        # ``Resolve<T>``, ``Get<T>``, ``As<T>`` style -- first type arg is
         # idiomatically the return type.
         src = """class C {
             void M(IContainer c) {
@@ -163,14 +163,14 @@ class TestInferenceHeuristics(unittest.TestCase):
             }
         }"""
         b, tree, vm = _vm(src)
-        # ``Widget`` is a declared local in the same block — the factory
+        # ``Widget`` is a declared local in the same block -- the factory
         # heuristic skips and ``w`` stays unresolved (we don't know what
         # an arbitrary instance's ``.Spawn()`` returns).
         assert vm.resolve_at("w", _call_at(tree, b, "w.Render")) is None
 
     def test_factory_fires_even_when_outer_scope_shadows(self):
         # Inference runs at scope-construction time and doesn't walk outer
-        # scopes — a param named the same as a type still lets the factory
+        # scopes -- a param named the same as a type still lets the factory
         # heuristic fire on inner blocks. False positive is acceptable per
         # the project's AI-agent-friendly bias (worst case: a qualified
         # form that AST post-filter rejects).
@@ -209,7 +209,7 @@ class TestInferenceHeuristics(unittest.TestCase):
 
 class TestForeachVarIteratorInference(unittest.TestCase):
     """foreach (var x in coll) should derive x's type from coll's element
-    type when coll is in scope — fixes a false negative where the iterator
+    type when coll is in scope -- fixes a false negative where the iterator
     was left unresolved despite the collection type being statically known."""
 
     def test_foreach_over_array_field(self):
@@ -247,7 +247,7 @@ class TestForeachVarIteratorInference(unittest.TestCase):
         assert vm.resolve_at("it", _call_at(tree, b, "it.Use")) == "Item"
 
     def test_foreach_over_local_array(self):
-        # Local var array — collection lookup walks the parent block scope.
+        # Local var array -- collection lookup walks the parent block scope.
         src = """class C {
             void M() {
                 Item[] items = null;
@@ -260,7 +260,7 @@ class TestForeachVarIteratorInference(unittest.TestCase):
         assert vm.resolve_at("it", _call_at(tree, b, "it.Use")) == "Item"
 
     def test_foreach_over_dictionary_skipped(self):
-        # Dictionary<K,V> has two type args — the iterator is KeyValuePair<K,V>,
+        # Dictionary<K,V> has two type args -- the iterator is KeyValuePair<K,V>,
         # which we can't summarise as a single PascalCase name. We leave it
         # unresolved rather than emit a wrong guess.
         src = """class C {
@@ -274,7 +274,7 @@ class TestForeachVarIteratorInference(unittest.TestCase):
         assert vm.resolve_at("kv", _call_at(tree, b, "kv.Key.ToString")) is None
 
     def test_foreach_over_unknown_collection_unresolved(self):
-        # Collection name not in scope at all — no inference.
+        # Collection name not in scope at all -- no inference.
         src = """class C {
             void M() {
                 foreach (var x in unknownCollection) {
@@ -316,7 +316,7 @@ class TestPropertyAccessHeuristic(unittest.TestCase):
         assert vm.resolve_at("w", _call_at(tree, b, "w.Render")) is None
 
     def test_static_property_uses_receiver_type(self):
-        # ``Encoding.UTF8`` — receiver is PascalCase and not in scope, so
+        # ``Encoding.UTF8`` -- receiver is PascalCase and not in scope, so
         # the static path fires: result type = receiver = Encoding.
         src = """class C {
             void M() {
@@ -339,7 +339,7 @@ class TestTernaryInference(unittest.TestCase):
             }
         }"""
         b, tree, vm = _vm(src)
-        # First branch wins — both branches independently produce a type;
+        # First branch wins -- both branches independently produce a type;
         # the consequence is tried first.
         assert vm.resolve_at("x", _call_at(tree, b, "x.Do")) == "Foo"
 
@@ -357,7 +357,7 @@ class TestTernaryInference(unittest.TestCase):
 
     def test_ternary_falls_back_to_second_branch(self):
         # First branch is unresolvable (bare identifier), second is a
-        # property access — we try both, the second wins.
+        # property access -- we try both, the second wins.
         src = """class C {
             void M(bool b, Context ctx) {
                 var meta = b ? unknown : ctx.RequestMetadata;
@@ -413,10 +413,10 @@ class TestMethodScopingIsolation(unittest.TestCase):
 
 
 class TestConflictSuppression(unittest.TestCase):
-    """Conflicting types in the **same** scope → None (not emitted)."""
+    """Conflicting types in the **same** scope -> None (not emitted)."""
 
     def test_redeclaration_in_same_block_conflicts(self):
-        # Two declarations directly in the same block — tree-sitter still
+        # Two declarations directly in the same block -- tree-sitter still
         # parses it; we treat it as ambiguous and emit no qualified form.
         src = """class C {
             void M() {
@@ -433,7 +433,7 @@ class TestConflictSuppression(unittest.TestCase):
 
 class TestBlockScopingIsolatesBranches(unittest.TestCase):
     """Sibling blocks (if/else, try/catch arms, switch sections) must each
-    see their own declarations — this is the false-negative that motivated
+    see their own declarations -- this is the false-negative that motivated
     block-level scoping."""
 
     def test_if_else_branches_isolate_same_name(self):
@@ -511,7 +511,7 @@ class TestNestedScopes(unittest.TestCase):
         assert vm.resolve_at("r", call) == "Repo"
 
     def test_typed_lambda_param_resolved(self):
-        # Typed lambda parameters land in a regular parameter_list — same
+        # Typed lambda parameters land in a regular parameter_list -- same
         # handling as a method parameter.
         src = """class C {
             void M(Repo r) {
@@ -525,7 +525,7 @@ class TestNestedScopes(unittest.TestCase):
         assert vm.resolve_at("r", member) == "Repo"
 
     def test_implicit_lambda_param_unresolved(self):
-        # ``c => c.Id`` carries no syntactic type — resolution would need
+        # ``c => c.Id`` carries no syntactic type -- resolution would need
         # cross-expression Func<,> inference, which we don't do. The
         # resolver returns None rather than guessing.
         src = """class C {
@@ -538,7 +538,7 @@ class TestNestedScopes(unittest.TestCase):
         assert vm.resolve_at("c", member) is None
 
 
-# ── _q_all_call_site_infos integration ───────────────────────────────────────
+# -- _q_all_call_site_infos integration ---------------------------------------
 
 
 class TestCallSiteResolvedType(unittest.TestCase):
@@ -562,7 +562,7 @@ class TestCallSiteResolvedType(unittest.TestCase):
         assert save.resolved_type == ""
 
     def test_pascal_receiver_static_call(self):
-        # ``Foo.Save()`` — Foo isn't a declared variable, so var-type map
+        # ``Foo.Save()`` -- Foo isn't a declared variable, so var-type map
         # returns None; resolved_type is empty. The literal receiver
         # captures Foo for the indexer's static-style qualifying.
         infos = self._infos("class C { void M() { Foo.Save(); } }")
@@ -571,7 +571,7 @@ class TestCallSiteResolvedType(unittest.TestCase):
         assert save.resolved_type == ""
 
     def test_resolved_uses_unqualified_type(self):
-        # ``A.B.Repo`` field type → resolved_type stored as ``Repo``
+        # ``A.B.Repo`` field type -> resolved_type stored as ``Repo``
         # so the qualified-call form is stable regardless of namespace.
         infos = self._infos(
             "class C { private A.B.Repo _r; void M() { _r.Save(); } }"
@@ -587,7 +587,7 @@ class TestCallSiteResolvedType(unittest.TestCase):
         assert add.resolved_type == "List"
 
 
-# ── q_calls qualified-receiver matching ──────────────────────────────────────
+# -- q_calls qualified-receiver matching --------------------------------------
 
 
 class TestQCallsQualifiedReceiver(unittest.TestCase):
@@ -601,12 +601,12 @@ class TestQCallsQualifiedReceiver(unittest.TestCase):
         return q_calls(b, tree, src.splitlines(), pattern)
 
     def test_literal_receiver_match_unchanged(self):
-        # ``Foo.Save()`` — receiver is literally "Foo"; legacy behaviour.
+        # ``Foo.Save()`` -- receiver is literally "Foo"; legacy behaviour.
         r = self._q("class C { void M() { Foo.Save(); } }", "Foo.Save")
         assert len(r) == 1, r
 
     def test_typed_local_receiver_matches_via_resolved_type(self):
-        # ``r: Repo`` then ``r.Save()`` — should match q_calls("Repo.Save").
+        # ``r: Repo`` then ``r.Save()`` -- should match q_calls("Repo.Save").
         r = self._q(
             "class C { void M() { Repo r = null; r.Save(); } }",
             "Repo.Save")
@@ -634,7 +634,7 @@ class TestQCallsQualifiedReceiver(unittest.TestCase):
         assert r == [], r
 
     def test_conflict_suppressed_receiver_rejects_qualified_match(self):
-        # Two same-name locals of different types in one block → conflict →
+        # Two same-name locals of different types in one block -> conflict ->
         # no qualified match emitted. The bare-name search still finds them.
         src = """class C {
             void M() {
@@ -659,7 +659,7 @@ class TestQCallsQualifiedReceiver(unittest.TestCase):
         assert len(r) == 1, r
 
     def test_literal_does_not_match_when_resolution_differs(self):
-        # ``r: Repo`` then ``r.Save()`` — must NOT match q_calls("OtherType.Save")
+        # ``r: Repo`` then ``r.Save()`` -- must NOT match q_calls("OtherType.Save")
         # since neither literal "OtherType" nor resolved type matches.
         r = self._q(
             "class C { void M() { Repo r = null; r.Save(); } }",
@@ -667,12 +667,12 @@ class TestQCallsQualifiedReceiver(unittest.TestCase):
         assert r == [], r
 
 
-# ── q_calls anchors chained calls at the name token ──────────────────────────
+# -- q_calls anchors chained calls at the name token --------------------------
 
 
 class TestQCallsChainedReporting(unittest.TestCase):
     """For multi-line chained calls ``a.B().Method(...)``, the reported line
-    should be where ``Method`` itself appears — not the start of the outer
+    should be where ``Method`` itself appears -- not the start of the outer
     invocation. The reported text is the single source line at that row."""
 
     def _q(self, src: str, pattern: str):
@@ -681,7 +681,7 @@ class TestQCallsChainedReporting(unittest.TestCase):
         return q_calls(b, tree, src.splitlines(), pattern)
 
     def test_single_line_call_unchanged(self):
-        # ``Foo.Save();`` — name and call start on the same row; result row
+        # ``Foo.Save();`` -- name and call start on the same row; result row
         # is the obvious line (regression check that the new anchor logic
         # doesn't shift simple cases).
         src = "class C { void M() { Foo.Save(); } }"
@@ -694,7 +694,7 @@ class TestQCallsChainedReporting(unittest.TestCase):
     def test_chained_call_reports_name_line_not_chain_start(self):
         # The outer invocation spans two lines (chain starts at L2, the
         # ``ConfigureAwait`` name token sits on L3). The reported line
-        # should be L3 — the row containing the matched identifier.
+        # should be L3 -- the row containing the matched identifier.
         src = (
             "class C { void M(System.Threading.Tasks.Task<int> task) {\n"
             "    task.Result\n"
@@ -726,7 +726,7 @@ class TestQCallsChainedReporting(unittest.TestCase):
         assert line == 3, f"expected L3 (Save's line), got {line}: {r}"
 
 
-# ── describe_cs_file end-to-end ──────────────────────────────────────────────
+# -- describe_cs_file end-to-end ----------------------------------------------
 
 
 class TestDescribeFileEnd2End(unittest.TestCase):

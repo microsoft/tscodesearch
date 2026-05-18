@@ -52,9 +52,9 @@ class TestQVarTypeResolves(unittest.TestCase):
         }"""
         out = _run(src, "r")
         types_per_line = {ln: txt for ln, txt in out}
-        # Line 2 inside A — Repo.
+        # Line 2 inside A -- Repo.
         assert "Repo" in types_per_line[2], types_per_line
-        # Line 3 inside B — Customer.
+        # Line 3 inside B -- Customer.
         assert "Customer" in types_per_line[3], types_per_line
 
 
@@ -78,13 +78,13 @@ class TestQVarTypeUnresolved(unittest.TestCase):
         }"""
         out = _run(src, "x")
         # Every emitted entry for x in this single (conflicted) scope is
-        # labelled "(conflicting)" — we never invent a winning type.
+        # labelled "(conflicting)" -- we never invent a winning type.
         assert all(": (conflicting)" in t for t in _text_of(out)), out
 
 
 class TestQVarTypeInferenceHeuristics(unittest.TestCase):
     """The var-type map's inference heuristics should propagate to
-    ``var_type`` — e.g. ``var x = new Foo()`` reports x as Foo."""
+    ``var_type`` -- e.g. ``var x = new Foo()`` reports x as Foo."""
 
     def test_var_from_new(self):
         src = "class C { void M() { var w = new Widget(); w.Render(); } }"
@@ -108,7 +108,7 @@ class TestQVarTypeSkipsLiterals(unittest.TestCase):
             r.Save();
         } }'''
         out = _run(src, "r")
-        # Only the real declaration + use line — not the inside of the string.
+        # Only the real declaration + use line -- not the inside of the string.
         rows = [ln for ln, _ in out]
         assert 2 in rows and 4 in rows, out
         assert 3 not in rows, out

@@ -24,7 +24,7 @@ except Exception:
 
 
 
-# ── Regex patterns ─────────────────────────────────────────────────────────────
+# -- Regex patterns -------------------------------------------------------------
 
 _CREATE_TABLE_RE = re.compile(
     r'(?i)^\s*CREATE\s+TABLE\s+(\[?[\w.]+\]?\.)?(\[?[\w]+\]?)',
@@ -80,11 +80,11 @@ def _find_enclosing_table(text, pos):
     return best or ""
 
 
-# ── Query functions ───────────────────────────────────────────────────────────
+# -- Query functions -----------------------------------------------------------
 # All return list[(line_num_str, text)]
 
 def sql_q_text(lines, pattern):
-    """Plain text search — find lines containing pattern (case-insensitive)."""
+    """Plain text search -- find lines containing pattern (case-insensitive)."""
     results = []
     pat = pattern.lower()
     for i, line in enumerate(lines, 1):
@@ -173,8 +173,8 @@ def sql_q_methods(text, lines):
     return results
 
 
-# ── AST-based extraction helpers (used by indexer for semantic fields) ────────
-# These operate on tree-sitter parse trees — no parser state here.
+# -- AST-based extraction helpers (used by indexer for semantic fields) --------
+# These operate on tree-sitter parse trees -- no parser state here.
 
 def _find_all(node, predicate, results=None):
     if results is None:
@@ -205,7 +205,7 @@ def _ast_line(node) -> int:
 
 def _object_name(node, src: bytes) -> str:
     """Extract the unqualified name from an object_reference node
-    (e.g. 'dbo.Users' → 'Users', 'Users' → 'Users')."""
+    (e.g. 'dbo.Users' -> 'Users', 'Users' -> 'Users')."""
     if node is None:
         return ""
     if node.type == "object_reference":
@@ -219,7 +219,7 @@ def _object_name(node, src: bytes) -> str:
 
 
 def _schema_name(node, src: bytes) -> str:
-    """Extract schema prefix from object_reference ('dbo.Users' → 'dbo')."""
+    """Extract schema prefix from object_reference ('dbo.Users' -> 'dbo')."""
     if node is None or node.type != "object_reference":
         return ""
     idents = [c for c in node.children if c.type == "identifier"]
@@ -439,7 +439,7 @@ def extract_invocations(root, src: bytes) -> list:
 
 
 
-# ── Process function ──────────────────────────────────────────────────────────
+# -- Process function ----------------------------------------------------------
 
 _SQL_IDENT_RE = re.compile(rb'[A-Za-z_][A-Za-z0-9_]*')
 
@@ -466,10 +466,10 @@ def query_sql_bytes(src_bytes: bytes, mode: str, mode_arg: str, **kwargs):
 
 def describe_sql_file(src_bytes: bytes, ext: str = "") -> FileDescription:
     """Return all structured SQL data from src_bytes as a FileDescription."""
-    classes: list = []   # tables / views → ClassInfo
-    methods: list = []   # procs / functions → MethodInfo
-    fields:  list = []   # columns → FieldInfo
-    calls:   list = []   # referenced tables + invocations → CallSiteInfo
+    classes: list = []   # tables / views -> ClassInfo
+    methods: list = []   # procs / functions -> MethodInfo
+    fields:  list = []   # columns -> FieldInfo
+    calls:   list = []   # referenced tables + invocations -> CallSiteInfo
 
     if _SQL_AVAILABLE and _sql_parser is not None:
         try:
@@ -503,7 +503,7 @@ def describe_sql_file(src_bytes: bytes, ext: str = "") -> FileDescription:
 
     # SQL has no clean tree-walk for identifiers (tree-sitter-sql is partial);
     # fall back to a regex pass over the raw bytes. Includes keywords and any
-    # tokens inside string literals/comments — accepted as a broad pre-filter.
+    # tokens inside string literals/comments -- accepted as a broad pre-filter.
     all_refs = {m.decode("utf-8", "replace") for m in _SQL_IDENT_RE.findall(src_bytes)}
 
     return FileDescription(

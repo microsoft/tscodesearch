@@ -70,7 +70,7 @@ def main() -> int:
     print(f"build_document: {bd_total   / args.runs * 1000:7.1f} ms (avg)")
     print()
 
-    # Profiled run — breakdown of where time goes inside describe_file.
+    # Profiled run -- breakdown of where time goes inside describe_file.
     profiler = cProfile.Profile()
     profiler.enable()
     for _ in range(args.runs):

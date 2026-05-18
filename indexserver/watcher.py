@@ -67,7 +67,7 @@ class SourceChangeHandler(FileSystemEventHandler):
         if not event.is_directory and self._is_indexed(event.src_path):
             if not self._is_excluded(event.src_path):
                 with self._lock:
-                    # Preserve "created" if we haven't flushed yet — a
+                    # Preserve "created" if we haven't flushed yet -- a
                     # modify right after a create is still a new file.
                     if self._pending.get(event.src_path) != "created":
                         self._pending[event.src_path] = "modified"

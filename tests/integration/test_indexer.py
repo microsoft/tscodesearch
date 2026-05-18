@@ -1,14 +1,14 @@
 """
 Integration tests for the indexer: collection creation, file indexing, and field discrimination.
 
-TestIndexer                  — collection creation, file count, paths, priority, reset
-TestSemanticFieldDiscrim     — each per-identifier field returns ONLY the file where the
+TestIndexer                  -- collection creation, file count, paths, priority, reset
+TestSemanticFieldDiscrim     -- each per-identifier field returns ONLY the file where the
                                identifier appears in that exact role (param vs field vs
                                base vs local vs cast vs call vs string-literal)
-TestMultiRoot                — two independent collections from the same source tree
-TestSearchFieldModes         — each MCP search mode's query_by field returns the right file
+TestMultiRoot                -- two independent collections from the same source tree
+TestSearchFieldModes         -- each MCP search mode's query_by field returns the right file
 
-All classes open a real Tantivy index inline — no daemon required.
+All classes open a real Tantivy index inline -- no daemon required.
 """
 from __future__ import annotations
 import os, sys, shutil, time, unittest
@@ -26,7 +26,7 @@ from indexserver.indexer import run_index
 
 _cfg = _load_config()
 
-# ── TestIndexer ───────────────────────────────────────────────────────────────
+# -- TestIndexer ---------------------------------------------------------------
 
 class TestIndexer(unittest.TestCase):
     """Indexer creates a collection and indexes C# + other files."""
@@ -108,11 +108,11 @@ class TestIndexer(unittest.TestCase):
         self.assertEqual(old_info["num_documents"], new_info["num_documents"])
 
 
-# ── TestSemanticFieldDiscrim ─────────────────────────────────────────────────
+# -- TestSemanticFieldDiscrim -------------------------------------------------
 
 # Fixtures designed so the identifier ``IDisposable`` appears in exactly one
 # structural role per file. Each search-by-field test then asserts that only
-# the file holding ``IDisposable`` in that role comes back — verifying both
+# the file holding ``IDisposable`` in that role comes back -- verifying both
 # that the indexer wrote the right field AND that searching that field is
 # discriminating. This is a meaningful end-to-end check; just round-tripping
 # extract_metadata through the file system would only re-test the parser.
@@ -198,7 +198,7 @@ namespace Discrim {
 class TestSemanticFieldDiscrim(unittest.TestCase):
     """Field-by-field discrimination: search by exactly one field for a single
     identifier and assert which file comes back. No re-parsing on the test side
-    — every assertion is end-to-end through the Tantivy index."""
+    -- every assertion is end-to-end through the Tantivy index."""
 
     @classmethod
     def setUpClass(cls):
@@ -228,7 +228,7 @@ class TestSemanticFieldDiscrim(unittest.TestCase):
         hits = _search(self.coll, q, query_by=query_by, per_page=20)
         return {h["filename"] for h in hits}
 
-    # ── single-field discrimination on ``IDisposable`` ────────────────────────
+    # -- single-field discrimination on ``IDisposable`` ------------------------
 
     def test_base_types_finds_only_implementor(self):
         self.assertEqual(self._files("IDisposable", "base_types"),
@@ -254,7 +254,7 @@ class TestSemanticFieldDiscrim(unittest.TestCase):
         self.assertEqual(self._files("IDisposable", "cast_types"),
                          {"CastUser.cs"})
 
-    # ── type_refs is the union of typed-use roles (not cast_types) ────────────
+    # -- type_refs is the union of typed-use roles (not cast_types) ------------
 
     def test_type_refs_unions_typed_use_roles(self):
         self.assertEqual(
@@ -263,7 +263,7 @@ class TestSemanticFieldDiscrim(unittest.TestCase):
              "ReturnUser.cs", "LocalUser.cs"},
         )
 
-    # ── string-literal mentions must not leak into structured fields ──────────
+    # -- string-literal mentions must not leak into structured fields ----------
 
     def test_string_literal_excluded_from_every_structured_field(self):
         for field in ("base_types", "param_types", "field_types",
@@ -275,40 +275,40 @@ class TestSemanticFieldDiscrim(unittest.TestCase):
                 f"StringMention.cs leaked into {field} via string literal",
             )
 
-    # ── method_names: only the declarer ───────────────────────────────────────
+    # -- method_names: only the declarer ---------------------------------------
 
     def test_method_names_finds_only_declarer(self):
         # Caller.cs CALLS DoWork(); only BaseImplementor.cs DECLARES it.
         self.assertEqual(self._files("DoWork", "method_names"),
                          {"BaseImplementor.cs"})
 
-    # ── call_sites: only the caller, not the declarer ─────────────────────────
+    # -- call_sites: only the caller, not the declarer -------------------------
 
     def test_call_sites_finds_only_caller(self):
         self.assertEqual(self._files("DoWork", "call_sites"),
                          {"Caller.cs"})
 
-    # ── attr_names: only attribute decorations ────────────────────────────────
+    # -- attr_names: only attribute decorations --------------------------------
 
     def test_attr_names_finds_only_decorated_file(self):
         self.assertEqual(self._files("Serializable", "attr_names"),
                          {"BaseImplementor.cs"})
 
-    # ── class_names: only declarations, not usages ────────────────────────────
+    # -- class_names: only declarations, not usages ----------------------------
 
     def test_class_names_finds_only_declarer(self):
-        # Caller.cs uses BaseImplementor as a parameter type — it must NOT
+        # Caller.cs uses BaseImplementor as a parameter type -- it must NOT
         # appear in class_names search for BaseImplementor.
         self.assertEqual(self._files("BaseImplementor", "class_names"),
                          {"BaseImplementor.cs"})
 
-    # ── imports: only the file that imports the namespace ────────────────────
+    # -- imports: only the file that imports the namespace --------------------
 
     def test_imports_finds_only_importer(self):
         self.assertEqual(self._files("System", "imports"),
                          {"BaseImplementor.cs"})
 
-    # ── namespace: every file in this fixture shares ``Discrim`` ──────────────
+    # -- namespace: every file in this fixture shares ``Discrim`` --------------
 
     def test_namespace_split_into_components(self):
         # All fixture files declare ``namespace Discrim``; the indexer stores
@@ -319,7 +319,7 @@ class TestSemanticFieldDiscrim(unittest.TestCase):
             f"every fixture file should match: {fnames}")
 
 
-# ── TestMultiRoot ─────────────────────────────────────────────────────────────
+# -- TestMultiRoot -------------------------------------------------------------
 
 class TestMultiRoot(unittest.TestCase):
     """Two independent collections for the same source tree stay isolated."""
@@ -365,7 +365,7 @@ class TestMultiRoot(unittest.TestCase):
         self.assertIsNone(_collection_info("codesearch_does_not_exist_xyz"))
 
 
-# ── TestSearchFieldModes ──────────────────────────────────────────────────────
+# -- TestSearchFieldModes ------------------------------------------------------
 
 class TestSearchFieldModes(unittest.TestCase):
     """Each MCP search mode's query_by field string returns the right file."""

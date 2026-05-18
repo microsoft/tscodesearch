@@ -5,7 +5,7 @@ Each test class calls run_index() in setUpClass to create a fresh Tantivy
 index for sample/root1 or sample/root2, then drops it in tearDownClass.
 
 sample/ layout
-──────────────
+--------------
   root1/  Processors.cs  DataStore.cs  BlobStorage.cs  services.py  pipeline.py
           query_fixture.cs  query_fixture.rs  query_fixture.js
           query_fixture.ts  query_fixture.cpp
@@ -22,14 +22,14 @@ _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-# ── Sample directory paths ────────────────────────────────────────────────────
+# -- Sample directory paths ----------------------------------------------------
 
 SAMPLE_ROOT1 = os.path.join(_root, "sample", "root1")
 SAMPLE_ROOT2 = os.path.join(_root, "sample", "root2")
 
 _CONFIG_PATH = os.path.join(_root, "config.json")
 
-# ── Connection config ─────────────────────────────────────────────────────────
+# -- Connection config ---------------------------------------------------------
 
 from indexserver.config import load_config as _load_config
 _e2e_cfg = _load_config()
@@ -39,7 +39,7 @@ def _require_server() -> None:
     """Tantivy is in-process; nothing external to require."""
     return None
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# -- Helpers -------------------------------------------------------------------
 
 def _search(collection: str, q: str,
             query_by: str = "path_tokens,class_names,method_names,tokens",
@@ -78,7 +78,7 @@ def _collection_info(collection: str) -> dict | None:
         return None
 
 
-from tests.helpers import _delete_collection  # noqa: E402 — uses _e2e_cfg via load_config
+from tests.helpers import _delete_collection  # noqa: E402 -- uses _e2e_cfg via load_config
 
 
 def _count_sample_files(src_root: str) -> int:
@@ -87,7 +87,7 @@ def _count_sample_files(src_root: str) -> int:
     return sum(1 for _ in walk_source_files(src_root, _e2e_cfg))
 
 
-# ── TestSampleRoot1E2E ────────────────────────────────────────────────────────
+# -- TestSampleRoot1E2E --------------------------------------------------------
 
 class TestSampleRoot1E2E(unittest.TestCase):
     """E2E: index sample/root1 and verify search + semantic fields."""
@@ -108,7 +108,7 @@ class TestSampleRoot1E2E(unittest.TestCase):
         if hasattr(cls, "coll"):
             _delete_collection(cls.coll)
 
-    # ── File-level ────────────────────────────────────────────────────────────
+    # -- File-level ------------------------------------------------------------
 
     def test_collection_has_ten_files(self):
         info = _collection_info(self.coll)
@@ -140,7 +140,7 @@ class TestSampleRoot1E2E(unittest.TestCase):
         self.assertIn("pipeline.py", [h["filename"] for h in hits],
                       "pipeline.py not found in index")
 
-    # ── Semantic fields: Processors.cs ───────────────────────────────────────
+    # -- Semantic fields: Processors.cs ---------------------------------------
 
     def test_processors_base_types_has_iprocessor(self):
         hits = _search(self.coll, "IProcessor", query_by="base_types")
@@ -180,7 +180,7 @@ class TestSampleRoot1E2E(unittest.TestCase):
         hits = _search(self.coll, "TextProcessor", query_by="class_names")
         self.assertIn("Processors.cs", [h["filename"] for h in hits], f"class_names: {[h["filename"] for h in hits]}")
 
-    # ── Semantic fields: DataStore.cs ─────────────────────────────────────────
+    # -- Semantic fields: DataStore.cs -----------------------------------------
 
     def test_datastore_base_types_has_idatastore(self):
         hits = _search(self.coll, "IDataStore", query_by="base_types")
@@ -197,7 +197,7 @@ class TestSampleRoot1E2E(unittest.TestCase):
         self.assertIn("DataStore.cs", [h["filename"] for h in hits],
             f"Expected IDataStore in type_refs (fields, params, local vars): {[h["filename"] for h in hits]}")
 
-    # ── Semantic fields: BlobStorage.cs ──────────────────────────────────────
+    # -- Semantic fields: BlobStorage.cs --------------------------------------
 
     def test_blobstorage_class_names_has_blobstore(self):
         hits = _search(self.coll, "BlobStore", query_by="class_names")
@@ -208,7 +208,7 @@ class TestSampleRoot1E2E(unittest.TestCase):
         self.assertIn("BlobStorage.cs", [h["filename"] for h in hits],
             f"Expected BlobStore in type_refs (field, param, cast, return types): {[h["filename"] for h in hits]}")
 
-    # ── Search-mode queries ───────────────────────────────────────────────────
+    # -- Search-mode queries ---------------------------------------------------
 
     def test_implements_search_finds_processors_for_iprocessor(self):
         hits = _search(self.coll, "IProcessor", query_by="base_types,class_names,path_tokens")
@@ -235,7 +235,7 @@ class TestSampleRoot1E2E(unittest.TestCase):
         self.assertIn("DataStore.cs", [h["filename"] for h in hits],
             "DataStore.cs not found via type_refs search for BlobStore")
 
-    # ── Root isolation ────────────────────────────────────────────────────────
+    # -- Root isolation --------------------------------------------------------
 
     def test_root1_does_not_have_widgetservice(self):
         hits = _search(self.coll, "WidgetService")
@@ -243,7 +243,7 @@ class TestSampleRoot1E2E(unittest.TestCase):
             "Widgets.cs must not appear in root1 collection")
 
 
-# ── TestSampleRoot2E2E ────────────────────────────────────────────────────────
+# -- TestSampleRoot2E2E --------------------------------------------------------
 
 class TestSampleRoot2E2E(unittest.TestCase):
     """E2E: index sample/root2 and verify search + semantic fields."""
@@ -264,7 +264,7 @@ class TestSampleRoot2E2E(unittest.TestCase):
         if hasattr(cls, "coll"):
             _delete_collection(cls.coll)
 
-    # ── File-level ────────────────────────────────────────────────────────────
+    # -- File-level ------------------------------------------------------------
 
     def test_collection_has_five_files(self):
         info = _collection_info(self.coll)
@@ -296,7 +296,7 @@ class TestSampleRoot2E2E(unittest.TestCase):
         self.assertIn("notifier.py", [h["filename"] for h in hits],
                       "notifier.py not found in index")
 
-    # ── Semantic fields: Widgets.cs ───────────────────────────────────────────
+    # -- Semantic fields: Widgets.cs -------------------------------------------
 
     def test_widgets_base_types_has_iwidgetservice(self):
         hits = _search(self.coll, "IWidgetService", query_by="base_types")
@@ -312,7 +312,7 @@ class TestSampleRoot2E2E(unittest.TestCase):
         hits = _search(self.coll, "WidgetClient", query_by="class_names")
         self.assertIn("Widgets.cs", [h["filename"] for h in hits], f"class_names: {[h["filename"] for h in hits]}")
 
-    # ── Semantic fields: Repositories.cs ──────────────────────────────────────
+    # -- Semantic fields: Repositories.cs --------------------------------------
 
     def test_repositories_attr_names_has_cacheable(self):
         hits = _search(self.coll, "Cacheable", query_by="attr_names")
@@ -341,7 +341,7 @@ class TestSampleRoot2E2E(unittest.TestCase):
             f"Expected Repositories.cs in param_types[BlobStore]: "
             f"{[h['filename'] for h in hits]}")
 
-    # ── Semantic fields: SynthTypes.cs ────────────────────────────────────────
+    # -- Semantic fields: SynthTypes.cs ----------------------------------------
 
     def test_synthtypes_class_names_has_findme(self):
         hits = _search(self.coll, "FindMe", query_by="class_names")
@@ -357,7 +357,7 @@ class TestSampleRoot2E2E(unittest.TestCase):
         self.assertIn("SynthTypes.cs", [h["filename"] for h in hits],
             f"Expected SynthTypes.cs in imports[System]: {[h['filename'] for h in hits]}")
 
-    # ── Search-mode queries ───────────────────────────────────────────────────
+    # -- Search-mode queries ---------------------------------------------------
 
     def test_implements_search_finds_widgets_for_iwidgetservice(self):
         hits = _search(self.coll, "IWidgetService", query_by="base_types,class_names,path_tokens")
@@ -380,7 +380,7 @@ class TestSampleRoot2E2E(unittest.TestCase):
         self.assertIn("Repositories.cs", [h["filename"] for h in hits],
             "Repositories.cs not found via symbols search for InventoryManager")
 
-    # ── Root isolation ────────────────────────────────────────────────────────
+    # -- Root isolation --------------------------------------------------------
 
     def test_root2_does_not_have_processors_cs(self):
         hits = _search(self.coll, "BaseProcessor")
@@ -388,7 +388,7 @@ class TestSampleRoot2E2E(unittest.TestCase):
             "Processors.cs must not appear in root2 collection")
 
 
-# ── TestSampleNewLanguagesE2E ─────────────────────────────────────────────────
+# -- TestSampleNewLanguagesE2E -------------------------------------------------
 
 class TestSampleNewLanguagesE2E(unittest.TestCase):
     """E2E: verify Rust, JS, TS, C++ fixtures in root1 are indexed with correct fields."""
@@ -409,7 +409,7 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
         if hasattr(cls, "coll"):
             _delete_collection(cls.coll)
 
-    # ── Rust ──────────────────────────────────────────────────────────────────
+    # -- Rust ------------------------------------------------------------------
 
     def test_rust_fixture_indexed(self):
         self.assertIsNotNone(_get_doc(self.coll, "query_fixture.rs", self.src_root),
@@ -443,7 +443,7 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
         hits = _search(self.coll, "Processor", query_by="base_types,class_names,path_tokens")
         self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
 
-    # ── JavaScript ────────────────────────────────────────────────────────────
+    # -- JavaScript ------------------------------------------------------------
 
     def test_js_fixture_indexed(self):
         self.assertIsNotNone(_get_doc(self.coll, "query_fixture.js", self.src_root),
@@ -473,7 +473,7 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
         hits = _search(self.coll, "createProcessor", query_by="call_sites,method_names,path_tokens")
         self.assertIn("query_fixture.js", [h["filename"] for h in hits])
 
-    # ── TypeScript ────────────────────────────────────────────────────────────
+    # -- TypeScript ------------------------------------------------------------
 
     def test_ts_fixture_indexed(self):
         self.assertIsNotNone(_get_doc(self.coll, "query_fixture.ts", self.src_root),
@@ -507,7 +507,7 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
         hits = _search(self.coll, "serializable", query_by="attr_names,path_tokens")
         self.assertIn("query_fixture.ts", [h["filename"] for h in hits])
 
-    # ── C++ ───────────────────────────────────────────────────────────────────
+    # -- C++ -------------------------------------------------------------------
 
     def test_cpp_fixture_indexed(self):
         self.assertIsNotNone(_get_doc(self.coll, "query_fixture.cpp", self.src_root),
@@ -542,7 +542,7 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
         self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
 
 
-# ── TestSampleMultiRootE2E ────────────────────────────────────────────────────
+# -- TestSampleMultiRootE2E ----------------------------------------------------
 
 class TestSampleMultiRootE2E(unittest.TestCase):
     """E2E: verify root1 and root2 are independent, correctly-isolated collections."""

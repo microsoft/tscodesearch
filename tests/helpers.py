@@ -54,7 +54,7 @@ def _collection_info(collection: str) -> dict | None:
 def _delete_collection(collection: str, timeout: float = 10.0) -> None:
     """Wipe a Tantivy collection's on-disk directory.
 
-    Tests intentionally block here until the directory is verifiably gone — a
+    Tests intentionally block here until the directory is verifiably gone -- a
     later test that reuses the same path needs to start clean. On Windows,
     even after ``Backend.close()`` clears the index and ``gc.collect()`` runs,
     the OS may briefly hold a mmap'd file. ``drop()`` already retries; this
@@ -63,7 +63,7 @@ def _delete_collection(collection: str, timeout: float = 10.0) -> None:
 
     On Windows we additionally wait until the parent ``.tantivy/`` directory
     is verifiably writable. The next test's setUpClass opens a fresh
-    ``IndexWriter`` and immediately commits — under Defender/AV scanning or
+    ``IndexWriter`` and immediately commits -- under Defender/AV scanning or
     lingering mmap finalisation, even a freshly-created sibling directory
     can transiently refuse a write. Blocking here until a write-then-delete
     canary in the parent directory succeeds gives the OS time to settle and
