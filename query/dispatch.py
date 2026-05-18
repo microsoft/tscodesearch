@@ -71,7 +71,8 @@ ALL_EXTS = set(_EXT_TO_QUERY_BYTES.keys())
 
 def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
                include_body=False, symbol_kind=None, uses_kind=None,
-               visibility=None, **kwargs):
+               visibility=None, head_lines=None,
+               enclosing_method=None, enclosing_class=None, **kwargs):
     """Query src_bytes using the given mode.
 
     Returns ``list[{"line": N, "text": "..."}]`` on success.
@@ -84,6 +85,16 @@ def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
     ``visibility`` is an optional comma-separated filter for declaration
     modes (``classes``/``methods``/``fields``/``declarations``). Languages
     that don't capture visibility silently ignore it.
+
+    ``head_lines`` truncates each ``body`` / ``declarations include_body=True``
+    match to the first N source lines (signature + body together) with a
+    ``... +K more lines`` tail marker. Other modes ignore it.
+
+    ``enclosing_method`` / ``enclosing_class`` narrow pattern-mode hits to
+    those that occur inside a member / type with the given name. Useful
+    for call-site context queries like ``calls("Save",
+    enclosing_method="WriteBack")``. Languages that don't capture
+    enclosing-scope structure silently ignore these.
     """
     fn = _EXT_TO_QUERY_BYTES.get(ext)
     if fn is None:
@@ -93,7 +104,10 @@ def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
         )
     return fn(src_bytes, mode, mode_arg,
               include_body=include_body, symbol_kind=symbol_kind,
-              uses_kind=uses_kind, visibility=visibility, **kwargs)
+              uses_kind=uses_kind, visibility=visibility,
+              head_lines=head_lines,
+              enclosing_method=enclosing_method,
+              enclosing_class=enclosing_class, **kwargs)
 
 
 def describe_file(src_bytes: bytes, ext: str) -> FileDescription:

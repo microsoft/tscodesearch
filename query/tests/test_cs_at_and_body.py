@@ -214,5 +214,67 @@ class TestQBody(unittest.TestCase):
         self.assertIn("[method]", text)
 
 
+# ── q_body / q_declarations head_lines truncation ────────────────────────────
+
+
+_LONG_BODY_SRC = """\
+namespace Acme {
+    public class C {
+        public void LongMethod()
+        {
+            // line 1 of body
+            int a = 1;
+            int b = 2;
+            int c = 3;
+            int d = 4;
+            int e = 5;
+            int f = 6;
+            int g = 7;
+        }
+    }
+}
+"""
+
+
+class TestQBodyHeadLines(unittest.TestCase):
+    """``q_body`` with ``head_lines=N`` returns only the first N source
+    lines of each match (signature + body together), with a
+    ``... +K more lines`` tail marker so the caller knows there's more."""
+
+    def setUp(self):
+        b = _LONG_BODY_SRC.encode()
+        tree = _PARSER.parse(b)
+        self.fx = (b, tree, _LONG_BODY_SRC.splitlines())
+
+    def test_no_truncation_by_default(self):
+        results = q_body(*self.fx, "LongMethod")
+        assert len(results) == 1
+        text = results[0][-1]
+        # All 13 source lines (sig + 12 body lines incl. braces) present.
+        assert "int g = 7;" in text
+        assert "+more lines" not in text
+
+    def test_head_lines_truncates(self):
+        results = q_body(*self.fx, "LongMethod", head_lines=4)
+        assert len(results) == 1
+        text = results[0][-1]
+        # First few lines of the method (signature + body opening) kept;
+        # later lines dropped; tail marker appended.
+        assert "int g = 7;" not in text
+        assert "more lines" in text
+
+    def test_head_lines_zero_means_no_truncation(self):
+        results = q_body(*self.fx, "LongMethod", head_lines=0)
+        text = results[0][-1]
+        assert "int g = 7;" in text
+        assert "more lines" not in text
+
+    def test_head_lines_larger_than_body_is_noop(self):
+        results = q_body(*self.fx, "LongMethod", head_lines=1000)
+        text = results[0][-1]
+        assert "int g = 7;" in text
+        assert "more lines" not in text
+
+
 if __name__ == "__main__":
     unittest.main()

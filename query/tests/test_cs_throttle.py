@@ -59,6 +59,22 @@ def _texts(results):
     return " ".join(t for t in (row[-1] for row in results))
 
 
+def _stripped_texts(results):
+    """Like ``_texts`` but drops the ``[in TypeName.MemberName] `` enclosing-
+    scope prefix that pattern modes prepend to each hit. Use for assertions
+    that care about the source-snippet content only, e.g. checking that a
+    different member name isn't accidentally matched -- the prefix itself
+    legitimately contains the enclosing method name and would spoil a naive
+    substring check."""
+    out = []
+    for row in results:
+        t = row[-1]
+        if t.startswith("[in ") and "] " in t:
+            t = t.split("] ", 1)[1]
+        out.append(t)
+    return " ".join(out)
+
+
 # ===========================================================================
 # declarations
 # ===========================================================================
@@ -214,9 +230,15 @@ class TestAccessesOf(unittest.TestCase):
         assert r, "_policy.RecordAttempt must be found"
 
     def test_different_member_not_returned(self):
+        # Sanity check: an ``accesses_of("TotalMilliseconds")`` search must
+        # not match call sites of an unrelated member like ``RecordAttempt``.
+        # Strip the ``[in TypeName.MemberName] `` scope prefix before the
+        # substring check -- the prefix legitimately contains the enclosing
+        # method's name (which can be ``RecordAttempt``) without that being
+        # a mismatch on the accessed member.
         r = self._of("TotalMilliseconds")
-        texts = _texts(r)
-        assert "RecordAttempt" not in texts
+        snippets = _stripped_texts(r)
+        assert "RecordAttempt" not in snippets
 
     def test_nonexistent_member_returns_empty(self):
         assert self._of("NoSuchMember") == []

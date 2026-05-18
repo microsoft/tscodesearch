@@ -44,7 +44,15 @@ def _lns(results):
     return {ln for ln, _ in results}
 
 def _members(results):
-    return {txt.split("  <-")[0].lstrip(".") for _, txt in results}
+    # Result text is ``[in Class.Method] .MemberName  <- source`` (or just
+    # ``.MemberName  <- source`` when the access is outside any member).
+    # The member is the token between the last dot and the ``  <-`` marker.
+    out = set()
+    for _, txt in results:
+        before = txt.split("  <-", 1)[0]
+        if "." in before:
+            out.add(before.rsplit(".", 1)[1].strip())
+    return out
 
 def _line_no(fragment):
     for i, ln in enumerate(_LINES):
@@ -76,7 +84,7 @@ class TestObjectInitializerAccesses(unittest.TestCase):
         r = self._accesses("Widget")
         line = _line_no("Value = 1, Name")
         line_results = [(ln, txt) for ln, txt in r if ln == line]
-        member_names = {txt.split("  <-")[0].lstrip(".") for _, txt in line_results}
+        member_names = _members(line_results)
         assert "Value" in member_names, f"'Value' missing from same-line initializer: {r}"
         assert "Name" in member_names, f"'Name' missing from same-line initializer: {r}"
 

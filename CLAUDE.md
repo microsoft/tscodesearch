@@ -240,9 +240,11 @@ Every other text field -- `class_names`, `method_names`, `base_types`, `field_ty
 | `imports` | -- | `using` / `import` / `include` directives | all except SQL |
 | `params` | METHOD | Parameter list for METHOD | C#, Python, JS, Rust, C++ |
 | `declarations` | NAME | The declaration(s) of NAME (narrow with `symbol_kind`) | all |
-| `body` | NAME | Full source of NAME's declaration | C# only |
+| `body` | NAME | Full source of NAME's declaration(s). Works in both `query_codebase` (returns bodies across every matching file) and `query_single_file` (one file only). Narrow with `symbol_kind`. | C# only |
 | `at` | LINE:COL | Deepest AST node at position + enclosing scope chain | C# only |
 | `calls` | METHOD | Call sites of METHOD. Qualify with `Type.Method` to restrict by receiver -- the qualifier matches both the literal receiver text (`Foo.Save()`) **and** any receiver whose declared/inferred type resolves to that name via the method-scoped var-type map (`store.Save()` where `store: IRepository` matches `IRepository.Save`). When the receiver's type is conflicted in its scope, the qualified match is skipped -- the bare name still finds the call. Pass a METHOD name only -- a variable/receiver name silently returns empty; use `all_refs` on the variable for that. | all |
+| `caller_of` | METHOD | Like `calls`, but groups call sites by the **enclosing caller** -- one row per `(TypeName.MemberName)` caller with a count of how many sites it contains. Collapses noisy `calls METHOD` output into a unique-caller view. Useful for "who depends on this". | C# only |
+| `callee_of` | METHOD | The inverse -- walk the body of the method named METHOD and emit one row per distinct callee with an invocation count. Constructor calls (`new T()`) are reported as `T (N invocations, ctor)`. Useful for "what does this method depend on" / "what could be slow here". | C# only |
 | `implements` | TYPE | Types that inherit/implement TYPE | all except SQL |
 | `uses` | TYPE | Type references; narrow with `uses_kind` (`field`/`param`/`return`/`cast`/`base`/`locals`) | C# only |
 | `casts` | TYPE | `(TYPE)expr` / `as TYPE` sites | C# only |
@@ -250,7 +252,9 @@ Every other text field -- `class_names`, `method_names`, `base_types`, `field_ty
 | `accesses_of` | MEMBER | Access sites of property/field by name (`"Order.Status"` restricts) | C# only |
 | `accesses_on` | TYPE | `.Member` accesses on locals/params/fields typed as TYPE (plus `new T { ... }` and `with` mutations). Returns nothing when the variable is only assigned, returned, or forwarded as an argument -- no `.Member` exists. Fall back to `all_refs` on the variable name. | C# only |
 | `all_refs` | NAME | Every identifier occurrence (broadest -- AST-only, skips strings/comments). For SQL this is a plain substring scan over lines. | all |
-| `var_type` | NAME | For each occurrence of NAME, report the resolved type from the method-scoped var-type map, or `(unresolved)` / `(conflicting)` when the resolver can't pin it down. Saves an `at LINE:COL` round-trip when you just want the type. | C# only |
+| `var_type` | NAME | For each occurrence of NAME, report the resolved type from the method-scoped var-type map, or `(unresolved)` / `(conflicting)` when the resolver can't pin it down. Works in both `query_codebase` (every file that mentions NAME) and `query_single_file`. Saves an `at LINE:COL` round-trip when you just want the type. | C# only |
+
+**Enclosing-scope filter (pattern modes).** `calls`, `uses`, `casts`, `accesses_of`, `accesses_on`, `all_refs` accept `enclosing_method="WriteBack"` and/or `enclosing_class="OrderProcessor"`. The two compose as a logical AND. Useful for pinpointing call sites in a specific member, e.g. `calls("Save", enclosing_method="WriteBack")` returns only the `Save()` calls that happen inside `WriteBack` methods. (C# only.)
 
 **Visibility filter (declaration modes).** `declarations`, `classes`, `methods`, `fields` accept `visibility="public,internal,protected,private"` (comma-separated, any subset). The filter is applied AST-side per declaration using the same defaults the indexer uses: top-level types default to `internal`, nested types to `private`, interface members to `public`, enum members to `public`, class/struct/record members to `private`. Compound modifiers collapse to their dominant role (`protected internal` -> `protected`, `private protected` -> `private`). Languages other than C# currently don't capture visibility -- passing the filter against them returns nothing rather than over-matching.
 

@@ -106,7 +106,19 @@ def _get_query_module():
 
 def _run_query(mode: str, pattern: str, files: list[Path],
                include_body: bool = False, symbol_kind: str = "",
-               uses_kind: str = "", visibility: str = "") -> list:
+               uses_kind: str = "", visibility: str = "",
+               head_lines: int | None = None,
+               enclosing_method: str = "",
+               enclosing_class: str = "") -> list:
+    """Per-file AST pass for the index-pre-filtered candidate set.
+
+    Files whose language doesn't support ``mode`` are silently skipped
+    rather than crashing the whole query -- a codebase-wide query like
+    ``body SaveChanges`` can match files in many languages, and only the
+    ones whose extractor knows ``body`` should contribute results. The
+    ValueError that ``query_file`` raises for unsupported modes is
+    treated as a no-op for that file.
+    """
     _q = _get_query_module()
     results = []
     for path in files:
@@ -117,11 +129,18 @@ def _run_query(mode: str, pattern: str, files: list[Path],
         except OSError as e:
             print(f"ERROR reading {native}: {e}", file=sys.stderr)
             continue
-        matches = _q.query_file(src_bytes, ext, mode, pattern,
-                                include_body=include_body,
-                                symbol_kind=symbol_kind,
-                                uses_kind=uses_kind,
-                                visibility=visibility)
+        try:
+            matches = _q.query_file(src_bytes, ext, mode, pattern,
+                                    include_body=include_body,
+                                    symbol_kind=symbol_kind,
+                                    uses_kind=uses_kind,
+                                    visibility=visibility,
+                                    head_lines=head_lines,
+                                    enclosing_method=enclosing_method or None,
+                                    enclosing_class=enclosing_class or None)
+        except ValueError:
+            # Mode unsupported for this file's language - skip silently.
+            continue
         if matches:
             results.append({"file": str(native), "matches": matches})
     return results
@@ -131,7 +150,16 @@ def _run_query(mode: str, pattern: str, files: list[Path],
 
 _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
     "declarations": ("symbols",     "declarations"),
+    "body":         ("symbols",     "body"),
     "calls":        ("calls",       "calls"),
+    # ``caller_of`` shares the index pre-filter with ``calls`` -- same set
+    # of candidate files contain the method invocations -- but the AST
+    # post-pass groups results by the enclosing method.
+    "caller_of":    ("calls",       "caller_of"),
+    # ``callee_of`` is "what does THIS method call". Pre-filter on the
+    # method's declaration field (``method_names``) -- the file we want is
+    # the one that *declares* the method, not the ones that call it.
+    "callee_of":    ("symbols",     "callee_of"),
     "implements":   ("implements",  "implements"),
     "uses":         ("uses",        "uses"),
     "casts":        ("casts",       "casts"),
@@ -139,6 +167,7 @@ _EXT_TO_TS_AND_AST: dict[str, tuple[str, str]] = {
     "accesses_of":  ("accesses_of", "accesses_of"),
     "accesses_on":  ("uses",        "accesses_on"),
     "all_refs":     ("all_refs",    "all_refs"),
+    "var_type":     ("all_refs",    "var_type"),
 }
 
 
@@ -486,7 +515,15 @@ class _Handler(BaseHTTPRequestHandler):
             symbol_kind  = str(body.get("symbol_kind", "") or "")
             uses_kind    = str(body.get("uses_kind", "") or "")
             visibility   = str(body.get("visibility", "") or "")
+            enclosing_method = str(body.get("enclosing_method", "") or "")
+            enclosing_class  = str(body.get("enclosing_class", "") or "")
             exclude_path = str(body.get("exclude_path", "") or "")
+            try:
+                head_lines_raw = body.get("head_lines", None)
+                head_lines = (int(head_lines_raw)
+                              if head_lines_raw not in (None, "") else None)
+            except (TypeError, ValueError):
+                head_lines = None
 
             if mode not in _EXT_TO_TS_AND_AST:
                 self._send_json(400, {"error": f"unknown mode: {mode!r}"})
@@ -559,7 +596,10 @@ class _Handler(BaseHTTPRequestHandler):
             ast_results = _run_query(ast_mode, pattern, file_list,
                                      include_body=include_body,
                                      symbol_kind=symbol_kind, uses_kind=uses_kind,
-                                     visibility=visibility)
+                                     visibility=visibility,
+                                     head_lines=head_lines,
+                                     enclosing_method=enclosing_method,
+                                     enclosing_class=enclosing_class)
 
             response_hits = []
             for ast_item in ast_results:
