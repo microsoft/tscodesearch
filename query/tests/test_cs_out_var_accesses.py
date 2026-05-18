@@ -4,20 +4,20 @@ Tests for q_accesses_on with inline out variable declarations.
 Replicates behavior discovered in Round 6 of guided testing:
 
   accesses_on TYPE
-    → was NOT tracking variables declared inline with `out`:
+    -> was NOT tracking variables declared inline with `out`:
 
         if (dict.TryGetValue(key, out Token tok))
             tok.Value ...
 
       The `out Token tok` argument produces a `declaration_expression` AST node:
-        field "type" — the declared type (identifier)
-        field "name" — the variable name
+        field "type" -- the declared type (identifier)
+        field "name" -- the variable name
 
       This is the same field layout as `declaration_pattern` (Round 5), so the
       fix extended the existing declaration_pattern loop to also cover
       declaration_expression.
 
-      `out var entry` (var-inferred) is NOT tracked — the type is `implicit_type`
+      `out var entry` (var-inferred) is NOT tracked -- the type is `implicit_type`
       and cannot be resolved without type inference.
 
 Run:
@@ -56,7 +56,7 @@ def _line_no(fragment):
 
 class TestInlineOutVar(unittest.TestCase):
     """
-    `if (TryParse(input, out Token tok))` — tok was silently omitted from
+    `if (TryParse(input, out Token tok))` -- tok was silently omitted from
     the tracked variable set because declaration_expression nodes were not walked.
     """
 
@@ -64,7 +64,7 @@ class TestInlineOutVar(unittest.TestCase):
         return q_accesses_on(*_PARSED, type_name=type_name)
 
     def test_out_typed_variable_tracked(self):
-        """out Token tok — tok.Value must appear in results."""
+        """out Token tok -- tok.Value must appear in results."""
         r = self._on("Token")
         assert r, "Expected Token member accesses"
         assert "Value" in _texts(r), f"tok.Value missing: {r}"
@@ -75,7 +75,7 @@ class TestInlineOutVar(unittest.TestCase):
 
     def test_out_var_inferred_not_tracked_spuriously(self):
         """
-        out var entry — entry is var-inferred; its type cannot be determined
+        out var entry -- entry is var-inferred; its type cannot be determined
         without inference, so no accesses on it should appear.
         """
         r = self._on("Token")

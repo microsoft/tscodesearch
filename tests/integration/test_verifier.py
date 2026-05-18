@@ -1,7 +1,7 @@
 """
 Integration tests for the verifier against a live Tantivy index.
 
-TestVerifier — opens a real Tantivy index inline; no daemon required.
+TestVerifier -- opens a real Tantivy index inline; no daemon required.
 """
 from __future__ import annotations
 import os, sys, shutil, time, unittest
@@ -47,7 +47,7 @@ class TestVerifier(unittest.TestCase):
                        query_by="path_tokens,class_names,method_names,tokens")
         return next((h for h in hits if h["filename"] == filename), None)
 
-    # ── no-op: index is already up to date ────────────────────────────────────
+    # -- no-op: index is already up to date ------------------------------------
 
     def test_no_changes_updates_nothing(self):
         """Verifying a fresh index should touch zero files."""
@@ -58,7 +58,7 @@ class TestVerifier(unittest.TestCase):
         foo = self._get("foo.cs")
         self.assertIsNotNone(foo)
 
-    # ── missing file added ─────────────────────────────────────────────────────
+    # -- missing file added -----------------------------------------------------
 
     def test_missing_file_added_after_verify(self):
         """A new file added to disk but not indexed should appear after verify."""
@@ -77,7 +77,7 @@ class TestVerifier(unittest.TestCase):
             run_verify(_cfg, src_root=self.tmpdir, collection=self.coll, delete_orphans=True)
             time.sleep(0.3)
 
-    # ── stale file reindexed ───────────────────────────────────────────────────
+    # -- stale file reindexed ---------------------------------------------------
 
     def test_stale_file_reindexed_after_verify(self):
         """A file modified on disk (newer mtime) should be re-indexed by verify."""
@@ -99,7 +99,7 @@ class TestVerifier(unittest.TestCase):
         with open(foo_path, "w", encoding="utf-8") as f:
             f.write(_FOO_CS)
 
-    # ── orphan deletion ────────────────────────────────────────────────────────
+    # -- orphan deletion --------------------------------------------------------
 
     def test_delete_orphans_removes_deleted_file(self):
         """A file deleted from disk should be removed from the index by verify."""
@@ -147,7 +147,7 @@ class TestVerifier(unittest.TestCase):
         run_verify(_cfg, src_root=self.tmpdir, collection=self.coll, delete_orphans=True)
         time.sleep(0.3)
 
-    # ── on_progress callback ───────────────────────────────────────────────────
+    # -- on_progress callback ---------------------------------------------------
 
     def test_on_progress_callback_on_verify(self):
         """run_verify should call on_progress with status=complete when done."""

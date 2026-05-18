@@ -9,7 +9,7 @@ Gaps tested:
   - Comments are excluded (both // and /* */).
   - String literals are excluded.
   - Each source line is returned at most once.
-  - The mode is broader than uses/calls/casts — it finds all syntactic contexts.
+  - The mode is broader than uses/calls/casts -- it finds all syntactic contexts.
   - Declaration names are included (unlike q_uses which skips them).
 """
 from __future__ import annotations
@@ -24,9 +24,9 @@ from tests.fixtures import (
 from ..cs import q_all_refs, q_uses
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # q_ident AST function
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 class TestQIdent(unittest.TestCase):
 
@@ -80,7 +80,7 @@ namespace Synth {
 """
         r = self._ident(src, "BlobStore")
         lines = [ln for ln, _ in r]
-        # All three BlobStore on the same line → reported once
+        # All three BlobStore on the same line -> reported once
         assert len(lines) == 1
 
     def test_ident_broader_than_uses(self):
@@ -104,7 +104,7 @@ namespace Synth {
         assert r == []
 
     def test_partial_match_not_returned(self):
-        """'Blob' must not match 'BlobStore' — exact identifier match required."""
+        """'Blob' must not match 'BlobStore' -- exact identifier match required."""
         r = self._ident(IDENT_BLOBSTORE_MANY_CONTEXTS, "Blob")
         assert r == [], "Partial name match must not be returned"
 

@@ -3,7 +3,7 @@ Tests for uses_kind=locals with C# pattern-matching variable bindings.
 
 Replicates bug discovered in Round 12 of guided testing:
 
-  Round 12 — uses_kind=locals missed declaration_pattern variables:
+  Round 12 -- uses_kind=locals missed declaration_pattern variables:
 
         if (s is Circle c)        // is-pattern binding
         case Circle ci:           // switch-case pattern binding
@@ -11,7 +11,7 @@ Replicates bug discovered in Round 12 of guided testing:
 
       All three produce `declaration_pattern` nodes (fields: `type`, `name`)
       that appear inside `is_pattern_expression` or `case_pattern_switch_label`
-      — not inside any `local_declaration_statement`.
+      -- not inside any `local_declaration_statement`.
       Fix: added a loop over all `declaration_pattern` nodes in `_q_local_type`,
       mirroring the same node type already handled in `_add_typed_vars` for
       `accesses_on` (Round 5/6).
@@ -57,7 +57,7 @@ class TestPatternMatchLocals(unittest.TestCase):
         return q_uses(*_PARSED, type_name=type_name, uses_kind="locals")
 
     def test_is_pattern_variable_found(self):
-        """if (s is Circle c) — 'c' must appear in locals results."""
+        """if (s is Circle c) -- 'c' must appear in locals results."""
         r = self._locals("Circle")
         assert "c" in _texts(r), f"'c' from is-pattern missing: {r}"
 
@@ -66,7 +66,7 @@ class TestPatternMatchLocals(unittest.TestCase):
         assert _line_no("if (s is Circle c)") in _lns(r)
 
     def test_switch_case_pattern_variable_found(self):
-        """case Circle ci: — 'ci' must appear in locals results."""
+        """case Circle ci: -- 'ci' must appear in locals results."""
         r = self._locals("Circle")
         assert "ci" in _texts(r), f"'ci' from switch-case pattern missing: {r}"
 
@@ -75,7 +75,7 @@ class TestPatternMatchLocals(unittest.TestCase):
         assert _line_no("case Circle ci:") in _lns(r)
 
     def test_combined_condition_variable_found(self):
-        """if (obj is Circle combo && ...) — 'combo' must appear in locals results."""
+        """if (obj is Circle combo && ...) -- 'combo' must appear in locals results."""
         r = self._locals("Circle")
         assert "combo" in _texts(r), f"'combo' from combined condition missing: {r}"
 

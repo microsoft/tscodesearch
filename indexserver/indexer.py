@@ -38,7 +38,7 @@ class SourceFile:
 
 
 # ---------------------------------------------------------------------------
-# Metadata extraction — derives all flat fields from FileDescription structure
+# Metadata extraction -- derives all flat fields from FileDescription structure
 # ---------------------------------------------------------------------------
 
 def _expand_type(t: str) -> list:
@@ -58,7 +58,7 @@ def _expand_type(t: str) -> list:
 def _split_namespace(ns) -> list[str]:
     """Return the searchable components of a namespace value.
 
-    Accepts a plain string (``"Acme.Billing.Service"``) — split on ``.`` —
+    Accepts a plain string (``"Acme.Billing.Service"``) -- split on ``.`` --
     or a pre-split list/tuple from a language whose namespaces use a
     different separator.
     """
@@ -89,7 +89,7 @@ def _split_filename(basename: str) -> list[str]:
 def path_tokens_from_path(relative_path: str) -> list[str]:
     """Per-directory + filename tokens that make subpath search work.
 
-    ``services/billing/Foo.cs`` →
+    ``services/billing/Foo.cs`` ->
         ["services", "billing", "Foo.cs", "Foo", "cs"]
 
     Each directory name is its own raw token, so a query for ``billing``
@@ -130,7 +130,7 @@ def flat_from_fd(fd) -> dict:
             base_types.append(unqual[:idx].strip() if idx >= 0 else unqual)
 
     method_names = [m.name for m in fd.methods]
-    # ``member_sigs`` is no longer stored in the index — the per-identifier
+    # ``member_sigs`` is no longer stored in the index -- the per-identifier
     # fields plus ``member_sig_tokens`` cover the search story, and AST
     # post-processing provides line-level output. The aggregated list still
     # lives in this Python dict so test/diagnostic callers can inspect what
@@ -166,6 +166,24 @@ def flat_from_fd(fd) -> dict:
     local_types     = [t for lv in fd.local_var_infos  for t in _expand_type(lv.var_type)]
     member_accesses = [ma.member for ma in fd.member_access_infos]
 
+    # qualified_calls: ``Type.Method`` tokens that survive method-scope
+    # conflict suppression. Two contributors per call site:
+    #   * Static-style receiver -- ``Foo.Bar()`` where ``Foo`` is a PascalCase
+    #     identifier; emit ``Foo.Bar`` (the receiver might be a class name
+    #     or a misnamed PascalCase local, either way the literal form is
+    #     what the agent typed).
+    #   * Resolved-type receiver -- the language extractor pinned the
+    #     receiver's declared/inferred type via the var-type map; emit
+    #     ``ResolvedType.Method`` for precise type-aware lookup.
+    # Both forms go in the same field so the agent can search whichever
+    # qualifier they know; AST post-filter narrows to actual hits.
+    qualified_calls: list = []
+    for cs in fd.call_site_infos:
+        if cs.receiver and cs.receiver[:1].isupper() and cs.name:
+            qualified_calls.append(f"{cs.receiver}.{cs.name}")
+        if cs.resolved_type and cs.name:
+            qualified_calls.append(f"{cs.resolved_type}.{cs.name}")
+
     type_refs = list(field_types) + list(param_types) + list(return_types) + list(base_types) + list(local_types)
     for cs in fd.call_site_infos:
         if cs.receiver and cs.receiver[0].isupper():
@@ -175,7 +193,7 @@ def flat_from_fd(fd) -> dict:
     imports    = [i.module for i in fd.imports if i.module]
     attr_names = [a.attr_name for a in fd.attrs if a.attr_name]
 
-    # member_sig_tokens — every identifier inside any member's signature
+    # member_sig_tokens -- every identifier inside any member's signature
     # (attribute names, parameter names, default-value identifiers, generic
     # args, etc.), deduped file-wide. Each language's extractor produces a
     # ``sig_tokens`` list per MethodInfo / FieldInfo by walking the member
@@ -187,16 +205,30 @@ def flat_from_fd(fd) -> dict:
     for f in fd.fields:
         sig_tokens.extend(f.sig_tokens)
 
+    # Canonical access modifiers, indexed in two parallel multi-value
+    # fields so a query for "files containing at least one public member"
+    # doesn't accidentally fire on files whose only ``public`` thing is a
+    # top-level type. Empty strings (language doesn't track visibility) are
+    # dropped -- searching ``public`` should never match those files.
+    type_visibilities = [
+        c.visibility for c in fd.classes if getattr(c, "visibility", "")
+    ]
+    member_visibilities = (
+        [m.visibility for m in fd.methods if getattr(m, "visibility", "")]
+        + [f.visibility for f in fd.fields if getattr(f, "visibility", "")]
+    )
+
     return {
-        # ``namespace`` is multi-value raw — store each dot-separated
+        # ``namespace`` is multi-value raw -- store each dot-separated
         # component as its own searchable token.
         "namespace":         _dedupe(_split_namespace(fd.namespace)),
         "class_names":       _dedupe(class_names),
         "method_names":      _dedupe(method_names),
         "base_types":        _dedupe(base_types),
         "call_sites":        _dedupe(call_sites),
+        "qualified_calls":   _dedupe(qualified_calls),
         "cast_types":        _dedupe(cast_types),
-        "member_sigs":       _dedupe(member_sigs),   # diagnostic only — not indexed
+        "member_sigs":       _dedupe(member_sigs),   # diagnostic only -- not indexed
         "member_sig_tokens": _dedupe(sig_tokens),
         "type_refs":         _dedupe(type_refs),
         "attr_names":        _dedupe(attr_names),
@@ -206,6 +238,8 @@ def flat_from_fd(fd) -> dict:
         "field_types":       _dedupe(field_types),
         "local_types":       _dedupe(local_types),
         "member_accesses":   _dedupe(member_accesses),
+        "type_visibilities":   _dedupe(type_visibilities),
+        "member_visibilities": _dedupe(member_visibilities),
         "tokens":            _dedupe(fd.all_refs),
     }
 
@@ -282,7 +316,7 @@ def should_skip_dir(dirname: str, exclude_dirs) -> bool:
 
 def build_document(full_path: str, relative_path: str) -> dict | None:
     """Return the flat document dict for one source file, or ``None`` if the
-    file can't be read (deleted between walk and read, permission denied, …).
+    file can't be read (deleted between walk and read, permission denied, ...).
     Callers must check for None."""
     try:
         stat = os.stat(full_path)
@@ -305,7 +339,7 @@ def build_document(full_path: str, relative_path: str) -> dict | None:
         "language":         _file_language(ext),
         "path_segments":    path_segments_from_path(relative_path_norm),
         "mtime":            int(stat.st_mtime),
-        # Search-only fields (indexed but stored=False — not retrievable).
+        # Search-only fields (indexed but stored=False -- not retrievable).
         # The AST stage provides the actual line-level matches; the index
         # only needs these to decide which files are candidates.
         "path_tokens":      path_tokens_from_path(relative_path_norm),
@@ -322,7 +356,10 @@ def build_document(full_path: str, relative_path: str) -> dict | None:
         "cast_types":       meta["cast_types"],
         "type_refs":        meta["type_refs"],
         "call_sites":       meta["call_sites"],
+        "qualified_calls":  meta["qualified_calls"],
         "member_accesses":  meta["member_accesses"],
+        "type_visibilities":   meta["type_visibilities"],
+        "member_visibilities": meta["member_visibilities"],
         "attr_names":       meta["attr_names"],
         "imports":          meta["imports"],
     }
@@ -346,7 +383,7 @@ def ensure_backend(cfg, collection: str, resethard: bool = False, write: bool = 
         index_dir = root.index_dir
 
     if resethard:
-        print(f"Wiping existing index '{collection}' at {index_dir}…", flush=True)
+        print(f"Wiping existing index '{collection}' at {index_dir}...", flush=True)
         drop_index(index_dir)
 
     print(f"Opening index '{collection}' at {index_dir}", flush=True)

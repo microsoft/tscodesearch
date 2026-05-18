@@ -11,11 +11,11 @@ The exposed ``search()`` returns:
 
 Inputs map onto Tantivy primitives like so:
 
-  * query_by="filename,class_names,..."   → multi-field disjunction
+  * query_by="filename,class_names,..."   -> multi-field disjunction
     with per-field weights (parsed from a parallel `weights` arg)
-  * num_typos=1                           → fuzzy_fields levenshtein distance 1
-  * filter_by="extension:=cs && ..."      → BooleanQuery MUST/MUST_NOT terms
-  * facet_by="path_segments,..."          → terms aggregation per facet field
+  * num_typos=1                           -> fuzzy_fields levenshtein distance 1
+  * filter_by="extension:=cs && ..."      -> BooleanQuery MUST/MUST_NOT terms
+  * facet_by="path_segments,..."          -> terms aggregation per facet field
 
 Tantivy's query parser handles per-field weighting and per-field fuzziness
 natively (see Index.parse_query field_boosts/fuzzy_fields).
@@ -57,7 +57,7 @@ def search(
             try:
                 field_boosts[f] = float(weight_list[i])
             except ValueError:
-                # Non-numeric weight tokens are ignored — caller stays in the
+                # Non-numeric weight tokens are ignored -- caller stays in the
                 # default (unweighted) regime for that field.
                 pass
     fuzzy_fields = (
@@ -108,12 +108,12 @@ def _build_text_query(
     # Index.parse_query handles multi-field, weighting, and per-field fuzz in
     # one go. The escape step below removes characters that would otherwise be
     # interpreted as Tantivy query syntax (`:`, `+`, `-`, parentheses, etc.).
-    # Only pass field_boosts/fuzzy_fields when non-empty — Tantivy rejects None.
+    # Only pass field_boosts/fuzzy_fields when non-empty -- Tantivy rejects None.
     #
     # Per-identifier fields use the ``raw`` tokenizer (no length filter, no
     # underscore splitting) so long identifiers and snake_case names match
     # exactly. Tokenized fields (filename / namespace / member_sigs) still go
-    # through the default tokenizer; any ≥40-char word inside them would be
+    # through the default tokenizer; any >=40-char word inside them would be
     # dropped by RemoveLongFilter, but the indexer pre-truncates those, so the
     # query naturally matches the stored prefix when one of those fields is in
     # play.
@@ -126,7 +126,7 @@ def _build_text_query(
     try:
         return backend._index.parse_query(safe_q, **kwargs)  # noqa: SLF001
     except Exception:
-        # Fall back to a manual term-OR over all tokens × all fields.
+        # Fall back to a manual term-OR over all tokens x all fields.
         terms = _tokenize(q)
         if not terms:
             return tantivy.Query.all_query()
@@ -240,8 +240,8 @@ def _compute_facets(
     """Compute term frequencies per facet field by scanning matching docs.
 
     Tantivy has a native aggregations API but its dict spec isn't stable across
-    tantivy-py versions — for the modest result sets the daemon's overflow path
-    deals with (≤1k matches before drill-down) a Python-side count is plenty
+    tantivy-py versions -- for the modest result sets the daemon's overflow path
+    deals with (<=1k matches before drill-down) a Python-side count is plenty
     fast and dramatically simpler.
     """
     if not fields:
@@ -271,9 +271,9 @@ def _compute_facets(
 
 
 def _flatten_doc(doc: dict) -> dict:
-    """Tantivy returns every stored field as a list — unwrap singleton lists.
+    """Tantivy returns every stored field as a list -- unwrap singleton lists.
 
-    Multi-value fields (class_names, …) keep their list shape.
+    Multi-value fields (class_names, ...) keep their list shape.
     """
     from indexserver.backend import MULTI_VALUE_FIELDS
     flat: dict = {}

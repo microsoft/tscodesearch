@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * run_tests.mjs — VS Code extension unit tests.
+ * run_tests.mjs -- VS Code extension unit tests.
  *
  * Runs client.test.ts and pipeline.test.ts in vscode-codesearch/.
- * No daemon required — tests use a mock HTTP backend.
+ * No daemon required -- tests use a mock HTTP backend.
  *
  * Usage:
  *   node run_tests.mjs
@@ -29,15 +29,15 @@ function runCaptured(cmd, args, opts = {}) {
 }
 
 function vscodeSummary(output) {
-  const pass = output.match(/ℹ pass (\d+)/)?.[1];
-  const fail = output.match(/ℹ fail (\d+)/)?.[1];
+  const pass = output.match(/(i) pass (\d+)/)?.[1];
+  const fail = output.match(/(i) fail (\d+)/)?.[1];
   return pass !== undefined ? `${pass} passed, ${fail ?? '0'} failed` : null;
 }
 
 const vscodeDir = join(REPO, 'vscode-codesearch');
 
 if (!existsSync(join(vscodeDir, 'package.json'))) {
-  console.log('[vscode] No vscode-codesearch/package.json found — skipping.');
+  console.log('[vscode] No vscode-codesearch/package.json found -- skipping.');
   process.exit(0);
 }
 

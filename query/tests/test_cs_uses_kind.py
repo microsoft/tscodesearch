@@ -3,12 +3,12 @@ Tests for q_uses uses_kind sub-modes using sample/root1/Processors.cs.
 
 Replicates behavior observed in Round 2 of guided testing:
 
-  uses_kind=param   — works correctly (finds type in method/delegate params)
-  uses_kind=field   — works correctly (finds type in field/property declarations)
-  uses_kind=base    — works correctly (finds type in base-class/interface lists)
-  uses_kind=cast    — works correctly (delegates to q_casts)
-  uses_kind=locals  — works correctly (finds explicit-type local declarations)
-  uses_kind=return  — was BROKEN: method_declaration exposes return type via the
+  uses_kind=param   -- works correctly (finds type in method/delegate params)
+  uses_kind=field   -- works correctly (finds type in field/property declarations)
+  uses_kind=base    -- works correctly (finds type in base-class/interface lists)
+  uses_kind=cast    -- works correctly (delegates to q_casts)
+  uses_kind=locals  -- works correctly (finds explicit-type local declarations)
+  uses_kind=return  -- was BROKEN: method_declaration exposes return type via the
                       "returns" field, not "type"; and delegate_declaration was
                       absent from the node list.  Both gaps are now fixed.
 
@@ -40,7 +40,7 @@ def _texts(results):
 
 
 # ===========================================================================
-# uses_kind=return  (was broken — fixed in Round 2)
+# uses_kind=return  (was broken -- fixed in Round 2)
 # ===========================================================================
 
 class TestUsesKindReturn(unittest.TestCase):
@@ -56,11 +56,11 @@ class TestUsesKindReturn(unittest.TestCase):
         return q_uses(*_PARSED, type_name=type_name, uses_kind="return")
 
     def test_finds_ordinary_method_return_type(self):
-        """ProcessorFactory.Run returns ProcessResult — must be found."""
+        """ProcessorFactory.Run returns ProcessResult -- must be found."""
         r = self._ret("ProcessResult")
         assert r, "uses_kind=return must find method return types"
         texts = _texts(r)
-        assert "Run" in texts, f"Run(…) not in results: {r}"
+        assert "Run" in texts, f"Run(...) not in results: {r}"
 
     def test_finds_all_method_return_sites(self):
         """
@@ -76,14 +76,14 @@ class TestUsesKindReturn(unittest.TestCase):
         assert 236 in lines, f"Method Merge (line 236) missing: {r}"
 
     def test_finds_delegate_return_type(self):
-        """delegate_declaration was not in the node walk list — now fixed."""
+        """delegate_declaration was not in the node walk list -- now fixed."""
         r = self._ret("ProcessResult")
         texts = _texts(r)
         assert "ProcessDelegate" in texts, \
-            f"Delegate ProcessDelegate not found — delegate_declaration still missing? {r}"
+            f"Delegate ProcessDelegate not found -- delegate_declaration still missing? {r}"
 
     def test_excludes_constructor(self):
-        """Constructor declarations have no return type — must not appear."""
+        """Constructor declarations have no return type -- must not appear."""
         r = self._ret("ProcessResult")
         texts = _texts(r)
         assert "ProcessResult(" not in texts, \
@@ -92,9 +92,9 @@ class TestUsesKindReturn(unittest.TestCase):
     def test_void_returning_method_not_returned(self):
         """Methods returning void (Reset, LogResult) must not appear."""
         r = self._ret("void")
-        # void is not a named type — _type_names("void") produces {"void"},
+        # void is not a named type -- _type_names("void") produces {"void"},
         # but real methods return void without it being a user-defined type.
-        # Either empty or only void-returning methods — the key thing is
+        # Either empty or only void-returning methods -- the key thing is
         # ProcessResult-returning methods are not in the void results.
         proc_lines = _lines(self._ret("ProcessResult"))
         void_lines = _lines(r)
@@ -123,21 +123,21 @@ class TestUsesKindParam(unittest.TestCase):
         assert "LogResult" in texts
 
     def test_finds_param_in_delegate(self):
-        """ProcessDelegate takes a string param — verify delegate params are scanned."""
+        """ProcessDelegate takes a string param -- verify delegate params are scanned."""
         r = self._param("string")
         texts = _texts(r)
         assert "ProcessDelegate" in texts, \
             f"Delegate param not found: {r}"
 
     def test_multiple_params_same_type_same_line(self):
-        """Merge(ProcessResult a, ProcessResult b) — both params must appear."""
+        """Merge(ProcessResult a, ProcessResult b) -- both params must appear."""
         r = self._param("ProcessResult")
         merge_hits = [(ln, t) for ln, t in r if "Merge" in t]
         assert len(merge_hits) == 2, \
             f"Expected 2 ProcessResult params for Merge, got {merge_hits}"
 
     def test_out_modifier_preserved(self):
-        """TryGetFirst has 'out ProcessResult result' — modifier must be in output."""
+        """TryGetFirst has 'out ProcessResult result' -- modifier must be in output."""
         r = self._param("ProcessResult")
         texts = _texts(r)
         assert "out" in texts, f"'out' modifier missing: {r}"
@@ -147,7 +147,7 @@ class TestUsesKindParam(unittest.TestCase):
 
 
 # ===========================================================================
-# uses_kind=locals  (working — verify explicit-type vs var)
+# uses_kind=locals  (working -- verify explicit-type vs var)
 # ===========================================================================
 
 class TestUsesKindLocals(unittest.TestCase):
@@ -174,7 +174,7 @@ class TestUsesKindLocals(unittest.TestCase):
 
 
 # ===========================================================================
-# uses_kind=field  (working — verify field and property)
+# uses_kind=field  (working -- verify field and property)
 # ===========================================================================
 
 class TestUsesKindField(unittest.TestCase):
@@ -198,7 +198,7 @@ class TestUsesKindField(unittest.TestCase):
 
 
 # ===========================================================================
-# uses_kind=base  (working — verify interface list scanning)
+# uses_kind=base  (working -- verify interface list scanning)
 # ===========================================================================
 
 class TestUsesKindBase(unittest.TestCase):

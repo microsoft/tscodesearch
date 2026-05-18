@@ -1,5 +1,5 @@
 """
-AST query dispatch — routes query_file and describe_file to the right language module.
+AST query dispatch -- routes query_file and describe_file to the right language module.
 
 Each language module owns its parser, preprocessing, and query_*_bytes / describe_*_file.
 """
@@ -39,7 +39,7 @@ from .cpp import (
 from .sql import query_sql_bytes, describe_sql_file
 
 
-# ── Extension routing tables ──────────────────────────────────────────────────
+# -- Extension routing tables --------------------------------------------------
 
 def _make_js_query(ext):
     """Return a query_bytes function that passes ext to query_js_bytes."""
@@ -70,15 +70,20 @@ ALL_EXTS = set(_EXT_TO_QUERY_BYTES.keys())
 
 
 def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
-               include_body=False, symbol_kind=None, uses_kind=None, **kwargs):
+               include_body=False, symbol_kind=None, uses_kind=None,
+               visibility=None, **kwargs):
     """Query src_bytes using the given mode.
 
     Returns ``list[{"line": N, "text": "..."}]`` on success.
 
     Raises ``ValueError`` if the extension has no registered language or if
-    the mode isn't supported for that language — explicit errors beat silent
+    the mode isn't supported for that language -- explicit errors beat silent
     empties for tool-using agents. Use ``mode='capabilities'`` to ask which
     modes a given file supports.
+
+    ``visibility`` is an optional comma-separated filter for declaration
+    modes (``classes``/``methods``/``fields``/``declarations``). Languages
+    that don't capture visibility silently ignore it.
     """
     fn = _EXT_TO_QUERY_BYTES.get(ext)
     if fn is None:
@@ -87,7 +92,8 @@ def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
             f"Supported extensions: {', '.join(sorted(ALL_EXTS))}"
         )
     return fn(src_bytes, mode, mode_arg,
-              include_body=include_body, symbol_kind=symbol_kind, uses_kind=uses_kind, **kwargs)
+              include_body=include_body, symbol_kind=symbol_kind,
+              uses_kind=uses_kind, visibility=visibility, **kwargs)
 
 
 def describe_file(src_bytes: bytes, ext: str) -> FileDescription:

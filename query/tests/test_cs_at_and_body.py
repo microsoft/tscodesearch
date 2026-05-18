@@ -2,11 +2,11 @@
 Tests for the C# ``at`` (position lookup) and ``body`` (member source) modes.
 
 ``at LINE:COL`` finds the deepest AST node at a position and reports the
-chain of enclosing named declarations — the agent uses this to resolve
+chain of enclosing named declarations -- the agent uses this to resolve
 stack traces, test failures, and review comments that point at a file:line.
 
 ``body NAME`` returns the full source of every member declaration named
-NAME — sugar for ``declarations`` with ``include_body=True``.
+NAME -- sugar for ``declarations`` with ``include_body=True``.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def _parse():
     return b, tree, _SRC.splitlines()
 
 
-# ── q_at ──────────────────────────────────────────────────────────────────────
+# -- q_at ----------------------------------------------------------------------
 
 class TestQAt(unittest.TestCase):
     """``at`` returns the deepest node at a position plus its enclosing scopes."""
@@ -59,7 +59,7 @@ class TestQAt(unittest.TestCase):
         self.fx = _parse()
 
     def test_at_method_name_resolves_to_method_scope(self):
-        # Line 6 is `public void SaveChanges() {` — point at the `S` of SaveChanges.
+        # Line 6 is `public void SaveChanges() {` -- point at the `S` of SaveChanges.
         results = q_at(*self.fx, "6:21")
         self.assertEqual(len(results), 1)
         text = results[0][-1]
@@ -71,7 +71,7 @@ class TestQAt(unittest.TestCase):
         self.assertIn("[namespace] Acme.Billing", text)
 
     def test_at_inside_method_body_reports_method_scope(self):
-        # Line 8: `store.Persist(_name);` — point at `Persist`.
+        # Line 8: `store.Persist(_name);` -- point at `Persist`.
         results = q_at(*self.fx, "8:19")
         self.assertEqual(len(results), 1)
         text = results[0][-1]
@@ -85,7 +85,7 @@ class TestQAt(unittest.TestCase):
                         "method scope should come before class scope (innermost-first)")
 
     def test_at_property_resolves_to_property_scope(self):
-        # Line 11: `public string Name { get; set; }` — point at `Name`.
+        # Line 11: `public string Name { get; set; }` -- point at `Name`.
         # ``_node_kind`` produces ``[property]`` for property_declaration nodes
         # (the long form); ``q_methods`` uses ``[prop]`` as a shorthand.
         results = q_at(*self.fx, "11:23")
@@ -95,7 +95,7 @@ class TestQAt(unittest.TestCase):
         self.assertIn("[property]", text)
 
     def test_at_class_keyword_resolves_to_class_scope(self):
-        # Line 3: `public class Widget {` — point inside the class name.
+        # Line 3: `public class Widget {` -- point inside the class name.
         results = q_at(*self.fx, "3:18")
         self.assertEqual(len(results), 1)
         text = results[0][-1]
@@ -114,7 +114,7 @@ class TestQAt(unittest.TestCase):
         self.assertEqual(q_at(*self.fx, ""), [])
 
     def test_at_namespace_outside_any_class(self):
-        # Line 1: `namespace Acme.Billing {` — point at the namespace name.
+        # Line 1: `namespace Acme.Billing {` -- point at the namespace name.
         results = q_at(*self.fx, "1:13")
         self.assertEqual(len(results), 1)
         text = results[0][-1]
@@ -124,7 +124,59 @@ class TestQAt(unittest.TestCase):
         self.assertNotIn("[method]", text)
 
 
-# ── q_body ────────────────────────────────────────────────────────────────────
+# -- q_at: field/event scope-chain regression ----------------------------------
+
+
+_FIELDS_SRC = """\
+namespace Acme {
+    public class Container {
+        private int _count = 0;
+        private static readonly System.Guid SettingsKS = System.Guid.NewGuid();
+        private string _first, _second;
+        public event System.Action OnChange;
+    }
+}
+"""
+
+
+class TestQAtInsideFieldDeclarations(unittest.TestCase):
+    """Regression: ``field_declaration`` and ``event_field_declaration``
+    don't expose a direct ``name`` field -- the name lives inside a nested
+    ``variable_declarator``. q_at must still report the field in the
+    enclosing-scope chain rather than silently skipping it."""
+
+    def setUp(self):
+        b = _FIELDS_SRC.encode()
+        tree = _PARSER.parse(b)
+        self.fx = (b, tree, _FIELDS_SRC.splitlines())
+
+    def test_at_inside_simple_field(self):
+        # Line 3: `private int _count = 0;` -- cursor on `_count`.
+        text = q_at(*self.fx, "3:24")[0][-1]
+        self.assertIn("[field] _count", text)
+        self.assertIn("[class] Container", text)
+
+    def test_at_on_field_modifier_keyword(self):
+        # Cursor on the `readonly` keyword still resolves to the field's
+        # scope -- fall-back picks the first declarator's name.
+        text = q_at(*self.fx, "4:24")[0][-1]
+        self.assertIn("[field] SettingsKS", text)
+
+    def test_at_inside_multi_declarator_field_picks_correct_one(self):
+        # `private string _first, _second;` -- point at `_second`.
+        text = q_at(*self.fx, "5:32")[0][-1]
+        self.assertIn("[field] _second", text)
+        # And pointing at `_first` picks _first.
+        text = q_at(*self.fx, "5:24")[0][-1]
+        self.assertIn("[field] _first", text)
+
+    def test_at_inside_event_field(self):
+        # `public event System.Action OnChange;` -- cursor on `OnChange`.
+        text = q_at(*self.fx, "6:36")[0][-1]
+        self.assertIn("[event field] OnChange", text)
+
+
+# -- q_body --------------------------------------------------------------------
 
 class TestQBody(unittest.TestCase):
     """``body NAME`` returns the full source of every declaration named NAME."""
@@ -144,7 +196,7 @@ class TestQBody(unittest.TestCase):
         results = q_body(*self.fx, "Widget")
         self.assertEqual(len(results), 1)
         text = results[0][-1]
-        # The whole class block should be there — header + every member.
+        # The whole class block should be there -- header + every member.
         self.assertIn("public class Widget", text)
         self.assertIn("SaveChanges", text)
         self.assertIn("Name { get; set; }", text)

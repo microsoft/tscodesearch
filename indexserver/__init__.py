@@ -1,1 +1,1 @@
-# indexserver — Tantivy backend, indexer, verifier, watcher, and queue.
+# indexserver -- Tantivy backend, indexer, verifier, watcher, and queue.

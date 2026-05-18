@@ -15,7 +15,7 @@ if _root not in sys.path:
 
 class TestPathIntegration(unittest.TestCase):
     """End-to-end path round-trip: ``relative_path`` stored in the index is
-    repo-relative — never absolute — so MCP callers can safely prepend
+    repo-relative -- never absolute -- so MCP callers can safely prepend
     ``$SRC_ROOT/`` without producing nonsense paths.
     """
 
@@ -47,7 +47,7 @@ class TestPathIntegration(unittest.TestCase):
 
         hits = result.get("hits", [])
         if not hits:
-            return  # no data indexed in test env — nothing to assert
+            return  # no data indexed in test env -- nothing to assert
 
         canonical_prefix = root.path.replace("\\", "/").rstrip("/").lower()
         for hit in hits:

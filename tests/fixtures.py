@@ -1,7 +1,7 @@
 """
 Synthetic C# source fixtures for codesearch mode tests.
 
-All type/method names are fictional — nothing references the real codebase.
+All type/method names are fictional -- nothing references the real codebase.
 Each section provides a pair (or set) of files designed to distinguish:
   - the "true positive" case (mode should match this)
   - the "false positive trap" (mode must NOT match this)
@@ -9,11 +9,11 @@ Each section provides a pair (or set) of files designed to distinguish:
 from __future__ import annotations
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # calls mode
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
-# ✓ CALLS FetchWidget twice — should appear in call_sites.
+# OK CALLS FetchWidget twice -- should appear in call_sites.
 CALLS_FETCHWIDGET = """\
 namespace Synth {
     public class WidgetClient {
@@ -29,11 +29,11 @@ namespace Synth {
 """
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # implements mode
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
-# ✓ Implements two interfaces.
+# OK Implements two interfaces.
 IMPLEMENTS_IDATASTORE = """\
 namespace Synth {
     public class SqlDataStore : IDataStore, IDisposable {
@@ -44,7 +44,7 @@ namespace Synth {
 }
 """
 
-# ✗ Uses BlobStore as field/param but NO explicit cast.
+# NO Uses BlobStore as field/param but NO explicit cast.
 USES_BLOBSTORE_NO_CAST = """\
 namespace Synth {
     public class NoCastDemo {
@@ -56,11 +56,11 @@ namespace Synth {
 """
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ident mode (semantic grep — every non-comment/string occurrence)
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# ident mode (semantic grep -- every non-comment/string occurrence)
+# ==============================================================================
 
-# ✓ BlobStore in many syntactic contexts: field decl, return type, param, creation.
+# OK BlobStore in many syntactic contexts: field decl, return type, param, creation.
 IDENT_BLOBSTORE_MANY_CONTEXTS = """\
 namespace Synth {
     public class IdentDemo {
@@ -73,7 +73,7 @@ namespace Synth {
 }
 """
 
-# ✗ BlobStore ONLY inside a comment (should NOT be found by ident).
+# NO BlobStore ONLY inside a comment (should NOT be found by ident).
 IDENT_COMMENT_ONLY = """\
 namespace Synth {
     // Works with BlobStore internally
@@ -84,7 +84,7 @@ namespace Synth {
 }
 """
 
-# ✗ BlobStore only in a string literal.
+# NO BlobStore only in a string literal.
 IDENT_STRING_ONLY = """\
 namespace Synth {
     public class StringOnly {
@@ -95,9 +95,9 @@ namespace Synth {
 """
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # find mode
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 # File with multiple types/methods to locate by name.
 FIND_TARGET = """\
@@ -118,9 +118,9 @@ namespace Synth {
 """
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # params mode
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 PARAMS_TARGET = """\
 namespace Synth {
@@ -135,11 +135,11 @@ namespace Synth {
 """
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # member_accesses mode
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
-# ✓ Typed parameter 'BlobStore store' → accesses .Write, .Size, .Flush.
+# OK Typed parameter 'BlobStore store' -> accesses .Write, .Size, .Flush.
 MEMBER_ACCESS_BLOBSTORE_PARAM = """\
 namespace Synth {
     public class AccessDemo {
@@ -155,7 +155,7 @@ namespace Synth {
 }
 """
 
-# ✓ Typed field 'BlobStore _store' → accesses .Read.
+# OK Typed field 'BlobStore _store' -> accesses .Read.
 MEMBER_ACCESS_BLOBSTORE_FIELD = """\
 namespace Synth {
     public class FieldAccess {
@@ -168,7 +168,7 @@ namespace Synth {
 }
 """
 
-# ✗ Only calls methods via IBlobStore interface (not BlobStore directly).
+# NO Only calls methods via IBlobStore interface (not BlobStore directly).
 MEMBER_ACCESS_INTERFACE_ONLY = """\
 namespace Synth {
     public class InterfaceAccess {
@@ -180,7 +180,7 @@ namespace Synth {
 }
 """
 
-# ✓ var-inferred: var x = new BlobStore() → x.Write() should be tracked.
+# OK var-inferred: var x = new BlobStore() -> x.Write() should be tracked.
 MEMBER_ACCESS_VAR_INFERRED = """\
 namespace Synth {
     public class VarInferred {
@@ -193,9 +193,9 @@ namespace Synth {
 }
 """
 
-# ── accesses_of fixtures ──────────────────────────────────────────────────────
+# -- accesses_of fixtures ------------------------------------------------------
 
-# ✓ Two accesses of .Status on different receiver types.
+# OK Two accesses of .Status on different receiver types.
 ACCESSES_OF_STATUS = """\
 namespace Synth {
     public class OrderProcessor {
@@ -210,7 +210,7 @@ namespace Synth {
 }
 """
 
-# ✓ Qualified name: only Order.Status, not Logger.Status.
+# OK Qualified name: only Order.Status, not Logger.Status.
 ACCESSES_OF_STATUS_QUALIFIED = """\
 namespace Synth {
     public class Mixed {
@@ -222,7 +222,7 @@ namespace Synth {
 }
 """
 
-# ✓ No .Status access — must return empty.
+# OK No .Status access -- must return empty.
 ACCESSES_OF_NO_STATUS = """\
 namespace Synth {
     public class NoStatus {

@@ -19,10 +19,10 @@ from indexserver.indexer import extract_metadata
 from query.dispatch import query_file as _query_file
 
 
-# ── TestExtractPyMetadata ─────────────────────────────────────────────────────
+# -- TestExtractPyMetadata -----------------------------------------------------
 
 class TestExtractPyMetadata(unittest.TestCase):
-    """Unit tests for extract_metadata — no server needed."""
+    """Unit tests for extract_metadata -- no server needed."""
 
     def _meta(self, src):
         return extract_metadata(src.encode(), ".py")
@@ -94,10 +94,10 @@ class TestExtractPyMetadata(unittest.TestCase):
         self.assertEqual(meta["namespace"], [])
 
 
-# ── TestQueryPy ───────────────────────────────────────────────────────────────
+# -- TestQueryPy ---------------------------------------------------------------
 
 class TestQueryPy(unittest.TestCase):
-    """Unit tests for process_py_file() — no server needed."""
+    """Unit tests for process_py_file() -- no server needed."""
 
     @classmethod
     def setUpClass(cls):
@@ -125,7 +125,7 @@ class TestQueryPy(unittest.TestCase):
         out = "\n".join(f"{disp}:{m['line']}: {m['text']}" for m in (matches or []))
         return len(matches or []), out
 
-    # ── mode: classes ──────────────────────────────────────────────────────────
+    # -- mode: classes ----------------------------------------------------------
 
     def test_classes_lists_foo(self):
         n, out = self._run(self.foo_path, "classes")
@@ -140,7 +140,7 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.foo_path, "classes")
         self.assertIn("IComparable", out)
 
-    # ── mode: methods ──────────────────────────────────────────────────────────
+    # -- mode: methods ----------------------------------------------------------
 
     def test_methods_lists_process(self):
         n, out = self._run(self.foo_path, "methods")
@@ -159,7 +159,7 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.foo_path, "methods")
         self.assertIn("Optional", out)
 
-    # ── mode: calls ───────────────────────────────────────────────────────────
+    # -- mode: calls -----------------------------------------------------------
 
     def test_calls_found_in_bar(self):
         n, out = self._run(self.bar_path, "calls", "process")
@@ -170,7 +170,7 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.foo_path, "calls", "nonexistent_function_xyz")
         self.assertEqual(n, 0)
 
-    # ── mode: implements ──────────────────────────────────────────────────────
+    # -- mode: implements ------------------------------------------------------
 
     def test_implements_ifoo_finds_foo(self):
         n, out = self._run(self.foo_path, "implements", "IFoo")
@@ -186,7 +186,7 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.foo_path, "implements", "INonExistent999")
         self.assertEqual(n, 0)
 
-    # ── mode: ident ───────────────────────────────────────────────────────────
+    # -- mode: ident -----------------------------------------------------------
 
     def test_ident_finds_foo(self):
         n, out = self._run(self.foo_path, "all_refs", "Foo")
@@ -197,7 +197,7 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.foo_path, "all_refs", "ZZZNonExistentXXX")
         self.assertEqual(n, 0)
 
-    # ── mode: declarations ────────────────────────────────────────────────────
+    # -- mode: declarations ----------------------------------------------------
 
     def test_find_returns_source(self):
         n, out = self._run(self.foo_path, "declarations", "process")
@@ -209,7 +209,7 @@ class TestQueryPy(unittest.TestCase):
         self.assertGreater(n, 0)
         self.assertIn("class Foo", out)
 
-    # ── mode: decorators ──────────────────────────────────────────────────────
+    # -- mode: decorators ------------------------------------------------------
 
     def test_attrs_found(self):
         n, out = self._run(self.foo_path, "attrs")
@@ -225,7 +225,7 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.foo_path, "attrs", "nonexistent_decorator_xyz")
         self.assertEqual(n, 0)
 
-    # ── mode: imports ─────────────────────────────────────────────────────────
+    # -- mode: imports ---------------------------------------------------------
 
     def test_imports_found(self):
         n, out = self._run(self.foo_path, "imports")
@@ -242,7 +242,7 @@ class TestQueryPy(unittest.TestCase):
 
     def test_imports_includes_future_import(self):
         # from __future__ import annotations is a future_import_statement node,
-        # distinct from import_from_statement — must be found too
+        # distinct from import_from_statement -- must be found too
         n, out = self._run(self.foo_path, "imports")
         self.assertIn("__future__", out)
 
@@ -252,7 +252,7 @@ class TestQueryPy(unittest.TestCase):
         first_line = out.strip().splitlines()[0]
         self.assertIn("__future__", first_line)
 
-    # ── mode: attrs (Python decorator alias) ──────────────────────────────────
+    # -- mode: attrs (Python decorator alias) ----------------------------------
 
     def test_attrs_mode_works_for_python(self):
         # --attrs in query_util maps to mode "attrs"; Python dispatch must
@@ -270,7 +270,7 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.foo_path, "attrs", "nonexistent_decorator_xyz")
         self.assertEqual(n, 0)
 
-    # ── mode: params ──────────────────────────────────────────────────────────
+    # -- mode: params ----------------------------------------------------------
 
     def test_params_found(self):
         n, out = self._run(self.foo_path, "params", "process")
@@ -300,7 +300,7 @@ class TestQueryPy(unittest.TestCase):
         self.assertIn("*", out)
         self.assertIn("debug", out)
 
-    # ── relative path display ─────────────────────────────────────────────────
+    # -- relative path display -------------------------------------------------
 
     def test_display_path_is_relative(self):
         n, out = self._run(self.foo_path, "classes")
@@ -309,7 +309,7 @@ class TestQueryPy(unittest.TestCase):
         tmpdir_norm = self.tmpdir.replace("\\", "/")
         self.assertNotIn(tmpdir_norm, out)
 
-    # ── consistency: process_py_file ↔ extract_metadata ───────────────────
+    # -- consistency: process_py_file <-> extract_metadata -------------------
 
     def test_class_names_consistent(self):
         meta = extract_metadata(_FOO_PY.encode(), ".py")

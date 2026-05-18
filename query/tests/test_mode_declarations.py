@@ -24,9 +24,9 @@ from tests.fixtures import FIND_TARGET
 from ..cs import q_declarations
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # q_declarations AST function
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 class TestQFind(unittest.TestCase):
 
@@ -58,9 +58,11 @@ class TestQFind(unittest.TestCase):
             f"Output must include kind annotation: {texts}"
 
     def test_output_includes_line_numbers(self):
+        import re
         r = self._find(FIND_TARGET, "TargetMethod")
         texts = [t for _, t in r]
-        assert any("lines" in t for t in texts), \
+        # Header format: ``[method] Name S-E:`` -- verify a START-END pair.
+        assert any(re.search(r"\b\d+-\d+:", t) for t in texts), \
             f"Output must include line range: {texts}"
 
     def test_output_includes_signature(self):

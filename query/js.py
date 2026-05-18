@@ -32,7 +32,7 @@ _ts_parser  = Parser(_TS_LANG)
 _TSX_LANG = Language(tsts.language_tsx())
 _tsx_parser = Parser(_TSX_LANG)
 
-# ── Inlined from src/ast/js.py ───────────────────────────────────────────────
+# -- Inlined from src/ast/js.py -----------------------------------------------
 
 _LITERAL_NODES = {
     "comment",
@@ -135,7 +135,7 @@ def _fn_sig(node, src: bytes) -> str:
     return f"{name}{params_txt}{ret_txt}"
 
 
-# ── Data extraction functions ─────────────────────────────────────────────────
+# -- Data extraction functions -------------------------------------------------
 
 def _js_q_classes_data(src, idx: TreeIndex) -> list:
     """Return list[ClassInfo] for all class/interface/enum declarations."""
@@ -206,7 +206,7 @@ def _js_q_imports_data(src, idx: TreeIndex) -> list:
     return results
 
 
-# ── Query functions ───────────────────────────────────────────────────────────
+# -- Query functions -----------------------------------------------------------
 
 def js_q_classes(src, tree, lines):
     """List class / interface / enum declarations."""
@@ -254,7 +254,7 @@ def js_q_calls(src, tree, lines, func_name):
                 seen_rows.add(row)
                 raw = _text(node, src).replace("\n", " ")
                 if len(raw) > 140:
-                    raw = raw[:140] + "…"
+                    raw = raw[:140] + "..."
                 results.append((_line(node), raw))
 
     # new ClassName(...)
@@ -272,7 +272,7 @@ def js_q_calls(src, tree, lines, func_name):
                     seen_rows.add(row)
                     raw = _text(node, src).replace("\n", " ")
                     if len(raw) > 140:
-                        raw = raw[:140] + "…"
+                        raw = raw[:140] + "..."
                     results.append((_line(node), raw))
 
     return results
@@ -319,7 +319,7 @@ def js_q_declarations(src, tree, lines, name, include_body=False):
                 content = "\n".join(lines[start_row:sig_end]).rstrip()
             else:
                 content = "\n".join(lines[start_row:end_row + 1])
-        header = f"── [{kind}] {name}  (lines {start_row + 1}–{end_row + 1}) ──"
+        header = f"[{kind}] {name} {start_row + 1}-{end_row + 1}:"
         results.append((_line(node), f"{header}\n{content}"))
     return results
 
@@ -388,7 +388,7 @@ def js_q_attrs(src, tree, lines, attr_name=None):
     return results
 
 
-# ── Process function ──────────────────────────────────────────────────────────
+# -- Process function ----------------------------------------------------------
 
 def query_js_bytes(src_bytes: bytes, mode: str, mode_arg: str, ext: str = ".js",
                    include_body=False, **kwargs):
@@ -433,7 +433,7 @@ def describe_js_file(src_bytes: bytes, ext: str = ".js") -> FileDescription:
     # One walk shared by every extractor below; also collects all_refs.
     idx = _JsIndex(src_bytes, tree, _DESCRIBE_NODE_TYPES, collect_refs=True)
 
-    # TS decorators → AttrInfo
+    # TS decorators -> AttrInfo
     attrs = []
     if ext in TS_EXTENSIONS:
         for node in idx.of("decorator"):

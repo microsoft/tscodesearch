@@ -1,5 +1,5 @@
 """
-Tests for SQL metadata extraction — covers tables, views, stored
+Tests for SQL metadata extraction -- covers tables, views, stored
 procedures, functions, column types, table references, and column sigs.
 """
 import pytest
@@ -24,7 +24,7 @@ def accounts_bytes():
         return f.read()
 
 
-# ── extract_metadata tests ────────────────────────────────────────────────
+# -- extract_metadata tests ------------------------------------------------
 
 class TestExtractSqlMetadata:
     """Unit tests for the indexer's extract_metadata()."""
@@ -83,7 +83,7 @@ class TestExtractSqlMetadata:
         assert "UNIQUEIDENTIFIER" in sig.upper(), f"Type missing from sig: {sig}"
 
 
-# ── accounts.sql tests ────────────────────────────────────────────────────────
+# -- accounts.sql tests --------------------------------------------------------
 
 class TestExtractSqlMetadataAccounts:
     """Verify metadata extraction on the accounts sample file."""
@@ -108,7 +108,7 @@ class TestExtractSqlMetadataAccounts:
         assert any("proc_UpdateUserEmail" in n for n in mn), f"proc_UpdateUserEmail not found in {mn}"
 
 
-# ── AST helper tests ──────────────────────────────────────────────────────────
+# -- AST helper tests ----------------------------------------------------------
 
 class TestSqlAstHelpers:
     """Tests for src/ast/sql.py helper functions."""

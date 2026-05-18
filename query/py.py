@@ -18,7 +18,7 @@ from .cs import _find_all, _text
 _PY_LANG = Language(tspython.language())
 _py_parser = Parser(_PY_LANG)
 
-# ── Inlined from src/ast/py.py ──────────────────────────────────────────────
+# -- Inlined from src/ast/py.py ----------------------------------------------
 
 _PY_LITERAL_NODES = {"comment", "string", "concatenated_string"}
 
@@ -84,7 +84,7 @@ def _py_base_names(node, src) -> list:
     return names
 
 
-# ── Data extraction functions ─────────────────────────────────────────────────
+# -- Data extraction functions -------------------------------------------------
 
 def _py_q_classes_data(src, idx: TreeIndex) -> list:
     """Return list[ClassInfo] for all class definitions."""
@@ -209,7 +209,7 @@ def py_q_calls(src, tree, lines, method_name):
         seen_rows.add(row)
         raw = _text(node, src).replace("\n", " ").replace("\r", "")
         if len(raw) > 140:
-            raw = raw[:140] + "…"
+            raw = raw[:140] + "..."
         results.append((_line(node), raw))
     return results
 
@@ -263,7 +263,7 @@ def py_q_declarations(src, tree, lines, name, include_body=False, symbol_kind=No
         start_row = node.start_point[0]
         end_row = node.end_point[0]
         body_lines = "\n".join(lines[start_row:end_row + 1])
-        header = f"── [{kind}] {name}  (lines {start_row + 1}–{end_row + 1}) ──"
+        header = f"[{kind}] {name} {start_row + 1}-{end_row + 1}:"
         results.append((_line(node), f"{header}\n{body_lines}"))
     return results
 
@@ -327,7 +327,7 @@ def py_q_params(src, tree, lines, method_name):
     return results
 
 
-# ── Process function ──────────────────────────────────────────────────────────
+# -- Process function ----------------------------------------------------------
 
 def query_py_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False, **kwargs):
     """Parse Python bytes and return list[{"line": N, "text": "..."}] for the given mode."""

@@ -3,18 +3,18 @@ Tests for accesses_on with C# object initializer syntax.
 
 Replicates bug discovered in Round 14 of guided testing:
 
-  Round 14 — accesses_on missed members set via object initializers:
+  Round 14 -- accesses_on missed members set via object initializers:
 
         new Widget { Value = 5, Name = "test" }
 
       `q_accesses_on` only walked `member_access_expression` and
-      `conditional_access_expression` nodes — both require a named variable
+      `conditional_access_expression` nodes -- both require a named variable
       on the left. Object initializer syntax uses `assignment_expression`
       nodes inside `initializer_expression` inside `object_creation_expression`,
       with a bare `identifier` on the LHS. No named variable of the type is
       needed since the type is known from the `new T { }` construct.
       Fix: added a loop over `object_creation_expression` nodes whose type
-      matches; for each, walk into `initializer_expression` →
+      matches; for each, walk into `initializer_expression` ->
       `assignment_expression` and emit the LHS identifier as the member name.
       Members bypass the `seen_rows` dedup so that multiple members on the
       same line are all reported.
@@ -44,7 +44,7 @@ def _lns(results):
     return {ln for ln, _ in results}
 
 def _members(results):
-    return {txt.split("  ←")[0].lstrip(".") for _, txt in results}
+    return {txt.split("  <-")[0].lstrip(".") for _, txt in results}
 
 def _line_no(fragment):
     for i, ln in enumerate(_LINES):
@@ -60,12 +60,12 @@ class TestObjectInitializerAccesses(unittest.TestCase):
         return q_accesses_on(*_PARSED, type_name=type_name)
 
     def test_single_member_initializer_found(self):
-        """new Widget { Value = 42 } — Value must appear in accesses_on results."""
+        """new Widget { Value = 42 } -- Value must appear in accesses_on results."""
         r = self._accesses("Widget")
         assert _line_no("Value = 42") in _lns(r), f"Single-member initializer line missing: {r}"
 
     def test_multi_member_both_found(self):
-        """new Widget { Value = 1, Name = 'hello' } — both members must appear."""
+        """new Widget { Value = 1, Name = 'hello' } -- both members must appear."""
         r = self._accesses("Widget")
         members = _members(r)
         assert "Value" in members, f"'Value' from multi-member initializer missing: {r}"
@@ -76,7 +76,7 @@ class TestObjectInitializerAccesses(unittest.TestCase):
         r = self._accesses("Widget")
         line = _line_no("Value = 1, Name")
         line_results = [(ln, txt) for ln, txt in r if ln == line]
-        member_names = {txt.split("  ←")[0].lstrip(".") for _, txt in line_results}
+        member_names = {txt.split("  <-")[0].lstrip(".") for _, txt in line_results}
         assert "Value" in member_names, f"'Value' missing from same-line initializer: {r}"
         assert "Name" in member_names, f"'Name' missing from same-line initializer: {r}"
 

@@ -4,13 +4,13 @@ Tests for q_attrs and q_implements using sample/root1/Processors.cs.
 Replicates behavior observed in Round 3 of guided testing:
 
   attrs
-    → arguments were always dropped: child_by_field_name("arguments") returns
-      None — the tree-sitter C# grammar attaches the argument list as a named
+    -> arguments were always dropped: child_by_field_name("arguments") returns
+      None -- the tree-sitter C# grammar attaches the argument list as a named
       child with type "attribute_argument_list", not via a field name.
       Fixed by scanning named_children for "attribute_argument_list".
 
   implements
-    → generic base types displayed without type parameters:
+    -> generic base types displayed without type parameters:
       _base_type_names returns only the bare identifier from generic_name
       nodes (e.g. "IProcessor" not "IProcessor<string>") because that is
       what the index stores in `base_types`.  The display in q_implements and
@@ -46,7 +46,7 @@ def _lines(results):
 
 
 # ===========================================================================
-# q_attrs — argument capture (was broken)
+# q_attrs -- argument capture (was broken)
 # ===========================================================================
 
 class TestAttrs(unittest.TestCase):
@@ -61,7 +61,7 @@ class TestAttrs(unittest.TestCase):
         return q_attrs(*_PARSED, attr_name=name)
 
     def test_obsolete_argument_captured(self):
-        """[Obsolete("Use EnhancedProcessor instead")] — argument must appear."""
+        """[Obsolete("Use EnhancedProcessor instead")] -- argument must appear."""
         r = self._attrs("Obsolete")
         assert r, "Obsolete attribute must be found"
         texts = _texts(r)
@@ -75,7 +75,7 @@ class TestAttrs(unittest.TestCase):
             f"Argument parentheses missing: {r}"
 
     def test_no_argument_attribute_unaffected(self):
-        """[Serializable] has no arguments — must still be found, no crash."""
+        """[Serializable] has no arguments -- must still be found, no crash."""
         r = self._attrs("Serializable")
         assert len(r) == 2, f"Expected 2 [Serializable] hits, got {r}"
         for _, t in r:
@@ -106,7 +106,7 @@ namespace Synth {
 
 
 # ===========================================================================
-# q_implements — generic base type display (was degraded)
+# q_implements -- generic base type display (was degraded)
 # ===========================================================================
 
 class TestImplementsDisplay(unittest.TestCase):
@@ -123,14 +123,14 @@ class TestImplementsDisplay(unittest.TestCase):
         return q_implements(*_PARSED, type_name=name)
 
     def test_generic_type_param_shown_in_result(self):
-        """TextProcessor : BaseProcessor<string>, IProcessor<string> — '<string>' must appear."""
+        """TextProcessor : BaseProcessor<string>, IProcessor<string> -- '<string>' must appear."""
         r = self._impl("IProcessor")
         texts = _texts(r)
         assert "<string>" in texts, \
             f"Generic type parameter '<string>' missing from display: {r}"
 
     def test_base_processor_shows_type_param(self):
-        """BaseProcessor<T> : IProcessor<T> — type param T must appear."""
+        """BaseProcessor<T> : IProcessor<T> -- type param T must appear."""
         r = self._impl("IProcessor")
         base_hits = [(ln, t) for ln, t in r if "BaseProcessor" in t]
         assert base_hits, "BaseProcessor must appear in IProcessor results"
@@ -161,7 +161,7 @@ namespace Synth {
         assert "<" not in text, f"Non-generic base must not show angle brackets: {text!r}"
 
     def test_uses_kind_base_also_shows_generic_params(self):
-        """uses_kind=base uses the same _q_base_uses function — must also show generics."""
+        """uses_kind=base uses the same _q_base_uses function -- must also show generics."""
         r = q_uses(*_PARSED, type_name="IProcessor", uses_kind="base")
         assert r, "uses_kind=base must find IProcessor implementors"
         texts = _texts(r)

@@ -1,7 +1,7 @@
 """
 Tests for C/C++ support: extract_metadata and query_cpp functions.
 
-No daemon needed — all tests run against sample/root1/query_fixture.cpp.
+No daemon needed -- all tests run against sample/root1/query_fixture.cpp.
 
 Run:
     .client-venv/Scripts/python.exe -m pytest tests/unit/test_cpp.py -v
@@ -46,7 +46,7 @@ def has(results, sub):
 
 @unittest.skipIf(_SKIP, _SKIP_MSG)
 class TestExtractCppMetadata(unittest.TestCase):
-    """Unit tests for extract_metadata — no server needed."""
+    """Unit tests for extract_metadata -- no server needed."""
 
     @classmethod
     def setUpClass(cls):
@@ -88,7 +88,7 @@ class TestQueryCpp(unittest.TestCase):
     def _fx(self):
         return self.src, self.tree, self.lines
 
-    # ── classes ──────────────────────────────────────────────────────────────
+    # -- classes --------------------------------------------------------------
 
     def test_classes_finds_class(self):
         from query.cpp import cpp_q_classes
@@ -112,7 +112,7 @@ class TestQueryCpp(unittest.TestCase):
         r = cpp_q_classes(*self._fx())
         self.assertTrue(any("[class]" in t for _, t in r))
 
-    # ── methods ──────────────────────────────────────────────────────────────
+    # -- methods --------------------------------------------------------------
 
     def test_methods_finds_function(self):
         from query.cpp import cpp_q_methods
@@ -124,7 +124,7 @@ class TestQueryCpp(unittest.TestCase):
         r = cpp_q_methods(*self._fx())
         self.assertTrue(has(r, "process"))
 
-    # ── calls ─────────────────────────────────────────────────────────────────
+    # -- calls -----------------------------------------------------------------
 
     def test_calls_finds_function_call(self):
         from query.cpp import cpp_q_calls
@@ -141,7 +141,7 @@ class TestQueryCpp(unittest.TestCase):
         r = cpp_q_calls(*self._fx(), "nonexistentXYZ")
         self.assertEqual(len(r), 0)
 
-    # ── implements ──────────────────────────────────────────────────────────
+    # -- implements ----------------------------------------------------------
 
     def test_implements_finds_derived_class(self):
         from query.cpp import cpp_q_implements
@@ -159,7 +159,7 @@ class TestQueryCpp(unittest.TestCase):
         r = cpp_q_implements(*self._fx(), "INonExistent999")
         self.assertEqual(len(r), 0)
 
-    # ── declarations ────────────────────────────────────────────────────────
+    # -- declarations --------------------------------------------------------
 
     def test_declarations_finds_class(self):
         from query.cpp import cpp_q_declarations
@@ -176,7 +176,7 @@ class TestQueryCpp(unittest.TestCase):
         r = cpp_q_declarations(*self._fx(), "ZZZNonExistentXXX")
         self.assertEqual(len(r), 0)
 
-    # ── all_refs ────────────────────────────────────────────────────────────
+    # -- all_refs ------------------------------------------------------------
 
     def test_all_refs_finds_type(self):
         from query.cpp import cpp_q_all_refs
@@ -188,7 +188,7 @@ class TestQueryCpp(unittest.TestCase):
         r = cpp_q_all_refs(*self._fx(), "ZZZNonExistentXXX")
         self.assertEqual(len(r), 0)
 
-    # ── includes ────────────────────────────────────────────────────────────
+    # -- includes ------------------------------------------------------------
 
     def test_includes_found(self):
         from query.cpp import cpp_q_includes
@@ -201,7 +201,7 @@ class TestQueryCpp(unittest.TestCase):
         r = cpp_q_includes(*self._fx())
         self.assertTrue(any("<string>" in t for _, t in r))
 
-    # ── params ──────────────────────────────────────────────────────────────
+    # -- params --------------------------------------------------------------
 
     def test_params_found(self):
         from query.cpp import cpp_q_params
@@ -216,7 +216,7 @@ class TestQueryCpp(unittest.TestCase):
 
 @unittest.skipIf(_SKIP, _SKIP_MSG)
 class TestProcessCppFile(unittest.TestCase):
-    """Tests for process_cpp_file — uses actual file I/O."""
+    """Tests for process_cpp_file -- uses actual file I/O."""
 
     @classmethod
     def setUpClass(cls):
@@ -272,7 +272,7 @@ class TestProcessCppFile(unittest.TestCase):
         tmpdir_norm = self.tmpdir.replace("\\", "/")
         self.assertNotIn(tmpdir_norm, out)
 
-    # ── consistency: process_cpp_file ↔ extract_metadata ─────────────────
+    # -- consistency: process_cpp_file <-> extract_metadata -----------------
 
     def test_class_names_consistent(self):
         from indexserver.indexer import extract_metadata
@@ -293,7 +293,7 @@ class TestProcessCppFile(unittest.TestCase):
 
 @unittest.skipIf(_SKIP, _SKIP_MSG)
 class TestHALFixture(unittest.TestCase):
-    """Tests against hal_fixture.h — covers the four previously-buggy scenarios."""
+    """Tests against hal_fixture.h -- covers the four previously-buggy scenarios."""
 
     @classmethod
     def setUpClass(cls):
@@ -302,10 +302,10 @@ class TestHALFixture(unittest.TestCase):
     def _fx(self):
         return self.src, self.tree, self.lines
 
-    # ── Bug 1: qualified base class — only base name, not namespace ───────────
+    # -- Bug 1: qualified base class -- only base name, not namespace -----------
 
     def test_implements_qualified_base(self):
-        """ChibiOSAnalogIn : public HAL::AnalogIn → base is 'AnalogIn'."""
+        """ChibiOSAnalogIn : public HAL::AnalogIn -> base is 'AnalogIn'."""
         from query.cpp import cpp_q_implements
         r = cpp_q_implements(*self._fx(), "AnalogIn")
         self.assertTrue(has(r, "ChibiOSAnalogIn"), f"results={r}")
@@ -317,7 +317,7 @@ class TestHALFixture(unittest.TestCase):
         self.assertEqual(len(r), 0, f"HAL spuriously matched: {r}")
 
     def test_template_base_name_not_arg(self):
-        """LinuxScheduler : Scheduler<TimerTask> → base is 'Scheduler', not 'TimerTask'."""
+        """LinuxScheduler : Scheduler<TimerTask> -> base is 'Scheduler', not 'TimerTask'."""
         from query.cpp import cpp_q_implements
         r_sched = cpp_q_implements(*self._fx(), "Scheduler")
         self.assertTrue(has(r_sched, "LinuxScheduler"), f"results={r_sched}")
@@ -325,14 +325,14 @@ class TestHALFixture(unittest.TestCase):
         self.assertEqual(len(r_task), 0, f"TimerTask spuriously matched: {r_task}")
 
     def test_multiple_qualified_bases(self):
-        """FullHALImpl : HAL::AnalogIn, HAL::AnalogSource → both bases found."""
+        """FullHALImpl : HAL::AnalogIn, HAL::AnalogSource -> both bases found."""
         from query.cpp import cpp_q_implements
         r_ain  = cpp_q_implements(*self._fx(), "AnalogIn")
         r_asrc = cpp_q_implements(*self._fx(), "AnalogSource")
         self.assertTrue(has(r_ain,  "FullHALImpl"), f"AnalogIn results={r_ain}")
         self.assertTrue(has(r_asrc, "FullHALImpl"), f"AnalogSource results={r_asrc}")
 
-    # ── Bug 1 (metadata): extract_metadata base_types ─────────────────────
+    # -- Bug 1 (metadata): extract_metadata base_types ---------------------
 
     def test_metadata_qualified_base_types(self):
         """extract_metadata must list 'AnalogIn', not 'HAL', as base type."""
@@ -344,7 +344,7 @@ class TestHALFixture(unittest.TestCase):
         self.assertIn("Scheduler",  meta["base_types"])
         self.assertNotIn("TimerTask", meta["base_types"])
 
-    # ── Bug 2: qualified class declarations ────────────────────────────────────
+    # -- Bug 2: qualified class declarations ------------------------------------
 
     def test_declarations_finds_namespace_class(self):
         """cpp_q_declarations finds HAL::AnalogIn by short name 'AnalogIn'."""
@@ -358,7 +358,7 @@ class TestHALFixture(unittest.TestCase):
         r = cpp_q_declarations(*self._fx(), "ChibiOSAnalogIn")
         self.assertGreater(len(r), 0)
 
-    # ── Bug 3: qualified call sites ────────────────────────────────────────────
+    # -- Bug 3: qualified call sites --------------------------------------------
 
     def test_calls_qualified_function(self):
         """AP::panic() calls are found by bare name 'panic'."""
@@ -380,7 +380,7 @@ class TestHALFixture(unittest.TestCase):
         self.assertIn("panic", meta["call_sites"])
         self.assertIn("hal_channel", meta["call_sites"])
 
-    # ── Bug 4: pure-virtual / member function declarations ────────────────────
+    # -- Bug 4: pure-virtual / member function declarations --------------------
 
     def test_methods_finds_pure_virtual(self):
         """cpp_q_methods finds pure-virtual 'read' declared inside AnalogSource."""
@@ -427,7 +427,7 @@ class TestHALFixture(unittest.TestCase):
 
 @unittest.skipIf(_SKIP, _SKIP_MSG)
 class TestCornerCases(unittest.TestCase):
-    """Tests against corner_cases.h — pins the three bugs fixed in this session:
+    """Tests against corner_cases.h -- pins the three bugs fixed in this session:
       1. Operator overloads (operator_name node) found by methods/declarations.
       2. Destructor names include the '~' prefix.
       3. Trailing-return-type prototypes (declaration node) found by methods/declarations.
@@ -440,7 +440,7 @@ class TestCornerCases(unittest.TestCase):
     def _fx(self):
         return self.src, self.tree, self.lines
 
-    # ── Bug 1 fix: operator overloads appear in methods ───────────────────────
+    # -- Bug 1 fix: operator overloads appear in methods -----------------------
 
     def test_methods_finds_operator_plus(self):
         """Vec2::operator+ must appear in methods output."""
@@ -471,7 +471,7 @@ class TestCornerCases(unittest.TestCase):
         matches = [t for _, t in r if "operator=" in t and "NonCopyable" in t]
         self.assertTrue(len(matches) > 0, f"results={r}")
 
-    # ── Bug 1 fix: operator overloads found by declarations ───────────────────
+    # -- Bug 1 fix: operator overloads found by declarations -------------------
 
     def test_declarations_finds_operator_plus(self):
         from query.cpp import cpp_q_declarations
@@ -483,7 +483,7 @@ class TestCornerCases(unittest.TestCase):
         r = cpp_q_declarations(*self._fx(), "operator=")
         self.assertGreater(len(r), 0, f"operator= not found in declarations")
 
-    # ── Bug 2 fix: destructor names include '~' ───────────────────────────────
+    # -- Bug 2 fix: destructor names include '~' -------------------------------
 
     def test_methods_destructor_has_tilde(self):
         """~NonCopyable() must show as '~NonCopyable', not 'NonCopyable'."""
@@ -504,7 +504,7 @@ class TestCornerCases(unittest.TestCase):
         r = cpp_q_declarations(*self._fx(), "~NonCopyable")
         self.assertGreater(len(r), 0, "~NonCopyable not found via declarations")
 
-    # ── Bug 3 fix: trailing-return-type prototypes found ─────────────────────
+    # -- Bug 3 fix: trailing-return-type prototypes found ---------------------
 
     def test_methods_trailing_return_free_function(self):
         """auto compute_sum(int a, int b) -> int must appear in methods."""
@@ -527,7 +527,7 @@ class TestCornerCases(unittest.TestCase):
         r = cpp_q_declarations(*self._fx(), "make_label")
         self.assertGreater(len(r), 0, "make_label not found via declarations")
 
-    # ── Other corner cases: classes ───────────────────────────────────────────
+    # -- Other corner cases: classes -------------------------------------------
 
     def test_classes_finds_vec2(self):
         from query.cpp import cpp_q_classes
@@ -544,10 +544,10 @@ class TestCornerCases(unittest.TestCase):
         r = cpp_q_classes(*self._fx())
         self.assertTrue(has(r, "RingBuffer"))
 
-    # ── Other corner cases: implements ────────────────────────────────────────
+    # -- Other corner cases: implements ----------------------------------------
 
     def test_implements_multiple_inheritance(self):
-        """Sensor : ISerializable, ILoggable — both bases should match."""
+        """Sensor : ISerializable, ILoggable -- both bases should match."""
         from query.cpp import cpp_q_implements
         r_ser = cpp_q_implements(*self._fx(), "ISerializable")
         r_log = cpp_q_implements(*self._fx(), "ILoggable")
@@ -555,13 +555,13 @@ class TestCornerCases(unittest.TestCase):
         self.assertTrue(has(r_log, "Sensor"), f"ILoggable results={r_log}")
 
     def test_implements_virtual_base(self):
-        """Plane : virtual VehicleBase — VehicleBase should match."""
+        """Plane : virtual VehicleBase -- VehicleBase should match."""
         from query.cpp import cpp_q_implements
         r = cpp_q_implements(*self._fx(), "VehicleBase")
         self.assertTrue(has(r, "Plane"), f"VehicleBase results={r}")
 
     def test_implements_diamond(self):
-        """VTOL : Plane, Copter — both bases should match."""
+        """VTOL : Plane, Copter -- both bases should match."""
         from query.cpp import cpp_q_implements
         r_plane = cpp_q_implements(*self._fx(), "Plane")
         r_copter = cpp_q_implements(*self._fx(), "Copter")
@@ -569,13 +569,13 @@ class TestCornerCases(unittest.TestCase):
         self.assertTrue(has(r_copter, "VTOL"), f"Copter results={r_copter}")
 
     def test_implements_nested_class_inherits_iwidget(self):
-        """Panel::Label : IWidget — Label should match IWidget."""
+        """Panel::Label : IWidget -- Label should match IWidget."""
         from query.cpp import cpp_q_implements
         r = cpp_q_implements(*self._fx(), "IWidget")
         self.assertTrue(has(r, "Label"), f"IWidget results={r}")
         self.assertTrue(has(r, "Panel"), f"Panel not in IWidget results={r}")
 
-    # ── Other corner cases: calls ─────────────────────────────────────────────
+    # -- Other corner cases: calls ---------------------------------------------
 
     def test_calls_inside_lambda(self):
         """helper() called inside a lambda in fire_all must be found."""

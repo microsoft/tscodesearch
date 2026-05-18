@@ -1,8 +1,8 @@
 """
 Centralised, deduplicating index queue for all writes to the Tantivy backend.
 
-Every write — from the initial full-index walk, the watcher, and per-event
-file changes — flows through this single queue. A background worker thread
+Every write -- from the initial full-index walk, the watcher, and per-event
+file changes -- flows through this single queue. A background worker thread
 streams items into the writer (parsing in parallel) and commits when the
 queue drains, when a fence is reached, or after at most COMMIT_INTERVAL_S.
 
@@ -41,7 +41,7 @@ BackendResolver = Callable[[str], Backend | None]
 
 # Commit cadence: commit when the queue empties, when a fence is hit, when the
 # buffered doc count crosses COMMIT_DOC_THRESHOLD, or after COMMIT_INTERVAL_S
-# seconds since the last commit — whichever comes first. The doc threshold is
+# seconds since the last commit -- whichever comes first. The doc threshold is
 # what gives the operator a visible progress bar during bulk indexing.
 COMMIT_INTERVAL_S = 5 * 60
 COMMIT_DOC_THRESHOLD = 5_000
@@ -80,10 +80,10 @@ class IndexQueue:
         self._t_parse_total: float = 0.0
         self._t_index_total: float = 0.0
 
-    # ── lifecycle ─────────────────────────────────────────────────────────────
+    # -- lifecycle -------------------------------------------------------------
 
     def start(self, resolver: BackendResolver) -> None:
-        """Attach a backend resolver (collection_name → Backend) and start the worker."""
+        """Attach a backend resolver (collection_name -> Backend) and start the worker."""
         self._resolve = resolver
         self._stop.clear()
         self._thread = threading.Thread(
@@ -99,7 +99,7 @@ class IndexQueue:
             return
 
         # Poll-join with a busy-file dump every second if the worker is still alive.
-        # Diagnostics for "queue won't drain" — shows which files parse workers
+        # Diagnostics for "queue won't drain" -- shows which files parse workers
         # are stuck on (typically large/minified JS or deeply nested ASTs).
         deadline = time.monotonic() + timeout
         while self._thread.is_alive() and time.monotonic() < deadline:
@@ -126,7 +126,7 @@ class IndexQueue:
                     flush=True,
                 )
 
-    # ── public interface ──────────────────────────────────────────────────────
+    # -- public interface ------------------------------------------------------
 
     def enqueue(
         self,
@@ -196,7 +196,7 @@ class IndexQueue:
                 result["by_reason"] = dict(self._n_by_reason)
             return result
 
-    # ── worker ────────────────────────────────────────────────────────────────
+    # -- worker ----------------------------------------------------------------
 
     def _run(self) -> None:
         """Stream-add docs to the writer; commit on drain, fence, or timer."""
@@ -227,7 +227,7 @@ class IndexQueue:
                         self._cond.wait(timeout=COMMIT_INTERVAL_S)
 
         # Shutdown: flush already-buffered work so it's durable on disk.
-        # No new chunks are pulled (loop exited), no new adds happen — the
+        # No new chunks are pulled (loop exited), no new adds happen -- the
         # commit just writes what's already in the writer. backend.close()
         # will skip wait_merging_threads(); merges complete after os._exit.
         if dirty:
@@ -259,7 +259,7 @@ class IndexQueue:
         """Parse upserts in parallel, then stream all results into the writer.
 
         Fences flush+commit any preceding buffered work, then fire their
-        callback inline. Stop signals abort early — the dropped items will
+        callback inline. Stop signals abort early -- the dropped items will
         be re-enqueued by the verifier on the next sync.
         """
         if self._resolve is None:
@@ -341,7 +341,7 @@ class IndexQueue:
         with self._cond:
             self._t_parse_total += t_parse
             self._t_index_total += t_add
-            # Provisional bookkeeping — these items are buffered, not yet committed.
+            # Provisional bookkeeping -- these items are buffered, not yet committed.
             # They count as "upserted" once the commit succeeds; on commit failure
             # we'd undo this, but we don't have per-batch ids tracked, so we
             # accept a small over-counting on failed commits.

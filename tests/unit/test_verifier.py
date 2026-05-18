@@ -1,8 +1,8 @@
 """
 Unit tests for the verifier: export_index_map and run_verify.
 
-TestExportIndex   — exercises export_index_map against a real Tantivy index
-TestRunVerifyUnit — exercises run_verify with index_file_list mocked out so
+TestExportIndex   -- exercises export_index_map against a real Tantivy index
+TestRunVerifyUnit -- exercises run_verify with index_file_list mocked out so
                     the test focuses on diff/orphan logic, not the indexer
                     pipeline (covered by tests/integration/test_verifier.py)
 """
@@ -57,10 +57,10 @@ def _seed_doc(backend, doc_id: str, mtime: int) -> None:
     backend.upsert_many([doc])
 
 
-# ── TestExportIndex ───────────────────────────────────────────────────────────
+# -- TestExportIndex -----------------------------------------------------------
 
 class TestExportIndex(unittest.TestCase):
-    """Unit tests for export_index_map — runs against a real Tantivy index."""
+    """Unit tests for export_index_map -- runs against a real Tantivy index."""
 
     def setUp(self):
         self.backend, self._cleanup = make_test_backend()
@@ -88,10 +88,10 @@ class TestExportIndex(unittest.TestCase):
         self.assertEqual(export_index_map(self.backend), {})
 
 
-# ── TestRunVerifyUnit ─────────────────────────────────────────────────────────
+# -- TestRunVerifyUnit ---------------------------------------------------------
 
 class TestRunVerifyUnit(unittest.TestCase):
-    """run_verify diff logic — real Tantivy backend, mocked index_file_list.
+    """run_verify diff logic -- real Tantivy backend, mocked index_file_list.
 
     The mock lets the test assert exactly which files run_verify decided to
     re-index without re-running the whole tree-sitter extraction; integration

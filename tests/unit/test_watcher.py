@@ -1,7 +1,7 @@
 """
 Unit tests for the file watcher: SourceChangeHandler event routing and flush logic.
 
-TestSourceChangeHandlerUnit — no daemon needed; uses a lightweight mock queue.
+TestSourceChangeHandlerUnit -- no daemon needed; uses a lightweight mock queue.
 
 Integration tests (live Tantivy index) are in tests/integration/test_watcher.py.
 
@@ -20,7 +20,7 @@ from indexserver.config import load_config as _load_config
 _cfg = _load_config()
 
 
-# ── lightweight mock queue ────────────────────────────────────────────────────
+# -- lightweight mock queue ----------------------------------------------------
 
 class _MockQueue:
     """Records enqueue() calls for assertion without any indexserver interaction."""
@@ -33,12 +33,12 @@ class _MockQueue:
         return True
 
 
-# ── TestSourceChangeHandlerUnit ───────────────────────────────────────────────
+# -- TestSourceChangeHandlerUnit -----------------------------------------------
 
 class TestSourceChangeHandlerUnit(unittest.TestCase):
-    """Unit tests for SourceChangeHandler event routing and flush → queue forwarding.
+    """Unit tests for SourceChangeHandler event routing and flush -> queue forwarding.
 
-    Uses _MockQueue — no running server, no IndexQueue worker thread.
+    Uses _MockQueue -- no running server, no IndexQueue worker thread.
     """
 
     COLL = "test_coll"
@@ -61,7 +61,7 @@ class TestSourceChangeHandlerUnit(unittest.TestCase):
             f.write(content)
         return path
 
-    # ── event routing ──────────────────────────────────────────────────────────
+    # -- event routing ----------------------------------------------------------
 
     def test_on_created_cs_adds_upsert(self):
         path = self._cs_file()
@@ -130,7 +130,7 @@ class TestSourceChangeHandlerUnit(unittest.TestCase):
             self.assertNotIn(old_path, self.handler._pending)
             self.assertEqual(self.handler._pending.get(new_path), "created")
 
-    # ── debounce timer ─────────────────────────────────────────────────────────
+    # -- debounce timer ---------------------------------------------------------
 
     def test_debounce_timer_is_started(self):
         path = self._cs_file()
@@ -145,7 +145,7 @@ class TestSourceChangeHandlerUnit(unittest.TestCase):
         self.handler.on_created(_FakeEvent(path2))
         self.assertIsNot(self.handler._timer, first_timer)
 
-    # ── flush → queue forwarding ───────────────────────────────────────────────
+    # -- flush -> queue forwarding -----------------------------------------------
 
     def test_flush_upsert_calls_enqueue(self):
         path = self._cs_file()

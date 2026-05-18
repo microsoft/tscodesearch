@@ -28,9 +28,9 @@ from tests.fixtures import (
 from ..cs import q_accesses_on
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # q_member_accesses AST function
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 class TestQMemberAccesses(unittest.TestCase):
 
@@ -71,7 +71,7 @@ class TestQMemberAccesses(unittest.TestCase):
             f"IBlobStore field must not match BlobStore search: {r}"
 
     def test_var_inferred_object_creation(self):
-        """var x = new BlobStore() — accesses on x must be found."""
+        """var x = new BlobStore() -- accesses on x must be found."""
         r = self._accesses(MEMBER_ACCESS_VAR_INFERRED, "BlobStore")
         assert r, "Accesses on var-inferred BlobStore must be found"
         text = " ".join(t for _, t in r)

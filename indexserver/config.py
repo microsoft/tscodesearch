@@ -7,14 +7,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-# ── Path normalization ────────────────────────────────────────────────────────
+# -- Path normalization --------------------------------------------------------
 
 def normalize_path(path: str) -> str:
-    """Canonical form for any filesystem path: backslashes → forward slashes."""
+    """Canonical form for any filesystem path: backslashes -> forward slashes."""
     return path.replace("\\", "/")
 
 
-# ── Extension and exclusion defaults ─────────────────────────────────────────
+# -- Extension and exclusion defaults -----------------------------------------
 
 INCLUDE_EXTENSIONS: frozenset = frozenset({
     ".cs",
@@ -36,7 +36,7 @@ EXCLUDE_DIRS: frozenset = frozenset({
 })
 
 
-# ── Collection naming ─────────────────────────────────────────────────────────
+# -- Collection naming ---------------------------------------------------------
 
 def _sanitize_root_name(name: str) -> str:
     return _re.sub(r"[^a-z0-9_]", "_", name.lower())
@@ -46,7 +46,7 @@ def collection_for_root(name: str = "default") -> str:
     return f"codesearch_{_sanitize_root_name(name)}"
 
 
-# ── Repo location ─────────────────────────────────────────────────────────────
+# -- Repo location -------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -56,7 +56,7 @@ def index_root() -> Path:
     return _REPO_ROOT / ".tantivy"
 
 
-# ── Root ──────────────────────────────────────────────────────────────────────
+# -- Root ----------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Root:
@@ -79,7 +79,7 @@ class Root:
         return self.path.rstrip("/") + "/" + r
 
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config --------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Config:
@@ -106,7 +106,7 @@ class Config:
         return collection_for_root(name)
 
     def get_root(self, name: str = "") -> Root:
-        """Resolve root name → Root. Empty name resolves to 'default' or the first root."""
+        """Resolve root name -> Root. Empty name resolves to 'default' or the first root."""
         if not name:
             name = "default" if "default" in self.roots else next(iter(self.roots))
         if name not in self.roots:
@@ -114,7 +114,7 @@ class Config:
         return self.roots[name]
 
 
-# ── Roots parsing ─────────────────────────────────────────────────────────────
+# -- Roots parsing -------------------------------------------------------------
 
 def _parse_roots(raw: dict) -> "dict[str, Root]":
     """Parse the 'roots' section of config.json into Root objects.
@@ -147,7 +147,7 @@ def _parse_roots(raw: dict) -> "dict[str, Root]":
     return result
 
 
-# ── load_config ───────────────────────────────────────────────────────────────
+# -- load_config ---------------------------------------------------------------
 
 def load_config(config_file: str | None = None) -> Config:
     """Read config.json and return a Config instance."""

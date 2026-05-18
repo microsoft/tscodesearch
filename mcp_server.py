@@ -5,7 +5,7 @@ Runs on Windows via .client-venv/Scripts/python.exe (stdio transport).
 
 Tools:
   query_codebase     - Tantivy pre-filter + tree-sitter AST (via daemon /query-codebase)
-  query_single_file  - Tree-sitter AST on one file (direct import — no daemon required)
+  query_single_file  - Tree-sitter AST on one file (direct import -- no daemon required)
   ready              - Quick index health snapshot
   wait_for_sync      - Block until index has caught up to all pending file events
   verify_index       - Start/stop/monitor index repair scan
@@ -28,7 +28,7 @@ from mcp.server.fastmcp import FastMCP
 from query.dispatch import query_file
 from indexserver.config import Root, load_config, normalize_path
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config --------------------------------------------------------------------
 
 _cfg      = load_config()
 _API_PORT = _cfg.port
@@ -45,7 +45,7 @@ _DETAIL_FILES_THRESHOLD = 20
 # Files with more than this many AST hits get a query_single_file suggestion.
 _PER_FILE_DETAIL_LINES  = 10
 
-# ── HTTP helpers ──────────────────────────────────────────────────────────────
+# -- HTTP helpers --------------------------------------------------------------
 
 def _http(method: str, path: str, body=None, timeout: int = 120):
     url     = f"http://localhost:{_API_PORT}{path}"
@@ -70,7 +70,7 @@ def _get(path: str, timeout: int = 10):
 def _post(path: str, body: dict, timeout: int = 120):
     return _http("POST", path, body=body, timeout=timeout)
 
-# ── Config helpers ────────────────────────────────────────────────────────────
+# -- Config helpers ------------------------------------------------------------
 
 def _resolve_root(name: str) -> Root:
     """Resolve a root name to a ``Root`` object.
@@ -129,7 +129,7 @@ def _queue_warning() -> str:
         if running:
             parts.append("syncer walk in progress")
         if parts:
-            return f"[WARNING: index has outstanding work — {', '.join(parts)}. Results may be incomplete.]\n\n"
+            return f"[WARNING: index has outstanding work -- {', '.join(parts)}. Results may be incomplete.]\n\n"
     except Exception:
         pass  # server may not be running; warnings are best-effort
     return ""
@@ -138,7 +138,7 @@ def _sync_state(data: dict) -> tuple[bool, str]:
     """Inspect a /status response. Returns (is_synced, human_state).
 
     Synced means: index queue is empty and the syncer is idle with no pending
-    jobs. Watcher activity alone does not block — events flow through the
+    jobs. Watcher activity alone does not block -- events flow through the
     queue, which we already check.
     """
     if not isinstance(data, dict):
@@ -167,11 +167,11 @@ def _truncate(output: str) -> tuple[str, bool]:
     nl    = trunc.rfind("\n")
     return (trunc[:nl] if nl > 0 else trunc), True
 
-# ── MCP server ────────────────────────────────────────────────────────────────
+# -- MCP server ----------------------------------------------------------------
 
 mcp = FastMCP("tscodesearch")
 
-# ── query_codebase ────────────────────────────────────────────────────────────
+# -- query_codebase ------------------------------------------------------------
 
 @mcp.tool()
 def query_codebase(
@@ -183,18 +183,19 @@ def query_codebase(
     include_body: bool = False,
     symbol_kind: str = "",
     uses_kind: str = "",
+    visibility: str = "",
     exclude_path: str = "",
 ) -> str:
     """Index pre-filter + tree-sitter AST. Returns one of three response shapes
 depending on result size, picked to keep the response compact and paged-friendly:
 
-  Tier 1 — more than 250 candidate files: a folder drill-down derived from
+  Tier 1 -- more than 250 candidate files: a folder drill-down derived from
            index facets (no AST runs at all). Re-issue with a deeper or
            different sub= to narrow.
-  Tier 2 — 20-250 files with AST matches: filenames + hit counts only,
+  Tier 2 -- 20-250 files with AST matches: filenames + hit counts only,
            sorted by hits desc. Use query_single_file on a specific file
            to see line-level hits.
-  Tier 3 — fewer than 20 files with AST matches: full path:line:content,
+  Tier 3 -- fewer than 20 files with AST matches: full path:line:content,
            but each file is capped at 10 lines. Files that get capped get
            a per-file query_single_file suggestion appended.
 
@@ -205,13 +206,13 @@ tier 2 and tier 3 are drop-in.
 For listing modes (methods, fields, classes, imports, capabilities) use query_single_file.
 
 All modes are identifier-based AST queries. The pattern must be a single
-identifier name (e.g. "BlobStore", "SaveChanges") — no whitespace, operators,
+identifier name (e.g. "BlobStore", "SaveChanges") -- no whitespace, operators,
 punctuation, generic brackets, or quoted strings. Matches are restricted to
 identifier occurrences in code; strings and comments are never matched.
 
 If you need a multi-word phrase, an operator-bearing fragment, a literal
 substring inside a string/comment, or an arbitrary regex, this tool cannot
-help — fall back to grep/ripgrep over the source tree.
+help -- fall back to grep/ripgrep over the source tree.
 
 Args:
   mode:         AST query mode. All take a single identifier as `pattern`.
@@ -226,19 +227,24 @@ Args:
                 and silently returns empty if you pass the wrong kind:
                   - `calls` wants a METHOD name (e.g. "SaveChanges"). Passing a
                     variable/receiver name (e.g. "blobStore") matches almost
-                    nothing — it only fires if that name is invoked directly
+                    nothing -- it only fires if that name is invoked directly
                     as `blobStore(...)`, not on `blobStore.Method()` calls.
                     To find every usage of a variable, use `all_refs` on the
                     variable name.
                   - `accesses_on` wants a TYPE name (e.g. "IRepository"). It
                     finds `.Member`/`?.Member` accesses on locals/params/fields
-                    of that type, plus `new T { Prop = … }` initializers and
+                    of that type, plus `new T { Prop = ... }` initializers and
                     `with` mutations. It returns NOTHING when the variable is
                     only assigned, returned, or forwarded as an argument (no
                     `.Member` exists). When `accesses_on` is empty but you know
                     the variable exists, fall back to `all_refs` on the
                     variable name.
-                  - `accesses_of` wants a MEMBER name (e.g. "Timeout").
+                  - `accesses_of` wants a MEMBER name (e.g. "Timeout"). It
+                    only finds *qualified* reads (`expr.Timeout`). Bare
+                    identifier reads in the declaring class itself -- which
+                    compile to implicit `this.Timeout` -- are NOT matched.
+                    For implicit-this reads use `all_refs` on the member
+                    name.
   pattern:      A single identifier. Examples that DO work: "BlobStore",
                 "SaveChanges", "IDataStore". Examples that do NOT work:
                 "using BlobStore", "(BlobStore)", "Save Changes",
@@ -253,11 +259,22 @@ Args:
                 Omit to search all indexed languages. Default: cs.
   context_lines: Surrounding source lines per match.
   root:         Named source root (empty = default).
-  include_body: For declarations — include full body. Default false.
-  symbol_kind:  For declarations — restrict to: method, class, interface, etc.
-  uses_kind:    For uses — all, field, param, return, cast, base, locals.
+  include_body: For declarations -- include full body. Default false.
+  symbol_kind:  For declarations -- restrict to: method, class, interface, etc.
+  uses_kind:    For `uses` -- narrow to one structural role. Values:
+                  - omitted / "all" (default): union of `type_refs` +
+                    `cast_types` -- every type reference anywhere in the file.
+                  - field, param, return, cast, base, locals: narrow to that
+                    one role.
+  visibility:   For declaration modes (declarations / classes / methods /
+                fields) -- comma-separated access modifiers to keep. Values:
+                public, internal, protected, private. Empty = no filter.
+                Languages that don't capture visibility (e.g. SQL) match
+                nothing when this filter is set. (C# captures explicit
+                modifiers plus interface-public / enum-public / nested
+                type defaults.)
   exclude_path: Comma-separated list of folder paths to exclude from results.
-                Each value is matched as an exact ancestor folder, not a glob —
+                Each value is matched as an exact ancestor folder, not a glob --
                 wildcards are not supported. Behavior:
                   - "tests"                    excludes any file under any tests/
                                                directory at any depth
@@ -276,11 +293,25 @@ Examples:
   query_codebase("calls", "SaveChanges", sub="services,vendor")
   query_codebase("calls", "SaveChanges", exclude_path="tests,generated")
   query_codebase("uses", "IRepo", sub="services", exclude_path="services/legacy")"""
-    _LISTING = {"methods", "fields", "classes", "imports", "capabilities"}
+    # File-targeted modes don't make sense for a codebase-wide search.
+    # `body`/`at`/`params`/`var_type` need an explicit file; listing modes
+    # (methods/fields/classes/imports/capabilities) only describe a single
+    # file's structure. Catch them here so the agent sees an actionable
+    # redirect instead of the daemon's generic "unknown mode" error.
+    _FILE_ONLY = {
+        "methods", "fields", "classes", "imports", "capabilities",
+        "body", "at", "params", "var_type",
+    }
     m = mode.lower().strip().replace("-", "_")
-    if m in _LISTING:
-        return (f"Mode '{m}' lists file contents without filtering — use query_single_file instead:\n"
-                f'  query_single_file("{m}", file="$SRC_ROOT/path/to/File.cs")')
+    if m in _FILE_ONLY:
+        if m in ("body", "at", "params", "var_type"):
+            why = "needs a specific file"
+            example_arg = pattern or ('"SaveChanges"' if m != "at" else '"42:10"')
+            example = f'  query_single_file("{m}", {example_arg}, file="path/to/File.cs")'
+        else:
+            why = "lists one file's contents without filtering"
+            example = f'  query_single_file("{m}", file="path/to/File.cs")'
+        return (f"Mode '{m}' {why} -- use query_single_file instead:\n{example}")
 
     try:
         status, data = _post("/query-codebase", {
@@ -289,6 +320,7 @@ Examples:
             "root": root or "", "limit": _QUERY_CODEBASE_LIMIT,
             "include_body": include_body,
             "symbol_kind": symbol_kind or "", "uses_kind": uses_kind or "",
+            "visibility": visibility or "",
             "exclude_path": exclude_path or "",
         })
     except Exception as e:
@@ -297,11 +329,11 @@ Examples:
     warn = _queue_warning()
 
     if status == 503 and isinstance(data, dict) and data.get("loading"):
-        return "Daemon is still starting up — retry in a few seconds.\nUse service_status() to check when it is ready."
+        return "Daemon is still starting up -- retry in a few seconds.\nUse service_status() to check when it is ready."
     if status >= 400:
         err    = data.get("error", json.dumps(data)) if isinstance(data, dict) else str(data)
         detail = data.get("detail", "") if isinstance(data, dict) else ""
-        msg    = f"TSCODESEARCH ERROR — do not fall back to Grep/Glob; investigate and fix.\nError from indexserver: {err}"
+        msg    = f"TSCODESEARCH ERROR -- do not fall back to Grep/Glob; investigate and fix.\nError from indexserver: {err}"
         if detail:
             msg += f"\nDetail: {detail}"
         return warn + msg
@@ -345,19 +377,19 @@ Examples:
                     seen_vals.add(val)
                     counts.append((val, int(c["count"])))
 
-        lines = [f"Too many files ({found}) — narrowing required.",
+        lines = [f"Too many files ({found}) -- narrowing required.",
                  "Repeat with a deeper sub= to scope further, then re-run.", ""]
         if counts:
             counts.sort(key=lambda x: -x[1])
             scope_label = f" under '{','.join(scopes)}'" if scopes else ""
-            lines.append(f"Folders{scope_label} with '{pattern}' hits — re-run with sub=<path>:")
+            lines.append(f"Folders{scope_label} with '{pattern}' hits -- re-run with sub=<path>:")
             for name, count in counts[:25]:
                 lines.append(f'  query_codebase("{m}", "{pattern}", sub="{name}")  # ~{count} files')
         else:
-            lines.append("No deeper folder breakdown available — try a more specific pattern.")
+            lines.append("No deeper folder breakdown available -- try a more specific pattern.")
         return warn + "\n".join(lines)
 
-    # AST-confirmed files only — drop index false positives.
+    # AST-confirmed files only -- drop index false positives.
     files_with_matches: list[tuple[str, list]] = []
     total_matches = 0
     for hit in hits:
@@ -377,11 +409,16 @@ Examples:
     files_with_matches.sort(key=lambda fm: -len(fm[1]))
 
     def _qsf_call(file_rel: str) -> str:
-        """A query_single_file call mirroring the current query_codebase params."""
+        """A query_single_file call mirroring the current query_codebase params.
+
+        Uses the bare relative path from the tier-2/3 listing -- the tool
+        accepts that directly (it prepends the default root), so injecting
+        a ``$SRC_ROOT/`` placeholder just adds noise.
+        """
         args = [f'"{m}"']
         if pattern:
             args.append(f'"{pattern}"')
-        args.append(f'file="$SRC_ROOT/{file_rel}"')
+        args.append(f'file="{file_rel}"')
         if root:
             args.append(f'root="{root}"')
         if include_body:
@@ -390,26 +427,28 @@ Examples:
             args.append(f'symbol_kind="{symbol_kind}"')
         if uses_kind:
             args.append(f'uses_kind="{uses_kind}"')
+        if visibility:
+            args.append(f'visibility="{visibility}"')
         return "query_single_file(" + ", ".join(args) + ")"
 
-    # Tier 2 — many files: filenames + counts only.
+    # Tier 2 -- many files: filenames + counts only.
     if n_files >= _DETAIL_FILES_THRESHOLD:
         body_lines = [
             f"{rel}  ({len(matches)} hit{'s' if len(matches) != 1 else ''})"
             for rel, matches in files_with_matches
         ]
-        suggestion = (f"\n\n{n_files} files matched — line-level results omitted. "
+        suggestion = (f"\n\n{n_files} files matched -- line-level results omitted. "
                       f"To see hits in a specific file:\n"
                       f"  {_qsf_call(files_with_matches[0][0])}")
         output = "\n".join(body_lines) + suggestion
         output, truncated = _truncate(output)
         if truncated:
             shown = output.count("\n") + 1
-            note  = f"[Result truncated — showing first {shown} lines of {n_files}.]\n\n"
+            note  = f"[Result truncated -- showing first {shown} lines of {n_files}.]\n\n"
             return warn + header + note + output
         return warn + header + output
 
-    # Tier 3 — few files: full content, but cap each file at PER_FILE_DETAIL_LINES.
+    # Tier 3 -- few files: full content, but cap each file at PER_FILE_DETAIL_LINES.
     out_lines: list[str] = []
     truncated_files: list[tuple[str, int]] = []
     for rel, matches in files_with_matches:
@@ -421,7 +460,7 @@ Examples:
     output = "\n".join(out_lines)
     if truncated_files:
         notes = [f"\n\n{len(truncated_files)} file(s) had more than "
-                 f"{_PER_FILE_DETAIL_LINES} hits — showing first "
+                 f"{_PER_FILE_DETAIL_LINES} hits -- showing first "
                  f"{_PER_FILE_DETAIL_LINES} of each. To see all hits in a file:"]
         for rel, total in truncated_files:
             notes.append(f"  {_qsf_call(rel)}  # {total} total hits")
@@ -430,11 +469,11 @@ Examples:
     output, truncated = _truncate(output)
     if truncated:
         shown   = output.count("\n") + 1
-        summary = f"[Result truncated — showing first {shown} lines.]\n\n"
+        summary = f"[Result truncated -- showing first {shown} lines.]\n\n"
         return warn + header + summary + output
     return warn + header + output
 
-# ── query_single_file ─────────────────────────────────────────────────────────
+# -- query_single_file ---------------------------------------------------------
 
 @mcp.tool()
 def query_single_file(
@@ -445,52 +484,64 @@ def query_single_file(
     include_body: bool = False,
     symbol_kind: str = "",
     uses_kind: str = "",
+    visibility: str = "",
     head_limit: int = 250,
     offset: int = 0,
 ) -> str:
     """Run a tree-sitter AST query on a single file. No index search.
 
-Mode names are canonical — one name per concept across every language.
+Mode names are canonical -- one name per concept across every language.
 Call `query_single_file("capabilities", file=...)` first if you're not sure
 which modes a given file's language supports.
 
 Pattern modes are identifier-based: `pattern` must be a single identifier
 name (e.g. "BlobStore"), not a phrase, regex, or punctuation-bearing fragment.
-Matches are restricted to identifier occurrences in code — strings and comments
+Matches are restricted to identifier occurrences in code -- strings and comments
 are not matched. For literal substring search, multi-word phrases, operators,
-or comment fragments, this tool cannot help — use grep/ripgrep on the file.
+or comment fragments, this tool cannot help -- use grep/ripgrep on the file.
 
 Modes (canonical, same name across languages):
 
-  Listing modes — omit `pattern`:
-    classes       Type declarations (class, interface, struct, enum, record, …).
+  Listing modes -- omit `pattern`:
+    classes       Type declarations (class, interface, struct, enum, record, ...).
     methods       Method, constructor, property, field, event declarations.
     fields        Field and property declarations (C#, SQL).
     imports       What this file pulls in (using/import/include directives).
     capabilities  List the modes actually supported for this file's language.
 
-  Pattern modes — `pattern` is a single identifier:
+  Pattern modes -- `pattern` is a single identifier:
     declarations NAME   The declaration(s) of NAME (filter with `symbol_kind`).
     body NAME           Full source of NAME's declaration (include_body=true).
     calls METHOD        Call sites of METHOD. Pass a METHOD name, not a
-                        receiver — `obj.Foo()` is matched by calls("Foo")
+                        receiver -- `obj.Foo()` is matched by calls("Foo")
                         not calls("obj"); for variable usage use all_refs.
     implements TYPE     Types that inherit/implement TYPE.
-    uses TYPE           Type references; narrow with `uses_kind` (C# only)
-                        among: field, param, return, cast, base, locals.
+    uses TYPE           Type references. Omit `uses_kind` (or "all") for
+                        the union of every role; narrow with `uses_kind`
+                         in  {field, param, return, cast, base, locals}.
+                        (C# only.)
     casts TYPE          Explicit (TYPE)expr / as TYPE sites.
     attrs NAME?         [Attribute] / @decorator usages (omit NAME to list all).
     params METHOD       Parameters of METHOD.
-    accesses_of MEMBER  Access sites of property/field MEMBER. (C# only.)
+    accesses_of MEMBER  Qualified access sites of property/field MEMBER --
+                        `expr.MEMBER`. Bare `MEMBER` (implicit `this.MEMBER`
+                        inside the declaring class) is NOT matched; use
+                        `all_refs MEMBER` for that. (C# only.)
     accesses_on TYPE    .Member accesses on locals/params declared as TYPE.
                         Returns NOTHING when the variable is only assigned,
-                        returned, or forwarded as an argument — no `.Member`
+                        returned, or forwarded as an argument -- no `.Member`
                         exists. Fall back to all_refs on the variable then.
                         (C# only.)
     all_refs NAME       Every identifier occurrence (broadest; AST-only,
                         skips strings/comments).
+    var_type NAME       For each occurrence of NAME, report its resolved
+                        type from the method-scoped var-type map (or
+                        `(unresolved)` / `(conflicting)`). Use this to
+                        answer "what's the type of `foo` at line 42"
+                        without having to find the exact column for `at`.
+                        (C# only today.)
 
-  Position mode — `pattern` is "LINE:COL" (1-indexed):
+  Position mode -- `pattern` is "LINE:COL" (1-indexed):
     at LINE:COL         Identify the deepest AST node at the position and
                         print the chain of enclosing named declarations
                         with their line ranges. Use for stack traces, test
@@ -504,29 +555,39 @@ Args:
   file:         Absolute path. Windows paths (C:/...) or $SRC_ROOT-prefixed
                 paths. Relative paths are NOT supported.
   root:         Named source root (empty = default).
-  include_body: For `declarations` — include full body. Default false. (Use
+  include_body: For `declarations` -- include full body. Default false. (Use
                 the `body` mode instead for one-shot member-source retrieval.)
-  symbol_kind:  For `declarations` / `body` — restrict to method, ctor, class,
+  symbol_kind:  For `declarations` / `body` -- restrict to method, ctor, class,
                 interface, struct, enum, record, delegate, property, field,
                 event, type, or member.
-  uses_kind:    For `uses` — all (default), field, param, return, cast, base,
-                or locals. (C# only.)
+  uses_kind:    For `uses` -- narrow to one structural role. Omit (or pass
+                "all") for the union of every role; otherwise one of
+                field, param, return, cast, base, locals. (C# only.)
+  visibility:   For declaration modes (declarations / classes / methods /
+                fields) -- comma-separated access modifiers to keep
+                (public, internal, protected, private). Omit for no
+                filter. C# captures explicit modifiers and applies the
+                language's defaults (interface members => public, nested
+                types => private, top-level types => internal); other
+                languages currently return nothing when this filter is set.
   head_limit:   Max results to return (default 250). Use with offset to page.
   offset:       Skip first N results before applying head_limit (default 0).
 
 Errors:
-  Unknown mode or unsupported-for-this-language → returns an error line that
+  Unknown mode or unsupported-for-this-language -> returns an error line that
   lists the modes that ARE supported. Use `capabilities` to enumerate them
   programmatically before calling.
 
-Examples:
-  query_single_file("capabilities", file="$SRC_ROOT/services/Widget.cs")
-  query_single_file("methods",      file="$SRC_ROOT/services/Widget.cs")
-  query_single_file("body",      "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
-  query_single_file("at",        "42:10",       file="$SRC_ROOT/data/Widget.cs")
-  query_single_file("calls",     "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
+Examples (relative paths resolve against the default root; ``$SRC_ROOT/``
+prefix is still accepted for back-compat but no longer required):
+  query_single_file("capabilities", file="services/Widget.cs")
+  query_single_file("methods",      file="services/Widget.cs")
+  query_single_file("body",      "SaveChanges", file="data/Widget.cs")
+  query_single_file("at",        "42:10",       file="data/Widget.cs")
+  query_single_file("calls",     "SaveChanges", file="data/Widget.cs")
+  query_single_file("var_type",  "store",       file="data/Widget.cs")
   query_single_file("uses",      "IRepository", uses_kind="param",
-                    file="$SRC_ROOT/services/Widget.cs")"""
+                    file="services/Widget.cs")"""
     if not file:
         return "file= is required."
 
@@ -551,9 +612,10 @@ Examples:
             include_body=include_body,
             symbol_kind=symbol_kind or None,
             uses_kind=uses_kind or None,
+            visibility=visibility or None,
         )
     except ValueError as e:
-        # Unknown extension or unsupported mode — propagate the helpful
+        # Unknown extension or unsupported mode -- propagate the helpful
         # message instead of returning an empty result, so the agent learns
         # which modes ARE supported for this file.
         return f"Error: {e}"
@@ -579,24 +641,24 @@ Examples:
     page_end   = min(page_start + head_limit, total)
     out_lines  = all_lines[page_start:page_end]
 
-    page_header = (f"[{page_start + 1}–{page_end} of {total} results]\n\n"
+    page_header = (f"[{page_start + 1}-{page_end} of {total} results]\n\n"
                    if (page_start > 0 or page_end < total) else "")
     output = "\n".join(out_lines)
 
     output, truncated = _truncate(output)
     if truncated:
         shown   = output.count("\n") + 1
-        summary = f"[Result truncated — {len(out_lines)} lines in page. Showing first {shown} lines. Use offset= to page.]\n\n"
+        summary = f"[Result truncated -- {len(out_lines)} lines in page. Showing first {shown} lines. Use offset= to page.]\n\n"
         return header + page_header + summary + output
     return header + page_header + output
 
-# ── ready ─────────────────────────────────────────────────────────────────────
+# -- ready ---------------------------------------------------------------------
 
 @mcp.tool()
 def ready(root: str = "") -> str:
     """Check whether the code search index is fully up to date with the file system.
 
-Returns a quick status snapshot (no filesystem walk — returns immediately).
+Returns a quick status snapshot (no filesystem walk -- returns immediately).
 Shows daemon health, document count, watcher state, queue depth, and last verifier scan.
 
 To trigger a full repair scan use verify_index(action='start'), then poll
@@ -623,7 +685,7 @@ Args:
     lines     = []
 
     lines.append(f"Docs       : {ndocs:,}  (collection: {collection})"
-                 if ndocs is not None else f"Collection : {collection} — not found")
+                 if ndocs is not None else f"Collection : {collection} -- not found")
 
     watcher = st.get("watcher", {})
     queue   = st.get("queue", {})
@@ -647,18 +709,18 @@ Args:
         q_depth = queue.get("depth", 0)
         left    = remaining + q_depth
         if vstatus == "complete" and missing == 0 and stale == 0 and orphaned == 0 and q_depth == 0:
-            lines.append("Left to index: 0  — index is up to date")
+            lines.append("Left to index: 0  -- index is up to date")
         elif vstatus == "running":
-            lines.append(f"Left to index: ~{left}  ({remaining} verifier + {q_depth} queue) — poll again for updates")
+            lines.append(f"Left to index: ~{left}  ({remaining} verifier + {q_depth} queue) -- poll again for updates")
         else:
-            lines.append("Left to index: unknown — run verify_index(action='start') to check and repair")
+            lines.append("Left to index: unknown -- run verify_index(action='start') to check and repair")
     else:
         lines.append("Verifier   : no scan has been run yet")
-        lines.append(f"Left to index: {queue.get('depth', 0)} queued — run verify_index(action='start') to check if index is complete")
+        lines.append(f"Left to index: {queue.get('depth', 0)} queued -- run verify_index(action='start') to check if index is complete")
 
     return "\n".join(lines)
 
-# ── wait_for_sync ─────────────────────────────────────────────────────────────
+# -- wait_for_sync -------------------------------------------------------------
 
 @mcp.tool()
 def wait_for_sync(timeout_s: float = 30.0, root: str = "") -> str:
@@ -677,7 +739,7 @@ Args:
   timeout_s: Maximum seconds to wait. Default 30. The indexer typically
              catches up in well under a second when only a few files
              changed; raise this for large rewrites or initial indexing.
-  root:      Named source root (empty = default). Currently informational —
+  root:      Named source root (empty = default). Currently informational --
              the indexserver tracks queue/syncer state globally, not per
              root, so this argument is reserved for future use.
 
@@ -704,7 +766,7 @@ Returns:
 
     while True:
         try:
-            # /status touches every backend to fetch live doc counts — under
+            # /status touches every backend to fetch live doc counts -- under
             # load that round-trip can spike, so use a generous timeout and
             # retry transient failures rather than bailing on the first hiccup.
             status, data = _get("/status", timeout=10)
@@ -731,14 +793,14 @@ Returns:
 
         if time.monotonic() >= deadline:
             elapsed = time.monotonic() - start
-            return (f"Timed out after {elapsed:.1f}s — still working: {last_state}.\n"
+            return (f"Timed out after {elapsed:.1f}s -- still working: {last_state}.\n"
                     f"Re-run wait_for_sync with a larger timeout_s, or run "
                     f"verify_index(action='start') if the index looks stuck.")
 
         remaining = deadline - time.monotonic()
         time.sleep(min(poll_interval, max(0.0, remaining)))
 
-# ── verify_index ──────────────────────────────────────────────────────────────
+# -- verify_index --------------------------------------------------------------
 
 @mcp.tool()
 def verify_index(
@@ -779,7 +841,7 @@ Args:
         if running:
             tot  = prog.get("total_to_update", 0)
             done = prog.get("updated", 0)
-            pct  = f"{done * 100 // tot}%" if tot else "—"
+            pct  = f"{done * 100 // tot}%" if tot else "--"
             lines.append(f"Running  : yes  ({pct} complete)")
         lines += [
             f"Status   : {prog.get('status', '?')}",
@@ -809,13 +871,13 @@ Args:
         if status != 200:
             return f"Start failed ({status}): {data.get('error', data) if isinstance(data, dict) else data}"
         return (f"Verification scan started.\n"
-                f"Root      : '{root or 'default'}' → {src_root}\n"
+                f"Root      : '{root or 'default'}' -> {src_root}\n"
                 f"Collection: {collection}\n"
                 f"Use action='status' to monitor progress.")
 
     return f"Unknown action: '{action}'. Use 'start', 'status', or 'stop'."
 
-# ── service_status ────────────────────────────────────────────────────────────
+# -- service_status ------------------------------------------------------------
 
 @mcp.tool()
 def service_status(root: str = "") -> str:
@@ -847,14 +909,14 @@ Args:
         exists = info.get("collection_exists", ndocs is not None)
         if not exists:
             lines.append(f"Root '{root_name}' ({coll_name}): " +
-                         ("indexing in progress" if indexer_running else "not yet indexed — run: ts verify"))
+                         ("indexing in progress" if indexer_running else "not yet indexed -- run: ts verify"))
         else:
             lines.append(f"Root '{root_name}' ({coll_name}): {ndocs:,} docs")
 
     return "\n".join(lines)
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# -- Entry point ---------------------------------------------------------------
 
 if __name__ == "__main__":
     if "--daemon" in sys.argv:

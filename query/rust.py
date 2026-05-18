@@ -23,7 +23,7 @@ _RUST_LANG   = Language(tsrust.language())
 _rust_parser = Parser(_RUST_LANG)
 
 
-# ── Node type sets ─────────────────────────────────────────────────────────────
+# -- Node type sets -------------------------------------------------------------
 
 _TYPE_DECL_NODES = {
     "struct_item", "enum_item", "trait_item", "type_item",
@@ -56,7 +56,7 @@ def _RustIndex(src: bytes, tree, wanted, collect_refs: bool = False) -> TreeInde
     )
 
 
-# ── Basic helpers ──────────────────────────────────────────────────────────────
+# -- Basic helpers --------------------------------------------------------------
 
 def _find_all(node, predicate, results=None):
     if results is None:
@@ -87,7 +87,7 @@ def _line(node) -> int:
     return node.start_point[0] + 1
 
 
-# ── Rust-specific helpers ──────────────────────────────────────────────────────
+# -- Rust-specific helpers ------------------------------------------------------
 
 def _fn_name(node, src: bytes) -> str:
     """Get function name from a function_item node."""
@@ -106,7 +106,7 @@ def _impl_trait_name(node, src: bytes) -> str:
     t = node.child_by_field_name("trait")
     if not t:
         return ""
-    # Strip generic params: "Iterator<Item=T>" → "Iterator"
+    # Strip generic params: "Iterator<Item=T>" -> "Iterator"
     name = _text(t, src).strip()
     idx = name.find("<")
     return name[:idx].strip() if idx >= 0 else name
@@ -149,7 +149,7 @@ def _fn_sig(node, src: bytes) -> str:
     return f"fn {name}({params_txt}){ret}"
 
 
-# ── Data extraction functions ──────────────────────────────────────────────────
+# -- Data extraction functions --------------------------------------------------
 
 def _rust_q_classes_data(src, idx: TreeIndex) -> list:
     """Return list[ClassInfo] for all struct/enum/trait/type declarations."""
@@ -190,7 +190,7 @@ def _rust_q_methods_data(src, idx: TreeIndex) -> list:
     return results
 
 
-# ── Query functions ───────────────────────────────────────────────────────────
+# -- Query functions -----------------------------------------------------------
 
 def rust_q_classes(src, tree, lines):
     """List struct/enum/trait/type declarations."""
@@ -245,7 +245,7 @@ def rust_q_calls(src, tree, lines, func_name):
                 seen_rows.add(row)
                 raw = _text(node, src).replace("\n", " ")
                 if len(raw) > 140:
-                    raw = raw[:140] + "…"
+                    raw = raw[:140] + "..."
                 results.append((_line(node), raw))
 
     # method_call_expression: receiver.method(args)
@@ -262,7 +262,7 @@ def rust_q_calls(src, tree, lines, func_name):
             seen_rows.add(row)
             raw = _text(node, src).replace("\n", " ")
             if len(raw) > 140:
-                raw = raw[:140] + "…"
+                raw = raw[:140] + "..."
             results.append((_line(node), raw))
 
     return results
@@ -314,7 +314,7 @@ def rust_q_declarations(src, tree, lines, name, include_body=False):
             else:
                 content = "\n".join(lines[start_row:end_row + 1])
 
-        header = f"── [{kind}] {name}  (lines {start_row + 1}–{end_row + 1}) ──"
+        header = f"[{kind}] {name} {start_row + 1}-{end_row + 1}:"
         results.append((_line(node), f"{header}\n{content}"))
     return results
 
@@ -371,7 +371,7 @@ def rust_q_params(src, tree, lines, func_name):
     return results
 
 
-# ── Process function ──────────────────────────────────────────────────────────
+# -- Process function ----------------------------------------------------------
 
 def query_rust_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False, **kwargs):
     """Parse Rust bytes and return list[{"line": N, "text": "..."}] for the given mode."""
@@ -412,7 +412,7 @@ def describe_rust_file(src_bytes: bytes, ext: str = "") -> FileDescription:
     classes = _rust_q_classes_data(src_bytes, idx)
     methods = _rust_q_methods_data(src_bytes, idx)
 
-    # Enrich ClassInfo objects with impl-trait bases (impl Trait for Type → Type.bases = [Trait])
+    # Enrich ClassInfo objects with impl-trait bases (impl Trait for Type -> Type.bases = [Trait])
     type_to_traits: dict = {}
     for node in idx.of("impl_item"):
         trait = _impl_trait_name(node, src_bytes)
@@ -443,7 +443,7 @@ def describe_rust_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         if nn:
             call_sites_raw.append(_text(nn, src_bytes).strip())
 
-    # use declarations → ImportInfo
+    # use declarations -> ImportInfo
     imports_list = []
     for node in idx.of("use_declaration"):
         for id_node in _find_all(node, lambda n: n.type == "identifier"):

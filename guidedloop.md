@@ -26,24 +26,24 @@ with tests.
 ## The Loop
 
 ```
-1. Health check       — confirm service is up, index is populated
-2. Pick a file        — choose a real source file from the indexed codebase;
+1. Health check       -- confirm service is up, index is populated
+2. Pick a file        -- choose a real source file from the indexed codebase;
                         prefer medium-sized files with varied syntax
-3. Pick a mode        — one of: calls, accesses_on, accesses_of, uses,
+3. Pick a mode        -- one of: calls, accesses_on, accesses_of, uses,
                         uses_kind=*, declarations, implements, methods, etc.
-4. Pick a pattern     — a type name, method name, or member name that appears
+4. Pick a pattern     -- a type name, method name, or member name that appears
                         multiple times in the file in different syntactic contexts
-5. Run the tool       — query_single_file(mode, pattern, file=…)
-6. Run grep           — Grep(pattern, path=file) for ground-truth
-7. Compare            — does every grep hit appear in the tool output?
+5. Run the tool       -- query_single_file(mode, pattern, file=...)
+6. Run grep           -- Grep(pattern, path=file) for ground-truth
+7. Compare            -- does every grep hit appear in the tool output?
                         does the tool return anything grep would not find?
-8. Classify           — real miss / real false positive / expected difference
-9. Root-cause         — read src/query/cs.py; find the function; check which
+8. Classify           -- real miss / real false positive / expected difference
+9. Root-cause         -- read src/query/cs.py; find the function; check which
                         AST node types its walker covers
-10. Write fixture     — minimal synthetic .cs file in sample/root1/
-11. Write tests       — xfail tests that pin the gap, plus regression guards
-12. Fix               — patch the walker; promote tests to passing
-13. Full suite        — run all tests; fix any doc-count assertions if you
+10. Write fixture     -- minimal synthetic .cs file in sample/root1/
+11. Write tests       -- xfail tests that pin the gap, plus regression guards
+12. Fix               -- patch the walker; promote tests to passing
+13. Full suite        -- run all tests; fix any doc-count assertions if you
                         added a fixture file
 ```
 
@@ -63,7 +63,7 @@ Run both, then go line by line:
   includes semantic context that raw grep can't see).
 
 - **Expected difference**: the tool returns richer output (variable names,
-  enclosing class context) — a result that looks "extra" may just be formatted
+  enclosing class context) -- a result that looks "extra" may just be formatted
   differently. Verify by checking the line number, not the text.
 
 **Verify before declaring a bug.** Grep matches substrings: `typeof(Connection)`
@@ -87,7 +87,7 @@ from tree_sitter import Language, Parser
 LANG = Language(tscsharp.language())
 parser = Parser(LANG)
 
-src = open(r"Q:\spocore\src\…\Widget.cs", encoding="utf-8").read()
+src = open(r"Q:\spocore\src\...\Widget.cs", encoding="utf-8").read()
 tree = parser.parse(src.encode())
 
 def walk(node, indent=0):
@@ -133,8 +133,8 @@ Known examples of this pattern, across several guided testing rounds:
 | `method_declaration` return type | wrong field name (`type` vs `returns`) | uses_kind=return |
 | `delegate_declaration` | omitted from node-type set | uses_kind=return |
 | `out`/`ref` modifier | wrong node type (`modifier` vs `parameter_modifier`) | uses_kind=param |
-| `x as T` | `as_expression` (`right` field) — only `cast_expression` was handled | uses_kind=cast |
-| `new T { Prop = v }` | `initializer_expression` → `assignment_expression` inside `object_creation_expression` | accesses_on, accesses_of |
+| `x as T` | `as_expression` (`right` field) -- only `cast_expression` was handled | uses_kind=cast |
+| `new T { Prop = v }` | `initializer_expression` -> `assignment_expression` inside `object_creation_expression` | accesses_on, accesses_of |
 | `x with { Prop = v }` | `with_initializer` inside `with_expression` | accesses_on, accesses_of |
 | `if (x is T { Prop: v } name)` | `recursive_pattern` (`type`/`name` fields same as `declaration_pattern`) | accesses_on, uses_kind=locals |
 
@@ -148,7 +148,7 @@ node type.
 A good fixture file:
 
 - Lives in `sample/root1/` with a descriptive name (e.g. `ForeachAccess.cs`)
-- Uses **generic types only** — no project-specific imports or dependencies
+- Uses **generic types only** -- no project-specific imports or dependencies
 - Contains the **positive case** (the syntax that was missed)
 - Contains a **regression guard** (a plain form that already worked)
 - Contains a **negative case** (a different type that must NOT appear in results)
@@ -163,7 +163,7 @@ namespace Sample
 
     public class Service
     {
-        // regression guard — plain local must still be found
+        // regression guard -- plain local must still be found
         public void PlainLocal() {
             Widget w = new Widget(); w.Use();
         }
@@ -173,7 +173,7 @@ namespace Sample
             // ... syntax under test ...
         }
 
-        // negative — Other must NOT appear in Widget results
+        // negative -- Other must NOT appear in Widget results
         public void NegativeCase() {
             Other o = new Other(); o.Use();
         }
@@ -186,7 +186,7 @@ The doc-count assertions in `tests/integration/test_sample_e2e.py`
 `test_root1_doc_count_equals_nine`) are computed dynamically by
 `_count_sample_files()`, which walks the fixture directory using the indexer's
 own filter rules. Adding a new fixture file does NOT require updating these
-assertions — the expected count adjusts automatically. The names are kept
+assertions -- the expected count adjusts automatically. The names are kept
 for git-history continuity; ignore the literal numbers in the test names.
 
 ---
@@ -214,9 +214,9 @@ Test file conventions:
   Use a **specific enough fragment** that it won't accidentally match a comment
   containing the same text.
 - Three test categories per bug:
-  1. **The miss** — assert the new syntax form is found (was the bug)
-  2. **Regression guard** — assert the old syntax form still works
-  3. **Negative** — assert the wrong type does NOT appear
+  1. **The miss** -- assert the new syntax form is found (was the bug)
+  2. **Regression guard** -- assert the old syntax form still works
+  3. **Negative** -- assert the wrong type does NOT appear
 
 Workflow:
 1. Write tests with `@unittest.expectedFailure` to pin the gap
@@ -238,7 +238,7 @@ Full suite:
 ```
 
 Integration tests open a fresh Tantivy index in `<repo>/.tantivy/test_*` for
-each test class — no external service needs to be running.
+each test class -- no external service needs to be running.
 
 ---
 
@@ -278,9 +278,9 @@ Good candidates for future rounds:
   tuple deconstruction (`var (a, b) = ...`)
 - **Chained access**: `a?.b?.c` produces nested `conditional_access_expression`
   nodes; deep chains may expose missed inner bindings
-- **Generic constraints**: `where T : IFoo` — does `implements` handle these?
-- **Multi-declarator locals**: `int x = 1, y = 2;` — does `uses_kind=locals`
+- **Generic constraints**: `where T : IFoo` -- does `implements` handle these?
+- **Multi-declarator locals**: `int x = 1, y = 2;` -- does `uses_kind=locals`
   find both `x` and `y`?
-- **Lambda parameters**: `list.Select((Widget w) => w.Use())` — `parameter`
+- **Lambda parameters**: `list.Select((Widget w) => w.Use())` -- `parameter`
   inside a lambda has the same node type as a method parameter; confirm it
   is or isn't tracked by design

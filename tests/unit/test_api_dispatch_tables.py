@@ -20,7 +20,7 @@ from tsquery_server import _EXT_TO_TS_AND_AST, _run_query
 class TestDispatchConsistency(unittest.TestCase):
     """Every mode in _EXT_TO_TS_AND_AST must be handled by _run_query."""
 
-    # Modes that are listing-only and have no meaningful pattern arg —
+    # Modes that are listing-only and have no meaningful pattern arg --
     # _run_query supports them but they're not pattern-searchable codebase modes.
     _LISTING_MODES = frozenset({"classes", "methods", "fields", "imports"})
 
@@ -29,14 +29,14 @@ class TestDispatchConsistency(unittest.TestCase):
         missing = []
         for mode, (_, ast_mode) in _EXT_TO_TS_AND_AST.items():
             try:
-                # Pass empty file list — just verifies dispatch doesn't raise
+                # Pass empty file list -- just verifies dispatch doesn't raise
                 _run_query(ast_mode, "Widget", files=[])
             except ValueError as e:
                 if "unknown mode" in str(e):
                     missing.append((mode, ast_mode))
         assert not missing, (
             f"Modes in _EXT_TO_TS_AND_AST with no _run_query handler:\n"
-            + "\n".join(f"  routing mode={m!r} → ast_mode={a!r}" for m, a in missing)
+            + "\n".join(f"  routing mode={m!r} -> ast_mode={a!r}" for m, a in missing)
         )
 
     def test_accesses_of_in_routing_table(self):

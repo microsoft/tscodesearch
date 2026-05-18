@@ -5,17 +5,17 @@ Replicates behaviors observed during live testing of an ExponentialBackoff
 throttle pattern (with generic types only):
 
   declarations, implements, calls, methods, classes
-    → all work correctly
+    -> all work correctly
 
   accesses_of
-    → correctly finds explicit dot-notation member accesses (expr.MEMBER)
-    → does NOT find bare accesses where the name is used as a receiver
+    -> correctly finds explicit dot-notation member accesses (expr.MEMBER)
+    -> does NOT find bare accesses where the name is used as a receiver
 
   accesses_on TYPE
-    → tracks variables/fields declared as TYPE via variable_declaration nodes
+    -> tracks variables/fields declared as TYPE via variable_declaration nodes
       (field_declaration wraps a variable_declaration, so fields ARE tracked)
-    → does NOT track properties declared as TYPE (property_declaration has
-      no inner variable_declaration) — known gap, marked xfail
+    -> does NOT track properties declared as TYPE (property_declaration has
+      no inner variable_declaration) -- known gap, marked xfail
 
 Run:
     pytest query/tests/test_cs_throttle.py -v
@@ -80,7 +80,7 @@ class TestDeclarations(unittest.TestCase):
     def test_finds_method_in_multiple_classes(self):
         """RecordAttempt is declared in both ExponentialRetry and FixedRetry."""
         r = self._decl("RecordAttempt")
-        assert len(r) >= 2, f"Expected ≥2 RecordAttempt declarations, got {r}"
+        assert len(r) >= 2, f"Expected >=2 RecordAttempt declarations, got {r}"
 
     def test_symbol_kind_class_excludes_interface(self):
         r_class = self._decl("IRetryPolicy", symbol_kind="class")
@@ -151,7 +151,7 @@ class TestCalls(unittest.TestCase):
         assert any("RecordAttempt" in t for t in (row[-1] for row in r))
 
     def test_interface_method_not_a_call(self):
-        """RecordAttempt declarations are not calls — only the call site in RetryRunner."""
+        """RecordAttempt declarations are not calls -- only the call site in RetryRunner."""
         r = self._calls("RecordAttempt")
         assert len(r) == 1, \
             f"Expected exactly 1 call site for RecordAttempt, got {r}"
@@ -167,7 +167,7 @@ class TestCalls(unittest.TestCase):
 class TestAccessesOf(unittest.TestCase):
     """
     accesses_of MEMBER finds every member_access_expression whose *name* field
-    equals MEMBER — i.e. patterns like `expr.MEMBER`.
+    equals MEMBER -- i.e. patterns like `expr.MEMBER`.
 
     It does NOT find bare uses of MEMBER where it is itself the receiver
     (e.g. `Interval.TotalMilliseconds` is NOT an access OF Interval).
@@ -182,7 +182,7 @@ class TestAccessesOf(unittest.TestCase):
         # Line with Interval.TotalMilliseconds (if-branch) + two lines with
         # field.TotalMilliseconds and Interval.TotalMilliseconds each
         assert len(r) >= 3, \
-            f"Expected ≥3 .TotalMilliseconds accesses, got {len(r)}: {r}"
+            f"Expected >=3 .TotalMilliseconds accesses, got {len(r)}: {r}"
 
     def test_total_milliseconds_found_in_if_condition(self):
         """Interval.TotalMilliseconds inside a simple `if` must be found."""
@@ -200,7 +200,7 @@ class TestAccessesOf(unittest.TestCase):
 
     def test_interval_as_receiver_not_returned(self):
         """
-        `Interval.TotalMilliseconds` — here Interval is the *receiver*, not
+        `Interval.TotalMilliseconds` -- here Interval is the *receiver*, not
         the accessed member.  accesses_of "Interval" must NOT return these.
         """
         r = self._of("Interval")
@@ -209,7 +209,7 @@ class TestAccessesOf(unittest.TestCase):
             "Interval used as receiver must not appear in accesses_of 'Interval'"
 
     def test_finds_record_attempt_call_site(self):
-        """_policy.RecordAttempt(ok) — RecordAttempt is the accessed member."""
+        """_policy.RecordAttempt(ok) -- RecordAttempt is the accessed member."""
         r = self._of("RecordAttempt")
         assert r, "_policy.RecordAttempt must be found"
 
@@ -231,7 +231,7 @@ class TestAccessesOn(unittest.TestCase):
     accesses_on TYPE finds member accesses on variables *declared as* TYPE.
 
     Implementation walks variable_declaration nodes (captures local variables,
-    parameters, and fields — because field_declaration wraps variable_declaration)
+    parameters, and fields -- because field_declaration wraps variable_declaration)
     plus var-inferred locals from new/as/cast expressions.
 
     Known gap: property_declaration nodes are not walked, so a property
@@ -247,7 +247,7 @@ class TestAccessesOn(unittest.TestCase):
     def test_finds_accesses_on_timespans_fields(self):
         """
         _maxInterval and _minInterval are fields (variable_declaration inside
-        field_declaration) typed as TimeSpan — their .TotalMilliseconds
+        field_declaration) typed as TimeSpan -- their .TotalMilliseconds
         accesses must be found.
         """
         r = self._on("TimeSpan")
@@ -267,7 +267,7 @@ class TestAccessesOn(unittest.TestCase):
     def test_finds_accesses_on_iretrypolicy_field(self):
         """
         _policy is a field typed as IRetryPolicy.
-        RetryRunner.Execute calls _policy.RecordAttempt and reads _policy.Interval —
+        RetryRunner.Execute calls _policy.RecordAttempt and reads _policy.Interval --
         both must be found.
         """
         r = self._on("IRetryPolicy")
@@ -290,7 +290,7 @@ class TestAccessesOn(unittest.TestCase):
         """
         Interval.TotalMilliseconds on the `if (Interval.TotalMilliseconds == 0)`
         line must be found when searching accesses_on "TimeSpan".
-        Interval is a TimeSpan property — tracked via property_declaration.
+        Interval is a TimeSpan property -- tracked via property_declaration.
         """
         r = self._on("TimeSpan")
         lines_found = _lines_of(r)
@@ -309,9 +309,9 @@ class TestAccessesOn(unittest.TestCase):
     def test_timespans_access_count_includes_property_lines(self):
         """
         There are 3 lines with TimeSpan member accesses:
-          - if (Interval.TotalMilliseconds == 0)                    ← property only
-          - Math.Max(_minInterval.TotalMilliseconds, Interval…)     ← field + property
-          - Math.Min(_maxInterval.TotalMilliseconds, Interval…)     ← field + property
+          - if (Interval.TotalMilliseconds == 0)                    <- property only
+          - Math.Max(_minInterval.TotalMilliseconds, Interval...)     <- field + property
+          - Math.Min(_maxInterval.TotalMilliseconds, Interval...)     <- field + property
         All 3 must be returned now that property_declaration is tracked.
         """
         r = self._on("TimeSpan")
@@ -342,7 +342,7 @@ class TestListingModes(unittest.TestCase):
         r = q_methods(*_PARSED)
         record_hits = [t for t in (row[-1] for row in r) if "RecordAttempt" in t]
         assert len(record_hits) >= 2, \
-            f"Expected RecordAttempt in ≥2 members, got {record_hits}"
+            f"Expected RecordAttempt in >=2 members, got {record_hits}"
 
     def test_methods_includes_fields_and_props(self):
         """methods listing mode returns all members: fields, props, ctors, methods."""

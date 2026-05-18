@@ -1,8 +1,8 @@
 """
-Search the local Tantivy code index (read-only — no daemon required).
+Search the local Tantivy code index (read-only -- no daemon required).
 
 Mode and filter resolution share their logic with the daemon via
-``indexserver.search_modes`` — adding a new mode there reaches both call sites.
+``indexserver.search_modes`` -- adding a new mode there reaches both call sites.
 
 Usage:
     search.py "query" [--ext cs] [--sub myservice] [--limit 10] [--symbols] [--json]
@@ -112,7 +112,7 @@ def _root_for_collection(collection: str):
 def _extract_for_display(rel_path: str, root) -> dict:
     """Re-parse a hit's source file to get class_names / base_types /
     member_sigs / etc. The schema no longer stores those (they're indexed
-    but not retrievable) — for a debug CLI display we re-extract on the fly.
+    but not retrievable) -- for a debug CLI display we re-extract on the fly.
     Returns an empty dict if the file can't be read."""
     if root is None or not rel_path:
         return {}

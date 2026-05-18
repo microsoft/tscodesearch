@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * ts.mjs — codesearch management CLI
+ * ts.mjs -- codesearch management CLI
  *
  * The daemon is a single Python process (.client-venv) that owns the local
  * Tantivy index. There is no longer a Typesense server, WSL bridge, or
- * Docker container to manage — start/stop manage the daemon itself.
+ * Docker container to manage -- start/stop manage the daemon itself.
  *
  * Usage: ts <command> [options]
  *
@@ -31,7 +31,7 @@ import http from 'http';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// -- Config --------------------------------------------------------------------
 
 function readConfig() {
     const f = path.join(__dirname, 'config.json');
@@ -52,12 +52,12 @@ const API_KEY = cfg.api_key ?? 'codesearch-local';
 const PORT    = cfg.port    ?? 8108;
 const ROOTS   = cfg.roots   ?? {};
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 
 function log(msg)  { console.log(`[ts] ${msg}`); }
 function die(msg)  { console.error(`[ts] ERROR: ${msg}`); process.exit(1); }
 
-// ── HTTP helpers ──────────────────────────────────────────────────────────────
+// -- HTTP helpers --------------------------------------------------------------
 
 function apiGet(urlPath, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
@@ -114,7 +114,7 @@ function daemonPython() {
     return fs.existsSync(named) ? named : clientVenvPython();
 }
 
-// Mirrors indexserver.config.collection_for_root: lowercase, then [^a-z0-9_] → _.
+// Mirrors indexserver.config.collection_for_root: lowercase, then [^a-z0-9_] -> _.
 function collectionForRoot(name) {
     return `codesearch_${name.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`;
 }
@@ -162,7 +162,7 @@ async function waitForPortClosed(port, timeoutMs = 10_000) {
         if (!still_up) return true;
         await new Promise(r => setTimeout(r, 200));
     }
-    return false;  // timed out — port still up
+    return false;  // timed out -- port still up
 }
 
 async function shutdownDaemon() {
@@ -182,12 +182,12 @@ async function shutdownDaemon() {
     }
 
     // The daemon's stop_daemon() does up to 5s syncer join + 5s queue stop +
-    // backend close (waits for merge threads) + 5s server shutdown — so allow
+    // backend close (waits for merge threads) + 5s server shutdown -- so allow
     // up to 30s before assuming it's stuck.
     const closed = await waitForPortClosed(PORT, 30_000);
 
     if (!closed && daemonPid) {
-        log(`Daemon did not exit after 30s — force-killing pid ${daemonPid}...`);
+        log(`Daemon did not exit after 30s -- force-killing pid ${daemonPid}...`);
         if (process.platform === 'win32') {
             spawnSync('taskkill', ['/F', '/PID', daemonPid], { stdio: 'pipe' });
         } else {
@@ -206,7 +206,7 @@ function daemonLogFile() {
 function startDaemon() {
     const py = daemonPython();
     if (!fs.existsSync(py)) {
-        die(`.client-venv not found at ${py} — run setup.cmd first`);
+        die(`.client-venv not found at ${py} -- run setup.cmd first`);
     }
     const logPath = daemonLogFile();
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
@@ -222,7 +222,7 @@ function startDaemon() {
     log(`Daemon started (detached). Log: ${logPath}`);
 }
 
-// ── Status display ────────────────────────────────────────────────────────────
+// -- Status display ------------------------------------------------------------
 
 function fmtNum(n)  { return n == null ? '?' : Number(n).toLocaleString(); }
 function fmtTs(ts)  { return ts ? ts.replace('T', ' ').substring(0, 16) : ''; }
@@ -255,7 +255,7 @@ function printStatus(apiBody) {
         let badge, detail;
         if (!exists || ndocs == null) {
             badge  = '[--]';
-            detail = 'not yet indexed — run: ts verify';
+            detail = 'not yet indexed -- run: ts verify';
         } else if (isCurrent && (syncerRunning || isQueued)) {
             const total = prog.total_to_update ?? 0;
             const done  = total > 0 ? Math.max(0, total - qDepth) : qUpserted;
@@ -264,7 +264,7 @@ function printStatus(apiBody) {
             detail = `${fmtNum(ndocs)} docs${buffStr}  indexing  ${fmtNum(done)}/${fmtNum(total)}${pct}`;
         } else if (!synced) {
             badge  = '[~~]';
-            detail = `${fmtNum(ndocs)} docs${buffStr}  incomplete sync — run: ts verify --root ${rootName}`;
+            detail = `${fmtNum(ndocs)} docs${buffStr}  incomplete sync -- run: ts verify --root ${rootName}`;
         } else {
             const when = syncedAt ? `  synced ${fmtTs(syncedAt)}` : '';
             badge  = '[OK]';
@@ -323,10 +323,10 @@ function printStatus(apiBody) {
     }
 }
 
-// ── Commands ──────────────────────────────────────────────────────────────────
+// -- Commands ------------------------------------------------------------------
 
 async function cmdStart() {
-    // Idempotent — if already up, just report.
+    // Idempotent -- if already up, just report.
     try {
         const { status } = await apiGet('/health', 1500);
         if (status === 200) {
@@ -338,7 +338,7 @@ async function cmdStart() {
     startDaemon();
     log(`Waiting for daemon on port ${PORT}...`);
     await pollHealth(PORT, 30_000, 'daemon');
-    log('Daemon is up. Indexing may still be in progress — use \'ts status\' to monitor.');
+    log('Daemon is up. Indexing may still be in progress -- use \'ts status\' to monitor.');
 }
 
 async function cmdStop() {
@@ -383,7 +383,7 @@ async function cmdRecreate(args) {
     startDaemon();
     log(`Waiting for daemon on port ${PORT}...`);
     await pollHealth(PORT, 30_000, 'daemon');
-    log(`Daemon restarted. Full reindex in progress — monitor with: ts status`);
+    log(`Daemon restarted. Full reindex in progress -- monitor with: ts status`);
 }
 
 async function cmdVerify(args) {
@@ -404,7 +404,7 @@ function cmdLog(args) {
     const n = args.lines ?? 40;
     const logPath = daemonLogFile();
     if (!fs.existsSync(logPath)) {
-        log('Daemon log not found — start it with: ts start');
+        log('Daemon log not found -- start it with: ts start');
         return;
     }
     const lines = fs.readFileSync(logPath, 'utf-8').split('\n');
@@ -462,7 +462,7 @@ function cmdRoot(args) {
     }
 }
 
-// ── Argument parsing ──────────────────────────────────────────────────────────
+// -- Argument parsing ----------------------------------------------------------
 
 function usage() {
     console.log(`
@@ -527,7 +527,7 @@ function parseArgs(argv) {
     return args;
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// -- Main ----------------------------------------------------------------------
 
 const rawArgs = process.argv.slice(2);
 if (!rawArgs.length || rawArgs[0] === '--help' || rawArgs[0] === '-h') usage();

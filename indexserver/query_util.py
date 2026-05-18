@@ -1,5 +1,5 @@
 """
-Structural AST query CLI for the indexserver — supports C#, Python, Rust, JavaScript, TypeScript, C/C++.
+Structural AST query CLI for the indexserver -- supports C#, Python, Rust, JavaScript, TypeScript, C/C++.
 
 Extends query/dispatch.py with Tantivy-backed file discovery (--search), filesystem
 glob expansion, and display helpers (expand_files, print_file_matches).
@@ -47,7 +47,7 @@ from query.dispatch import query_file, ALL_EXTS
 from indexserver.config import normalize_path
 
 
-# ── Filesystem helpers ────────────────────────────────────────────────────────
+# -- Filesystem helpers --------------------------------------------------------
 
 def expand_files(patterns, exts=None):
     import glob as _glob
@@ -112,7 +112,7 @@ def print_file_matches(matches, disp, show_path, count_only, context, mode, path
     return len(matches)
 
 
-# ── Tantivy file resolver ─────────────────────────────────────────────────────
+# -- Tantivy file resolver -----------------------------------------------------
 
 def files_from_search(query, sub=None, ext="cs", limit=50,
                       collection=None, src_root=None, query_by=None,
@@ -168,12 +168,12 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
             paths.append(path)
 
     found = result.get("found", len(paths))
-    print(f"[search] '{query}' → {found} index hits, {len(paths)} local files",
+    print(f"[search] '{query}' -> {found} index hits, {len(paths)} local files",
           file=sys.stderr)
     return paths
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+# -- CLI -----------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(

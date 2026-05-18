@@ -3,7 +3,7 @@ Tests for accesses_of with object initializer and with-expression syntax.
 
 Replicates bug discovered in Round 16 of guided testing:
 
-  Round 16 — accesses_of missed member names in object initializers and
+  Round 16 -- accesses_of missed member names in object initializers and
               with-expressions:
 
         new Widget { Value = 5 }      // object initializer (Round 16a)
@@ -13,11 +13,11 @@ Replicates bug discovered in Round 16 of guided testing:
       and `member_binding_expression` (obj?.Member). Neither fires for
       members set in initializer or with-expression syntax.
 
-      Fix (16a): added a loop over `object_creation_expression` →
-      `initializer_expression` → `assignment_expression`; emits each
+      Fix (16a): added a loop over `object_creation_expression` ->
+      `initializer_expression` -> `assignment_expression`; emits each
       LHS identifier that matches `member_name`.
 
-      Fix (16b): added a loop over `with_expression` → `with_initializer`;
+      Fix (16b): added a loop over `with_expression` -> `with_initializer`;
       emits each first-identifier child that matches `member_name`.
 
       Both loops respect the optional `qualifier` (e.g. for qualified
@@ -88,10 +88,10 @@ class TestAccessesOfObjectInitializer(unittest.TestCase):
         assert _obj_line_no("int v = w.Value") in _lns(r), f"Regular access missing: {r}"
 
     def test_other_member_not_in_value_results(self):
-        """Name is a different member — must not appear in Value results."""
+        """Name is a different member -- must not appear in Value results."""
         r = q_accesses_of(*_OBJ_PARSED, member_name="Value")
         _lns(r)
-        # Name appears on same lines in multi-member init — those lines are in results
+        # Name appears on same lines in multi-member init -- those lines are in results
         # but for the Name member query, Value lines should not dominate
         r_name = q_accesses_of(*_OBJ_PARSED, member_name="Name")
         # Name = "hello" should be found

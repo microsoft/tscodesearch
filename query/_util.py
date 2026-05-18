@@ -17,6 +17,12 @@ class CallSiteInfo:
     """A function or method call site."""
     name: str
     receiver: str = ""  # receiver identifier when it looks like a type (e.g. "Repo" in Repo.Save())
+    # Resolved receiver type when the language's local analyser can pin it down
+    # unambiguously (static class name, declared field/param/local). Empty when
+    # the receiver isn't an identifier, the identifier isn't in scope, or the
+    # name resolves to conflicting types within its scope. Drives the indexer's
+    # ``qualified_calls`` field.
+    resolved_type: str = ""
 
 
 @dataclass
@@ -42,28 +48,44 @@ class FileDescription:
     """All structured data extracted from source bytes in a single parse."""
     language: str
 
-    # ── Declarations (query layer) ────────────────────────────────────────────
+    # -- Declarations (query layer) --------------------------------------------
     classes:             list = dc_field(default_factory=list)  # list[ClassInfo]
     methods:             list = dc_field(default_factory=list)  # list[MethodInfo]
     fields:              list = dc_field(default_factory=list)  # list[FieldInfo]
     imports:             list = dc_field(default_factory=list)  # list[ImportInfo]
     attrs:               list = dc_field(default_factory=list)  # list[AttrInfo]
 
-    # ── Code elements (indexer derives flat fields via flat_from_fd) ──────────
+    # -- Code elements (indexer derives flat fields via flat_from_fd) ----------
     namespace:           str  = ""
     call_site_infos:     list = dc_field(default_factory=list)  # list[CallSiteInfo]
     cast_infos:          list = dc_field(default_factory=list)  # list[CastInfo]
     local_var_infos:     list = dc_field(default_factory=list)  # list[LocalVarInfo]
     member_access_infos: list = dc_field(default_factory=list)  # list[MemberAccessInfo]
 
-    # ── Identifier bag (drives the broad `tokens` pre-filter field) ───────────
+    # -- Identifier bag (drives the broad `tokens` pre-filter field) -----------
     # Deduped identifier texts excluding tokens inside literal nodes.
     all_refs:            set  = dc_field(default_factory=set)
 
 
+# Canonical visibility tokens. Each language extractor maps its native
+# modifier set into one of these. ``""`` means "the language did not
+# capture a visibility for this declaration" -- typically because it's a
+# language where the concept doesn't apply (Python module-level functions,
+# Rust impl items, SQL columns). Callers filtering by visibility should
+# treat empty as "unknown", not as "public".
+VISIBILITY_PUBLIC    = "public"
+VISIBILITY_INTERNAL  = "internal"
+VISIBILITY_PROTECTED = "protected"
+VISIBILITY_PRIVATE   = "private"
+KNOWN_VISIBILITIES   = frozenset({
+    VISIBILITY_PUBLIC, VISIBILITY_INTERNAL,
+    VISIBILITY_PROTECTED, VISIBILITY_PRIVATE,
+})
+
+
 @dataclass
 class ClassInfo:
-    """A type declaration (class, struct, interface, enum, trait, union, …).
+    """A type declaration (class, struct, interface, enum, trait, union, ...).
 
     ``line`` is the 1-indexed start line of the declaration; ``end_line`` is
     the 1-indexed last line of its body, inclusive. ``end_line == line`` for
@@ -74,6 +96,10 @@ class ClassInfo:
     kind: str
     bases: list = dc_field(default_factory=list)
     end_line: int = 0
+    # Canonical access modifier: ``public`` / ``internal`` / ``protected`` /
+    # ``private`` / ``""`` (unknown). Captured by language extractors that
+    # have explicit modifier keywords; empty for languages that don't.
+    visibility: str = ""
 
     @property
     def text(self) -> str:
@@ -96,13 +122,15 @@ class MethodInfo:
     cls_name: str = ""
     return_type: str = ""
     param_types: list = dc_field(default_factory=list)
-    # Every identifier-like token appearing in the member's signature —
+    # Every identifier-like token appearing in the member's signature --
     # attribute names, modifiers' identifiers, generic args, parameter names,
     # default-value identifiers, etc. Excludes the body. Populated by each
     # language's extractor using language-aware AST traversal; empty list
     # means the language doesn't yet emit them.
     sig_tokens: list = dc_field(default_factory=list)
     end_line: int = 0
+    # Canonical access modifier -- same values as ClassInfo.visibility.
+    visibility: str = ""
 
     @property
     def text(self) -> str:
@@ -118,10 +146,12 @@ class FieldInfo:
     kind: str
     field_type: str = ""
     sig: str = ""
-    # Same purpose as MethodInfo.sig_tokens — every identifier in the
+    # Same purpose as MethodInfo.sig_tokens -- every identifier in the
     # field/property declaration excluding any initialiser body.
     sig_tokens: list = dc_field(default_factory=list)
     end_line: int = 0
+    # Canonical access modifier -- same values as ClassInfo.visibility.
+    visibility: str = ""
 
     @property
     def text(self) -> str:
@@ -149,7 +179,7 @@ def _run_dispatch(mode: str, language: str, dispatch: dict, *, extra_note: str =
 
     ``dispatch`` maps mode names to zero-argument callables (typically lambdas
     that close over the parsed tree, source bytes, and mode_arg). The mode
-    ``capabilities`` is handled here — it returns the sorted list of supported
+    ``capabilities`` is handled here -- it returns the sorted list of supported
     modes for introspection and never reaches ``dispatch``.
 
     Unsupported modes raise ``ValueError`` with the supported-mode list
@@ -172,8 +202,8 @@ def _make_matches(results):
     """Convert tuples from query functions to list of match dicts.
 
     Accepts either:
-      * ``(line, text)`` — pattern-mode results; emits ``{"line": N, "text": ...}``
-      * ``(line, end_line, text)`` — listing-mode results with scope; emits
+      * ``(line, text)`` -- pattern-mode results; emits ``{"line": N, "text": ...}``
+      * ``(line, end_line, text)`` -- listing-mode results with scope; emits
         ``{"line": N, "end_line": M, "text": ...}``. ``end_line`` lets callers
         ``Read(file, offset=line, limit=end_line - line + 1)`` precisely.
     """
@@ -207,7 +237,7 @@ class TreeIndex:
 
     Single shared implementation used by every language module. The walk uses
     tree-sitter's TreeCursor (C-level traversal) to avoid materialising Python
-    lists of children at each level — about 2× faster than a Python stack of
+    lists of children at each level -- about 2x faster than a Python stack of
     nodes.
 
     Args:

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * setup.mjs — one-time codesearch setup.
+ * setup.mjs -- one-time codesearch setup.
  *
  * 1. Registers the MCP server with Claude Code
  * 2. Sets the VS Code tscodesearch.repoPath setting
@@ -22,7 +22,7 @@ import { randomBytes }                                 from 'node:crypto';
 
 const REPO = dirname(fileURLToPath(import.meta.url));
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 
 const WIN_SCRIPTS = new Set(['npm', 'npx', 'claude', 'code', 'vsce']);
 
@@ -59,12 +59,12 @@ function commandExists(cmd) {
   return capture(checker, [cmd]) !== null;
 }
 
-// ── Argument parsing ──────────────────────────────────────────────────────────
+// -- Argument parsing ----------------------------------------------------------
 
 const argv      = process.argv.slice(2);
 const uninstall = argv.includes('--uninstall');
 
-// ── Uninstall ─────────────────────────────────────────────────────────────────
+// -- Uninstall -----------------------------------------------------------------
 
 if (uninstall) {
   console.log('Stopping daemon...');
@@ -77,7 +77,7 @@ if (uninstall) {
   process.exit(0);
 }
 
-// ── Main setup ────────────────────────────────────────────────────────────────
+// -- Main setup ----------------------------------------------------------------
 
 // [1] Register MCP
 step(1, 'Registering MCP server with Claude Code');
@@ -111,11 +111,11 @@ step(2, 'Creating client venv (.client-venv)');
   const PYTHON_VER = '3.12';
 
   if (!commandExists('uv')) {
-    console.log('  uv not found — installing via winget...');
+    console.log('  uv not found -- installing via winget...');
     if (run('winget', ['install', '--id', 'astral-sh.uv', '-e', '--silent']) !== 0)
       die('uv install failed. Install uv manually (https://docs.astral.sh/uv/) then re-run setup.');
     if (!commandExists('uv'))
-      die('uv installed but not yet in PATH — open a new terminal and re-run setup.');
+      die('uv installed but not yet in PATH -- open a new terminal and re-run setup.');
   }
 
   runOrDie('uv', ['python', 'install', PYTHON_VER], `uv python install ${PYTHON_VER}`);
@@ -127,7 +127,7 @@ step(2, 'Creating client venv (.client-venv)');
   })();
 
   if (needsCreate) {
-    if (existsSync(pyExe)) console.log('  Python version too old — recreating venv...');
+    if (existsSync(pyExe)) console.log('  Python version too old -- recreating venv...');
     runOrDie('uv', ['venv', '--python', PYTHON_VER, clientVenv], 'uv venv');
   }
 
@@ -184,11 +184,11 @@ if (!existsSync(join(vscodeDir, 'package.json'))) {
   }
 }
 
-// ── Done ─────────────────────────────────────────────────────────────────────
+// -- Done ---------------------------------------------------------------------
 
-console.log('\n── Setup complete! ──────────────────────────────────────────────────────────\n');
+console.log('\n-- Setup complete! ----------------------------------------------------------\n');
 console.log('Next: start the daemon:');
 console.log('  ts start');
 console.log('\nThen open VS Code (or reload: Ctrl+Shift+P > Reload Window) and:');
-console.log('  TsCodeSearch: Add Root  — to add source directories to index');
+console.log('  TsCodeSearch: Add Root  -- to add source directories to index');
 console.log('\nDaemon management:  ts start / ts stop / ts restart / ts status');

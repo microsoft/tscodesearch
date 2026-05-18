@@ -23,7 +23,7 @@ from indexserver.config import normalize_path
 _TEST_PORT: int = int(os.environ.get("CODESEARCH_TEST_PORT", 18108))
 _TEST_KEY:  str = "codesearch-test"
 
-# Repo root — two levels up from tests/integration/
+# Repo root -- two levels up from tests/integration/
 _REPO: str = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 

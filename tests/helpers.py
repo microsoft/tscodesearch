@@ -54,16 +54,26 @@ def _collection_info(collection: str) -> dict | None:
 def _delete_collection(collection: str, timeout: float = 10.0) -> None:
     """Wipe a Tantivy collection's on-disk directory.
 
-    Tests intentionally block here until the directory is verifiably gone — a
+    Tests intentionally block here until the directory is verifiably gone -- a
     later test that reuses the same path needs to start clean. On Windows,
     even after ``Backend.close()`` clears the index and ``gc.collect()`` runs,
     the OS may briefly hold a mmap'd file. ``drop()`` already retries; this
     wrapper retries the whole drop a few times within ``timeout`` and
-    confirms ``os.path.exists`` is ``False`` before returning. Raises on
-    persistent failure so the next test fails early with a clear message
-    instead of indexing into a half-wiped directory.
+    confirms ``os.path.exists`` is ``False`` before returning.
+
+    On Windows we additionally wait until the parent ``.tantivy/`` directory
+    is verifiably writable. The next test's setUpClass opens a fresh
+    ``IndexWriter`` and immediately commits -- under Defender/AV scanning or
+    lingering mmap finalisation, even a freshly-created sibling directory
+    can transiently refuse a write. Blocking here until a write-then-delete
+    canary in the parent directory succeeds gives the OS time to settle and
+    prevents one slow handle release from cascading into the next test's
+    setUpClass commit. Raises on persistent failure so the next test fails
+    early with a clear message instead of indexing into a half-wiped
+    directory.
     """
     import gc as _gc
+    import sys as _sys
     import time as _time
     from indexserver.config import load_config as _load_config, index_root
     from indexserver.backend import drop
@@ -79,13 +89,43 @@ def _delete_collection(collection: str, timeout: float = 10.0) -> None:
         except Exception as e:
             last_err = e
         if not os.path.exists(index_dir):
-            return
+            break
         _gc.collect()
         _time.sleep(0.2)
-    raise RuntimeError(
-        f"_delete_collection({collection!r}) still sees {index_dir!r} after "
-        f"{timeout}s. Last drop error: {last_err}"
-    )
+    else:
+        raise RuntimeError(
+            f"_delete_collection({collection!r}) still sees {index_dir!r} after "
+            f"{timeout}s. Last drop error: {last_err}"
+        )
+
+    if _sys.platform == "win32":
+        # Parent directory canary: create, write to, and delete a small
+        # sentinel inside ``.tantivy/``. If this fails (Access denied,
+        # PermissionError, etc.) the OS hasn't finished releasing whatever
+        # the just-closed Backend was holding. Retry briefly.
+        parent = os.path.dirname(index_dir)
+        canary_deadline = _time.time() + 2.0
+        canary_err: Exception | None = None
+        while _time.time() < canary_deadline:
+            try:
+                os.makedirs(parent, exist_ok=True)
+                canary = os.path.join(
+                    parent, f".release_canary_{collection}.tmp")
+                with open(canary, "wb") as f:
+                    f.write(b"ok")
+                os.remove(canary)
+                return
+            except OSError as e:
+                canary_err = e
+                _gc.collect()
+                _time.sleep(0.1)
+        # If the canary keeps failing the next test will hit the same
+        # problem; surface it now rather than letting it manifest as a
+        # confusing commit failure inside setUpClass.
+        raise RuntimeError(
+            f"_delete_collection({collection!r}): parent {parent!r} not "
+            f"writable after release-settle wait. Last canary error: {canary_err}"
+        )
 
 
 def _make_git_repo(files: dict) -> str:
