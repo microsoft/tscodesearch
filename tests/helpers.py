@@ -26,13 +26,10 @@ def _search(collection: str, q: str,
     from indexserver.indexer import ensure_backend
     from indexserver.search import search as _backend_search
     cfg = _load_config()
-    backend = ensure_backend(cfg, collection, write=False)
-    try:
+    with ensure_backend(cfg, collection, write=False) as backend:
         result = _backend_search(
             backend, q=q, query_by=query_by, per_page=per_page, num_typos=0,
         )
-    finally:
-        backend.close()
     return [h["document"] for h in result.get("hits", [])]
 
 
@@ -48,25 +45,47 @@ def _collection_info(collection: str) -> dict | None:
     if not os.path.exists(os.path.join(index_dir, "meta.json")):
         return None
     try:
-        backend = Backend(index_dir, write=False, create=False)
-        info = {"num_documents": backend.num_documents()}
-        backend.close()
-        return info
+        with Backend(index_dir, write=False, create=False) as backend:
+            return {"num_documents": backend.num_documents()}
     except Exception:
         return None
 
 
-def _delete_collection(collection: str) -> None:
-    """Wipe a Tantivy collection's on-disk directory."""
-    from indexserver.config import load_config as _load_config
+def _delete_collection(collection: str, timeout: float = 10.0) -> None:
+    """Wipe a Tantivy collection's on-disk directory.
+
+    Tests intentionally block here until the directory is verifiably gone — a
+    later test that reuses the same path needs to start clean. On Windows,
+    even after ``Backend.close()`` clears the index and ``gc.collect()`` runs,
+    the OS may briefly hold a mmap'd file. ``drop()`` already retries; this
+    wrapper retries the whole drop a few times within ``timeout`` and
+    confirms ``os.path.exists`` is ``False`` before returning. Raises on
+    persistent failure so the next test fails early with a clear message
+    instead of indexing into a half-wiped directory.
+    """
+    import gc as _gc
+    import time as _time
+    from indexserver.config import load_config as _load_config, index_root
     from indexserver.backend import drop
     cfg = _load_config()
     root = next((r for r in cfg.roots.values() if r.collection == collection), None)
-    if root is None:
-        from indexserver.config import index_root
-        drop(str(index_root() / collection))
-    else:
-        drop(root.index_dir)
+    index_dir = root.index_dir if root else str(index_root() / collection)
+
+    deadline = _time.time() + timeout
+    last_err: Exception | None = None
+    while _time.time() < deadline:
+        try:
+            drop(index_dir)
+        except Exception as e:
+            last_err = e
+        if not os.path.exists(index_dir):
+            return
+        _gc.collect()
+        _time.sleep(0.2)
+    raise RuntimeError(
+        f"_delete_collection({collection!r}) still sees {index_dir!r} after "
+        f"{timeout}s. Last drop error: {last_err}"
+    )
 
 
 def _make_git_repo(files: dict) -> str:

@@ -17,16 +17,15 @@ Modes (C#):
     --casts    TYPE        Find every explicit cast expression (TYPE)expr
     --all-refs         NAME   Find every identifier occurrence
     --accesses-of      MEMBER Find every access site of property/field MEMBER
-    --attrs           [NAME]  List [Attribute] decorators, optionally filter by NAME
-    --usings               List all using/using-alias directives
+    --attrs           [NAME]  List [Attribute] / @decorator / #[attribute] usages
+    --imports              List all using / import / include directives
     --declarations     NAME   Print declaration(s) named NAME
     --params           METHOD Show the full parameter list of METHOD
 
 Modes (Python / Rust / JS / TS / C++):
     --classes / --methods / --calls / --implements / --declarations
     --all-refs / --imports / --params
-    TypeScript also supports: --attrs (decorators)
-    C/C++ also supports: --includes
+    Python / TypeScript also support: --attrs
 
 Options:
     --no-path              Don't prefix output with file path
@@ -140,13 +139,13 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
     filter_by = " && ".join(filter_parts) if filter_parts else ""
 
     try:
-        backend = ensure_backend(_cfg, coll_name, write=False)
+        backend_cm = ensure_backend(_cfg, coll_name, write=False)
     except Exception as e:
         print(f"Index open error: {e}", file=sys.stderr)
         print("Run: ts recreate", file=sys.stderr)
         return []
 
-    try:
+    with backend_cm as backend:
         result = _backend_search(
             backend,
             q=query,
@@ -155,8 +154,6 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
             num_typos=1,
             filter_by=filter_by,
         )
-    finally:
-        backend.close()
 
     paths = []
     seen  = set()
@@ -194,11 +191,9 @@ def main():
     mg.add_argument("--all-refs",     metavar="NAME")
     mg.add_argument("--accesses-of",  metavar="MEMBER")
     mg.add_argument("--attrs",        metavar="NAME", nargs="?", const="")
-    mg.add_argument("--usings",       action="store_true")
     mg.add_argument("--declarations", metavar="NAME")
     mg.add_argument("--params",       metavar="METHOD")
     mg.add_argument("--imports",      action="store_true")
-    mg.add_argument("--includes",     action="store_true")
 
     ap.add_argument("files", nargs="*", metavar="FILE_OR_PATTERN")
     ap.add_argument("--search",       metavar="QUERY")
@@ -240,16 +235,12 @@ def main():
         mode, mode_arg = "accesses_of",  args.accesses_of
     elif args.attrs is not None:
         mode, mode_arg = "attrs",        args.attrs or None
-    elif args.usings:
-        mode, mode_arg = "usings",       None
     elif args.declarations:
         mode, mode_arg = "declarations", args.declarations
     elif args.params:
         mode, mode_arg = "params",       args.params
     elif args.imports:
         mode, mode_arg = "imports",      None
-    elif args.includes:
-        mode, mode_arg = "includes",     None
     else:
         ap.print_help(); sys.exit(1)
 

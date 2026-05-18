@@ -182,22 +182,15 @@ describe('sanitizeName', () => {
 // ---------------------------------------------------------------------------
 
 describe('MODES constant', () => {
-    it('contains all 11 modes in declared order', () => {
+    it('contains all 10 modes in declared order', () => {
         const keys = MODES.map((m) => m.key);
         assert.deepEqual(keys, [
-            // search-only
-            'text',
             // AST-backed
             'declarations', 'uses', 'calls', 'implements', 'casts', 'attrs',
             'all_refs', 'accesses_on',
             // uses sub-modes
             'uses_field', 'uses_param',
         ]);
-    });
-
-    it('text mode has no astMode (search-only)', () => {
-        const m = MODES.find((x) => x.key === 'text')!;
-        assert.equal(m.astMode, undefined, 'text should not have astMode');
     });
 
     it('AST-backed modes have astMode set', () => {

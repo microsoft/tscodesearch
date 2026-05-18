@@ -70,7 +70,7 @@ class TestExtractCppMetadata(unittest.TestCase):
         self.assertIn("process", self._meta["call_sites"])
 
     def test_includes_in_usings(self):
-        self.assertIn("string", self._meta["usings"])
+        self.assertIn("string", self._meta["imports"])
 
     def test_member_sigs_indexed(self):
         sigs = self._meta["member_sigs"]
@@ -261,7 +261,7 @@ class TestProcessCppFile(unittest.TestCase):
         self.assertIn("TextProcessor", out)
 
     def test_includes_output(self):
-        n, out = self._run("includes")
+        n, out = self._run("imports")
         self.assertGreater(n, 0)
         self.assertIn("#include", out)
 

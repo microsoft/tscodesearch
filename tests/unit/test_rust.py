@@ -74,7 +74,7 @@ class TestExtractRustMetadata(unittest.TestCase):
         self.assertIn("process", self._meta["call_sites"])
 
     def test_use_imports_in_usings(self):
-        self.assertIn("std", self._meta["usings"])
+        self.assertIn("std", self._meta["imports"])
 
     def test_member_sigs_contain_fn(self):
         sigs = self._meta["member_sigs"]

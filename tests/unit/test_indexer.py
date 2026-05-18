@@ -47,10 +47,10 @@ class TestExtractCsMetadata(unittest.TestCase):
             f"call_sites: {meta['call_sites']}"
         )
 
-    def test_usings(self):
+    def test_imports(self):
         src = b"using System; using System.Collections.Generic;"
         meta = extract_metadata(src, ".cs")
-        self.assertIn("System", meta["usings"])
+        self.assertIn("System", meta["imports"])
 
     def test_malformed_source_no_crash(self):
         src = b"{{ totally invalid C# !! @@@"

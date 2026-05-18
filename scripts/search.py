@@ -75,29 +75,28 @@ def search(query, ext=None, sub=None, limit=10,
     filter_by         = build_filter_by(ext or "", sub or "", exclude_path or "")
 
     try:
-        backend = ensure_backend(_cfg, coll_name, write=False)
+        backend_cm = ensure_backend(_cfg, coll_name, write=False)
     except Exception as e:
         print(f"ERROR: cannot open index for collection '{coll_name}': {e}")
         print(f"  Run: ts recreate")
         sys.exit(1)
 
-    try:
-        result = _backend_search(
-            backend,
-            q=query,
-            query_by=query_by,
-            weights=weights,
-            per_page=limit,
-            num_typos=1,
-            filter_by=filter_by,
-            facet_by="path_segments,language,extension",
-            max_facet_values=200,
-        )
-    except Exception as e:
-        print(f"ERROR: search failed: {e}")
-        sys.exit(1)
-    finally:
-        backend.close()
+    with backend_cm as backend:
+        try:
+            result = _backend_search(
+                backend,
+                q=query,
+                query_by=query_by,
+                weights=weights,
+                per_page=limit,
+                num_typos=1,
+                filter_by=filter_by,
+                facet_by="path_segments,language,extension",
+                max_facet_values=200,
+            )
+        except Exception as e:
+            print(f"ERROR: search failed: {e}")
+            sys.exit(1)
 
     return result, query_by
 
@@ -164,7 +163,7 @@ def format_results(result, query, query_by, show_facets=False, debug=False,
         base_types   = meta.get("base_types",   []) or []
         member_sigs  = meta.get("member_sigs",  []) or []
         attr_names   = meta.get("attr_names",   []) or []
-        usings       = meta.get("usings",       []) or []
+        imports      = meta.get("imports",      []) or []
 
         if class_names:  print(f"   Classes    : {', '.join(class_names[:5])}")
         if base_types:   print(f"   Implements : {', '.join(base_types[:5])}")
@@ -179,7 +178,7 @@ def format_results(result, query, query_by, show_facets=False, debug=False,
         elif method_names:
             print(f"   Members    : {', '.join(method_names[:6])}")
         if attr_names: print(f"   Attributes : {', '.join(attr_names[:5])}")
-        if usings:     print(f"   Usings     : {', '.join(usings[:4])}")
+        if imports:    print(f"   Imports    : {', '.join(imports[:4])}")
         if ns:         print(f"   NS         : {ns}")
         print()
 

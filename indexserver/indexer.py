@@ -172,7 +172,7 @@ def flat_from_fd(fd) -> dict:
             type_refs.extend(_expand_type(cs.receiver))
     type_refs.extend(base_types)
 
-    usings     = [i.module for i in fd.imports if i.module]
+    imports    = [i.module for i in fd.imports if i.module]
     attr_names = [a.attr_name for a in fd.attrs if a.attr_name]
 
     # member_sig_tokens — every identifier inside any member's signature
@@ -200,7 +200,7 @@ def flat_from_fd(fd) -> dict:
         "member_sig_tokens": _dedupe(sig_tokens),
         "type_refs":         _dedupe(type_refs),
         "attr_names":        _dedupe(attr_names),
-        "usings":            _dedupe(usings),
+        "imports":           _dedupe(imports),
         "return_types":      _dedupe(return_types),
         "param_types":       _dedupe(param_types),
         "field_types":       _dedupe(field_types),
@@ -324,7 +324,7 @@ def build_document(full_path: str, relative_path: str) -> dict | None:
         "call_sites":       meta["call_sites"],
         "member_accesses":  meta["member_accesses"],
         "attr_names":       meta["attr_names"],
-        "usings":           meta["usings"],
+        "imports":          meta["imports"],
     }
 
 
@@ -500,26 +500,25 @@ def walk_and_enqueue(
     Returns (new_entries, deduped_entries, orphans_deleted).
     """
     src_root = normalize_path(src_root)
-    backend = ensure_backend(cfg, collection, resethard=resethard)
+    with ensure_backend(cfg, collection, resethard=resethard) as backend:
+        index_map: dict[str, int] = {} if resethard else export_index_map(backend)
+        remaining = set(index_map)
+        n_new = n_dedup = 0
 
-    index_map: dict[str, int] = {} if resethard else export_index_map(backend)
-    remaining = set(index_map)
-    n_new = n_dedup = 0
+        for sf in walk_source_files(src_root, cfg, extensions=extensions):
+            if stop_event and stop_event.is_set():
+                break
+            doc_id = file_id(sf.rel)
+            remaining.discard(doc_id)
+            if index_map.get(doc_id) == sf.mtime:
+                continue
+            if queue.enqueue(sf.full_path, sf.rel, collection, mtime=sf.mtime):
+                n_new += 1
+            else:
+                n_dedup += 1
 
-    for sf in walk_source_files(src_root, cfg, extensions=extensions):
-        if stop_event and stop_event.is_set():
-            break
-        doc_id = file_id(sf.rel)
-        remaining.discard(doc_id)
-        if index_map.get(doc_id) == sf.mtime:
-            continue
-        if queue.enqueue(sf.full_path, sf.rel, collection, mtime=sf.mtime):
-            n_new += 1
-        else:
-            n_dedup += 1
-
-    n_deleted = backend.delete_many(list(remaining)) if remaining else 0
-    return n_new, n_dedup, n_deleted
+        n_deleted = backend.delete_many(list(remaining)) if remaining else 0
+        return n_new, n_dedup, n_deleted
 
 
 def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False, collection=None):
@@ -535,7 +534,6 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
             src_root = cfg.src_root
     src_root = normalize_path(src_root)
     exts = root_exts if root_exts is not None else cfg.include_extensions
-    backend = ensure_backend(cfg, coll_name, resethard=resethard)
 
     t0 = time.time()
     last_report_t = t0
@@ -575,12 +573,12 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
             last_report_t = now
             last_report_n = n
 
-    total_indexed, total_errors = index_file_list(
-        backend, _tracked_files(),
-        batch_size=batch_size, verbose=verbose,
-        on_progress=_rate_report,
-    )
-    backend.close()
+    with ensure_backend(cfg, coll_name, resethard=resethard) as backend:
+        total_indexed, total_errors = index_file_list(
+            backend, _tracked_files(),
+            batch_size=batch_size, verbose=verbose,
+            on_progress=_rate_report,
+        )
 
     elapsed = time.time() - t0
     rate = total_indexed / elapsed if elapsed > 0 else 0

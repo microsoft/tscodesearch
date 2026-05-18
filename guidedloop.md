@@ -272,7 +272,7 @@ or inline in a `guidedtesting.md` alongside the test suite). Include:
 
 Good candidates for future rounds:
 
-- **Modes not yet stress-tested** against real files: `casts`, `ident`, `usings`
+- **Modes not yet stress-tested** against real files: `casts`, `all_refs`, `imports`
 - **Unusual C# syntax**: `await using`, record types, primary constructors,
   `switch` expressions (not just switch statements), `with` expressions,
   tuple deconstruction (`var (a, b) = ...`)

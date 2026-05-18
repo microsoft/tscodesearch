@@ -42,11 +42,8 @@ class TestPathIntegration(unittest.TestCase):
         if not root or not root.path:
             self.skipTest("no default root configured")
 
-        backend = ensure_backend(self.cfg, root.collection, write=False)
-        try:
+        with ensure_backend(self.cfg, root.collection, write=False) as backend:
             result = _search(backend, q="Widget", query_by="path_tokens,class_names,tokens", per_page=5)
-        finally:
-            backend.close()
 
         hits = result.get("hits", [])
         if not hits:

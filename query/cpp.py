@@ -8,7 +8,7 @@ Modes:
   implements   - Find classes that inherit from BASE
   declarations - Find declaration(s) by name
   all_refs     - Find every identifier occurrence
-  includes     - List #include directives
+  imports      - List #include directives
   params       - Show parameter list of FUNC
 """
 
@@ -17,7 +17,7 @@ EXTENSIONS = frozenset({".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"})
 import sys
 import tree_sitter_cpp as tscpp
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo, TreeIndex
+from ._util import _run_dispatch, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo, TreeIndex
 
 _CPP_LANG   = Language(tscpp.language())
 _cpp_parser = Parser(_CPP_LANG)
@@ -536,15 +536,10 @@ def query_cpp_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fal
         "declarations": lambda: cpp_q_declarations(src_bytes, tree, lines, mode_arg,
                                                    include_body=include_body),
         "all_refs":     lambda: cpp_q_all_refs(src_bytes, tree, lines, mode_arg),
-        "text":         lambda: cpp_q_all_refs(src_bytes, tree, lines, mode_arg),
-        "includes":     lambda: cpp_q_includes(src_bytes, tree, lines),
+        "imports":      lambda: cpp_q_includes(src_bytes, tree, lines),
         "params":       lambda: cpp_q_params(src_bytes, tree, lines, mode_arg),
     }
-
-    fn = dispatch.get(mode)
-    if fn is None:
-        raise ValueError(f"Unknown mode: {mode!r}")
-    return _make_matches(fn() or [])
+    return _run_dispatch(mode, "C/C++", dispatch)
 
 
 

@@ -84,8 +84,8 @@ Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `PO
 | File | Responsibility |
 |------|---------------|
 | `query/cs.py`, `query/py.py`, `query/js.py`, `query/rust.py`, `query/cpp.py`, `query/sql.py` | Per-language tree-sitter AST functions and bytes-level mode handlers. |
-| `query/_util.py` | Shared dataclasses (`FileDescription`, `ClassInfo`, …) and `TreeIndex` — single-pass AST walker used by every language. |
-| `query/dispatch.py` | Pure query layer. `query_file(src_bytes, ext, mode, mode_arg, ...)`, `describe_file()`, `ALL_EXTS`. No backend dependency. |
+| `query/_util.py` | Shared dataclasses (`FileDescription`, `ClassInfo`, …), `TreeIndex` (single-pass AST walker used by every language), and `_run_dispatch` (resolves a mode against a language's dispatch table; handles the `capabilities` mode and raises `ValueError` with the supported-mode list for unknown modes). |
+| `query/dispatch.py` | Pure query layer. `query_file(src_bytes, ext, mode, mode_arg, ...)`, `describe_file()`, `ALL_EXTS`. No backend dependency. `query_file` raises `ValueError` for unknown extensions or unsupported modes — explicit errors beat silent empties for tool-using agents. |
 | `query/__main__.py` | CLI: `python -m query --mode methods --file Widget.cs`. JSON stdin mode also supported. |
 
 **`TreeIndex`** (in `query/_util.py`) walks the AST once with tree-sitter's C-level `TreeCursor`, buckets nodes into `nodes_by_type[type] → [nodes]`, and optionally collects literal-aware `all_refs` in the same pass. `describe_*_file` builds one index covering the union of types every extractor needs (5–10× faster than a per-extractor walk on large files); per-query wrappers (`q_classes`, `q_methods`, …) build a narrow index with just their target types so they pay the same cost as one targeted walk.
@@ -153,7 +153,7 @@ There is **no longer a WSL or indexserver venv** — Tantivy runs in-process in 
 
 **`query_codebase`**: Tantivy pre-filter → ≤50 files → tree-sitter exact lines. Returns folder breakdown (one level deeper than the current `sub=` scope) if >50 files match. Pattern-based modes only; listing modes redirect to `query_single_file`. `uses` accepts `uses_kind`: `field`, `param`, `return`, `cast`, `base`. `sub=` accepts any folder depth (`services` or `services/billing`).
 
-**`query_single_file`**: No backend search. Supports listing modes (`methods`, `fields`, `classes`, `usings`, `imports`). Works offline.
+**`query_single_file`**: No backend search. Supports listing modes (`methods`, `fields`, `classes`, `imports`, `capabilities`). Works offline.
 
 ## Backend schema — search mode mapping
 
@@ -194,7 +194,7 @@ Only a small set of fields is `stored=True` (retrievable from the index at searc
 | `path_segments` | Cumulative ancestor folders for the `sub=` filter (`["services", "services/billing"]`). |
 | `mtime` | Read by the verifier to diff fs vs. index. |
 
-Every other text field — `class_names`, `method_names`, `base_types`, `field_types`, `local_types`, `param_types`, `return_types`, `cast_types`, `type_refs`, `call_sites`, `member_accesses`, `attr_names`, `usings`, `namespace`, `tokens`, `path_tokens`, `member_sig_tokens` — is `stored=False`. The fields are indexed for search but never read back from the index. The daemon's pipeline pre-filters with Tantivy then runs tree-sitter on the candidate files, and the AST output is what carries line-level results all the way to the caller.
+Every other text field — `class_names`, `method_names`, `base_types`, `field_types`, `local_types`, `param_types`, `return_types`, `cast_types`, `type_refs`, `call_sites`, `member_accesses`, `attr_names`, `imports`, `namespace`, `tokens`, `path_tokens`, `member_sig_tokens` — is `stored=False`. The fields are indexed for search but never read back from the index. The daemon's pipeline pre-filters with Tantivy then runs tree-sitter on the candidate files, and the AST output is what carries line-level results all the way to the caller.
 
 `path_tokens` collects every directory name plus the filename, the filename stem, and the extension for one file — so a search for `billing` finds every file under any `billing/` directory at any depth, and a search for `Foo` matches `Foo.cs`. `namespace` is a multi-value field; the indexer splits on `.` for C#/Python/Java/JS (other languages can return a pre-split list from their extractor). `member_sig_tokens` is every identifier appearing in any member signature — attribute names, parameter names, generic args, default-value identifiers — collected by each language's AST extractor walking the member node and skipping the body. The legacy `member_sigs` (full signature strings) field is gone; the structured fields (`method_names`, `return_types`, `param_types`, `class_names`) plus `member_sig_tokens` cover the same searches.
 
@@ -202,32 +202,27 @@ Every other text field — `class_names`, `method_names`, `base_types`, `field_t
 
 ## tree-sitter query modes
 
-### C# (`.cs`)
+**One canonical mode name per concept across every language.** The dispatch raises a `ValueError` listing the supported modes when an unknown one is passed. Call `query_single_file("capabilities", file=…)` to enumerate the modes a given file's language actually supports.
 
-| Mode | Arg | Finds |
-|------|-----|-------|
-| `classes`, `methods`, `fields`, `usings` | — | Listing *(query_single_file only)* |
-| `params` | METHOD | Parameter list *(query_single_file only)* |
-| `declarations` | NAME | Declaration of method/type |
-| `calls` | METHOD | Call sites. `"Repo.Save"` restricts by receiver. Pattern is a METHOD name only — a variable/receiver name (e.g. `"repo"`) silently returns empty; use `all_refs` on the variable for that. |
-| `implements` | TYPE | Types that inherit/implement TYPE |
-| `uses` | TYPE | Type references. Narrow with `uses_kind`. |
-| `casts` | TYPE | `(TYPE)expr` casts |
-| `all_refs` | NAME | Every identifier occurrence |
-| `accesses_on` | TYPE | `.Member` accesses on locals/params/fields typed as TYPE (plus `new T { … }` and `with` mutations). Returns nothing when the variable is only assigned, returned, or forwarded as an argument — no `.Member` exists. Fall back to `all_refs` on the variable name. |
-| `accesses_of` | MEMBER | Access sites of property/field. `"Order.Status"` restricts. |
-| `attrs` | NAME? | `[Attribute]` decorators |
-
-### Python (`.py`)
-
-| Mode | Arg | Finds |
-|------|-----|-------|
-| `classes`, `methods`, `params`, `imports` | — | Listing *(query_single_file only)* |
-| `decorators` | NAME? | `@decorator` usages |
-| `declarations` | NAME | Function/class declaration |
-| `calls` | FUNC | Call sites |
-| `implements` | CLASS | Subclasses |
-| `ident` | NAME | Every identifier occurrence |
+| Mode | Arg | Concept | Languages |
+|------|-----|---------|-----------|
+| `capabilities` | — | List the modes supported for this file's language | all |
+| `classes` | — | Type declarations (class/interface/struct/enum/record/…) | all |
+| `methods` | — | Method/ctor/property/field/event declarations | all |
+| `fields` | — | Field / property / column declarations | C#, SQL |
+| `imports` | — | `using` / `import` / `include` directives | all except SQL |
+| `params` | METHOD | Parameter list for METHOD | C#, Python, JS, Rust, C++ |
+| `declarations` | NAME | The declaration(s) of NAME (narrow with `symbol_kind`) | all |
+| `body` | NAME | Full source of NAME's declaration | C# only |
+| `at` | LINE:COL | Deepest AST node at position + enclosing scope chain | C# only |
+| `calls` | METHOD | Call sites of METHOD (`"Repo.Save"` to restrict by receiver). Pass a METHOD name only — a variable/receiver name silently returns empty; use `all_refs` on the variable for that. | all |
+| `implements` | TYPE | Types that inherit/implement TYPE | all except SQL |
+| `uses` | TYPE | Type references; narrow with `uses_kind` (`field`/`param`/`return`/`cast`/`base`/`locals`) | C# only |
+| `casts` | TYPE | `(TYPE)expr` / `as TYPE` sites | C# only |
+| `attrs` | NAME? | `[Attribute]` / `@decorator` / `#[attribute]` usages (omit NAME to list all) | C#, Python, JS |
+| `accesses_of` | MEMBER | Access sites of property/field by name (`"Order.Status"` restricts) | C# only |
+| `accesses_on` | TYPE | `.Member` accesses on locals/params/fields typed as TYPE (plus `new T { … }` and `with` mutations). Returns nothing when the variable is only assigned, returned, or forwarded as an argument — no `.Member` exists. Fall back to `all_refs` on the variable name. | C# only |
+| `all_refs` | NAME | Every identifier occurrence (broadest — AST-only, skips strings/comments). For SQL this is a plain substring scan over lines. | all |
 
 ---
 

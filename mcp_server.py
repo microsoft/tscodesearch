@@ -202,7 +202,7 @@ query_single_file accepts the same mode / pattern / root / include_body /
 symbol_kind / uses_kind arguments as this tool, so the suggested calls in
 tier 2 and tier 3 are drop-in.
 
-For listing modes (methods, fields, classes, usings, imports) use query_single_file.
+For listing modes (methods, fields, classes, imports, capabilities) use query_single_file.
 
 All modes are identifier-based AST queries. The pattern must be a single
 identifier name (e.g. "BlobStore", "SaveChanges") — no whitespace, operators,
@@ -276,7 +276,7 @@ Examples:
   query_codebase("calls", "SaveChanges", sub="services,vendor")
   query_codebase("calls", "SaveChanges", exclude_path="tests,generated")
   query_codebase("uses", "IRepo", sub="services", exclude_path="services/legacy")"""
-    _LISTING = {"methods", "fields", "classes", "usings", "imports"}
+    _LISTING = {"methods", "fields", "classes", "imports", "capabilities"}
     m = mode.lower().strip().replace("-", "_")
     if m in _LISTING:
         return (f"Mode '{m}' lists file contents without filtering — use query_single_file instead:\n"
@@ -450,8 +450,9 @@ def query_single_file(
 ) -> str:
     """Run a tree-sitter AST query on a single file. No index search.
 
-Supports all modes including listing modes (methods, fields, classes, usings, imports).
-Works well on large source files — tree-sitter parses the whole file and returns only matching nodes.
+Mode names are canonical — one name per concept across every language.
+Call `query_single_file("capabilities", file=...)` first if you're not sure
+which modes a given file's language supports.
 
 Pattern modes are identifier-based: `pattern` must be a single identifier
 name (e.g. "BlobStore"), not a phrase, regex, or punctuation-bearing fragment.
@@ -459,47 +460,73 @@ Matches are restricted to identifier occurrences in code — strings and comment
 are not matched. For literal substring search, multi-word phrases, operators,
 or comment fragments, this tool cannot help — use grep/ripgrep on the file.
 
+Modes (canonical, same name across languages):
+
+  Listing modes — omit `pattern`:
+    classes       Type declarations (class, interface, struct, enum, record, …).
+    methods       Method, constructor, property, field, event declarations.
+    fields        Field and property declarations (C#, SQL).
+    imports       What this file pulls in (using/import/include directives).
+    capabilities  List the modes actually supported for this file's language.
+
+  Pattern modes — `pattern` is a single identifier:
+    declarations NAME   The declaration(s) of NAME (filter with `symbol_kind`).
+    body NAME           Full source of NAME's declaration (include_body=true).
+    calls METHOD        Call sites of METHOD. Pass a METHOD name, not a
+                        receiver — `obj.Foo()` is matched by calls("Foo")
+                        not calls("obj"); for variable usage use all_refs.
+    implements TYPE     Types that inherit/implement TYPE.
+    uses TYPE           Type references; narrow with `uses_kind` (C# only)
+                        among: field, param, return, cast, base, locals.
+    casts TYPE          Explicit (TYPE)expr / as TYPE sites.
+    attrs NAME?         [Attribute] / @decorator usages (omit NAME to list all).
+    params METHOD       Parameters of METHOD.
+    accesses_of MEMBER  Access sites of property/field MEMBER. (C# only.)
+    accesses_on TYPE    .Member accesses on locals/params declared as TYPE.
+                        Returns NOTHING when the variable is only assigned,
+                        returned, or forwarded as an argument — no `.Member`
+                        exists. Fall back to all_refs on the variable then.
+                        (C# only.)
+    all_refs NAME       Every identifier occurrence (broadest; AST-only,
+                        skips strings/comments).
+
+  Position mode — `pattern` is "LINE:COL" (1-indexed):
+    at LINE:COL         Identify the deepest AST node at the position and
+                        print the chain of enclosing named declarations
+                        with their line ranges. Use for stack traces, test
+                        failures, or review comments that point at a
+                        file:line[:col]. (C# only today.)
+
 Args:
-  mode:    AST query mode.
-           C# pattern-required: uses, calls, implements, casts, declarations,
-             attrs, accesses_of, accesses_on, all_refs, text, params
-           C# listing (no pattern): methods, fields, classes, usings
-           Python pattern-required: calls, implements, ident, declarations, decorators, text, params
-           Python listing (no pattern): classes, methods, imports
-           text is an alias for all_refs — every identifier occurrence of the
-             pattern. Use it as a fallback when no other mode fits; prefer the
-             specific mode (calls, declarations, uses, etc.) when you know the
-             role you're after. Do NOT pass a multi-word pattern to text — it
-             will return zero matches; reach for grep instead.
-  pattern: Type/method/name to search for. Omit for listing modes. Each
-           pattern-required mode expects a specific *kind* of identifier and
-           silently returns empty if you pass the wrong kind:
-             - `calls` expects a METHOD name. Passing a variable/receiver name
-               returns empty — `obj.Method()` is matched by `calls("Method")`,
-               not by `calls("obj")`. Use `all_refs` on the variable name
-               instead to find every usage of that variable.
-             - `accesses_on` expects a TYPE name and finds `.Member` accesses
-               on variables of that type. Returns NOTHING when the variable is
-               only assigned, returned, or forwarded as an argument (no
-               `.Member` access exists). Fall back to `all_refs` on the
-               variable name when this happens.
-             - `accesses_of` expects a MEMBER name.
-  file:    Absolute path to the file. Accepts Windows paths (C:/…) or
-           $SRC_ROOT-prefixed paths. Relative paths are NOT supported.
-  context_lines: Surrounding source lines per match.
-  root:    Named source root (empty = default).
-  include_body: For declarations — include full body. Default false.
-  symbol_kind:  For declarations — restrict to a specific kind.
-  uses_kind:    For uses — all, field, param, return, cast, base, locals.
-  head_limit:   Max results to return (default 250). Use with offset to page through large files.
+  mode:         One of the modes above.
+  pattern:      Identifier (most modes), "LINE:COL" (`at` mode), or omitted
+                (listing modes).
+  file:         Absolute path. Windows paths (C:/...) or $SRC_ROOT-prefixed
+                paths. Relative paths are NOT supported.
+  root:         Named source root (empty = default).
+  include_body: For `declarations` — include full body. Default false. (Use
+                the `body` mode instead for one-shot member-source retrieval.)
+  symbol_kind:  For `declarations` / `body` — restrict to method, ctor, class,
+                interface, struct, enum, record, delegate, property, field,
+                event, type, or member.
+  uses_kind:    For `uses` — all (default), field, param, return, cast, base,
+                or locals. (C# only.)
+  head_limit:   Max results to return (default 250). Use with offset to page.
   offset:       Skip first N results before applying head_limit (default 0).
 
+Errors:
+  Unknown mode or unsupported-for-this-language → returns an error line that
+  lists the modes that ARE supported. Use `capabilities` to enumerate them
+  programmatically before calling.
+
 Examples:
-  query_single_file("methods", file="$SRC_ROOT/services/Widget.cs")
-  query_single_file("calls", "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
-  query_single_file("uses", "IRepository", uses_kind="param", file="$SRC_ROOT/services/Widget.cs")
-  query_single_file("accesses_on", "IDataStore", file="$SRC_ROOT/services/DataManager.cs")
-  query_single_file("methods", file="$SRC_ROOT/Core/BigFile.cs", offset=250)"""
+  query_single_file("capabilities", file="$SRC_ROOT/services/Widget.cs")
+  query_single_file("methods",      file="$SRC_ROOT/services/Widget.cs")
+  query_single_file("body",      "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
+  query_single_file("at",        "42:10",       file="$SRC_ROOT/data/Widget.cs")
+  query_single_file("calls",     "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
+  query_single_file("uses",      "IRepository", uses_kind="param",
+                    file="$SRC_ROOT/services/Widget.cs")"""
     if not file:
         return "file= is required."
 
@@ -518,12 +545,18 @@ Examples:
     except OSError as e:
         return f"Cannot read file: {e}"
 
-    matches = query_file(
-        src_bytes, ext, m, pattern or "",
-        include_body=include_body,
-        symbol_kind=symbol_kind or None,
-        uses_kind=uses_kind or None,
-    )
+    try:
+        matches = query_file(
+            src_bytes, ext, m, pattern or "",
+            include_body=include_body,
+            symbol_kind=symbol_kind or None,
+            uses_kind=uses_kind or None,
+        )
+    except ValueError as e:
+        # Unknown extension or unsupported mode — propagate the helpful
+        # message instead of returning an empty result, so the agent learns
+        # which modes ARE supported for this file.
+        return f"Error: {e}"
 
     rel    = _rel_path(_to_windows_path(file), src_root)
     header = f"[{rel}]\n"

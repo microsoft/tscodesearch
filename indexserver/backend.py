@@ -47,7 +47,7 @@ SEARCHABLE_FIELDS: tuple[str, ...] = (
     "base_types", "field_types", "local_types",
     "param_types", "return_types", "cast_types",
     "type_refs", "call_sites", "member_accesses",
-    "attr_names", "usings",
+    "attr_names", "imports",
     "path_tokens",
 )
 
@@ -58,7 +58,7 @@ MULTI_VALUE_FIELDS: frozenset[str] = frozenset({
     "base_types", "field_types", "local_types",
     "param_types", "return_types", "cast_types",
     "type_refs", "call_sites", "member_accesses",
-    "attr_names", "usings",
+    "attr_names", "imports",
     "namespace",
     "tokens",
     "path_tokens",
@@ -105,7 +105,7 @@ def build_schema() -> tantivy.Schema:
         "base_types", "field_types", "local_types",
         "param_types", "return_types", "cast_types",
         "type_refs", "call_sites", "member_accesses",
-        "attr_names", "usings",
+        "attr_names", "imports",
         "tokens",       # deduped bag of every identifier in the file
         "path_tokens",  # per-directory + filename parts
     ):
@@ -141,49 +141,84 @@ class Backend:
         if not _has_index_files(self.path):
             if not create and not write:
                 raise FileNotFoundError(f"no Tantivy index at {self.path}")
-            self._index = tantivy.Index(build_schema(), path=self.path)
+            self._index: tantivy.Index | None = tantivy.Index(build_schema(), path=self.path)
         else:
             self._index = tantivy.Index.open(self.path)
 
-        self._schema = self._index.schema
+        # tantivy's default reader policy (``OnCommitWithDelay``) spawns a
+        # background watcher thread that polls the directory every 50 ms.
+        # For read-only backends that thread:
+        #   * is wasted work — short-lived test backends don't need auto-reload
+        #   * keeps an ``Arc<Index>`` reference until it joins on Drop, which
+        #     on Windows delays mmap release long enough that the next
+        #     ``drop()`` hits ``PermissionDenied`` and silently corrupts state
+        # ``manual`` policy creates a reader with no thread. We already call
+        # ``reload()`` explicitly before each read, so we lose nothing.
+        if not write:
+            self._index.config_reader(reload_policy="manual")
+
+        self._schema: tantivy.Schema | None = self._index.schema
         if write:
             self._writer = self._index.writer(heap_size=self.HEAP_BYTES)
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
     def close(self, quick: bool = False) -> None:
-        """Release the writer.
+        """Release the writer and the underlying index handle.
 
         quick=True skips the merge-thread wait so the caller can exit fast.
         Any uncommitted buffered work is dropped; the verifier re-indexes on
         the next startup.
+
+        On Windows, ``tantivy.Index`` keeps memory-mapped file handles even for
+        read-only access. Dropping the writer alone is not enough — the mmap
+        survives, ``drop()`` can't ``rmtree`` the locked files, and the next
+        writer fails on commit with ``PermissionDenied``. Clearing the index
+        reference and forcing a GC pass releases the Rust-side handles so a
+        following ``drop()`` actually wipes the directory.
         """
-        if self._writer is None:
-            return
-        if not quick and self._dirty:
-            # Commit any pending work; failures are logged inside commit().
-            try:
-                self.commit()
-            except Exception:
-                # Already logged by commit(); close() must not raise.
-                pass
-        with self._lock:
-            if self._writer is not None:
-                if not quick:
-                    try:
-                        self._writer.wait_merging_threads()
-                    except Exception:
-                        # Best-effort cleanup; closing the writer below is what matters.
-                        pass
-                self._writer = None
+        if self._writer is not None:
+            if not quick and self._dirty:
+                # Commit any pending work; failures are logged inside commit().
+                try:
+                    self.commit()
+                except Exception:
+                    # Already logged by commit(); close() must not raise.
+                    pass
+            with self._lock:
+                if self._writer is not None:
+                    if not quick:
+                        try:
+                            self._writer.wait_merging_threads()
+                        except Exception:
+                            # Best-effort cleanup; closing the writer below is what matters.
+                            pass
+                    self._writer = None
+        self._index = None
+        self._schema = None
+        gc.collect()
+
+    def __enter__(self) -> "Backend":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def _require_index(self) -> tantivy.Index:
+        if self._index is None:
+            raise RuntimeError(f"Backend at {self.path} has been closed")
+        return self._index
 
     @property
     def schema(self) -> tantivy.Schema:
+        if self._schema is None:
+            raise RuntimeError(f"Backend at {self.path} has been closed")
         return self._schema
 
     def num_documents(self) -> int:
-        self._index.reload()
-        return self._index.searcher().num_docs
+        idx = self._require_index()
+        idx.reload()
+        return idx.searcher().num_docs
 
     @property
     def has_pending(self) -> bool:
@@ -229,7 +264,7 @@ class Backend:
                 self._writer.commit()
                 self._dirty = False
                 self._buffered = 0
-                self._index.reload()
+                self._require_index().reload()
                 return
             except Exception as commit_err:
                 msg = (
@@ -319,13 +354,14 @@ class Backend:
             self._writer.delete_all_documents()
             self._writer.commit()
             self._dirty = False
-        self._index.reload()
+        self._require_index().reload()
 
     # ── reads ────────────────────────────────────────────────────────────────
 
     def searcher(self) -> tantivy.Searcher:
-        self._index.reload()
-        return self._index.searcher()
+        idx = self._require_index()
+        idx.reload()
+        return idx.searcher()
 
     def export_id_mtime(self) -> dict[str, int]:
         """Return {doc_id: mtime} for every document. Used by the verifier."""
@@ -349,10 +385,34 @@ class Backend:
 # ---------------------------------------------------------------------------
 
 def drop(path: str) -> None:
-    """Remove the index directory entirely. Used by --resethard."""
+    """Remove the index directory entirely. Used by --resethard.
+
+    On Windows, ``tantivy.Index`` keeps mmap handles even after a Backend's
+    Python-level ``close()``. If a callers's last reference hasn't been GC'd
+    yet, ``rmtree`` will silently skip locked files and the next ``Backend``
+    opens stale residue (which then fails on commit with PermissionDenied).
+    Force a GC pass first; on Windows, retry briefly because the OS sometimes
+    holds files open for a moment after handles are released. Raise on
+    persistent failure so callers learn about the problem instead of silently
+    indexing into a half-wiped directory.
+    """
     p = Path(path)
-    if p.exists():
-        shutil.rmtree(p, ignore_errors=True)
+    if not p.exists():
+        return
+    gc.collect()
+    last_err: Exception | None = None
+    for attempt in range(5):
+        try:
+            shutil.rmtree(p)
+            return
+        except OSError as e:
+            last_err = e
+            if not p.exists():
+                return
+            gc.collect()
+            import time as _time
+            _time.sleep(0.1 * (attempt + 1))
+    raise RuntimeError(f"drop({path}) failed after retries: {last_err}")
 
 
 def _has_index_files(path: str) -> bool:

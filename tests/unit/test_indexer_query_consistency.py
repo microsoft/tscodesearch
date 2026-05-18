@@ -458,28 +458,28 @@ namespace N {
 
 
 # ===========================================================================
-# GAP: usings — indexer stores top-level prefix only
+# GAP: imports — indexer stores top-level prefix only
 # ===========================================================================
 
-class TestUsingsCoarsenessGap:
+class TestImportsCoarsenessGap:
     """
     GAP: indexer stores only the top-level namespace prefix from each using
-    directive (e.g. 'System.Collections.Generic' → 'System'), while q_usings
+    directive (e.g. 'System.Collections.Generic' → 'System'), while q_imports
     returns the full directive text.
 
     This is an intentional design choice for index performance (faceting by
     top-level namespace), but queries that need to find exact using directives
-    must use q_usings rather than the indexed usings field.
+    must use q_imports rather than the indexed imports field.
     """
 
     def test_indexer_stores_top_level_prefix_only(self, meta):
-        assert "System" in meta["usings"]
+        assert "System" in meta["imports"]
         # Full qualified names must NOT appear
-        assert "System.Collections.Generic" not in meta["usings"], \
+        assert "System.Collections.Generic" not in meta["imports"], \
             "GAP CONFIRMED: indexer strips to top-level namespace prefix"
-        assert "Acme.Storage" not in meta["usings"], \
+        assert "Acme.Storage" not in meta["imports"], \
             "GAP CONFIRMED: indexer strips Acme.Storage to 'Acme'"
-        assert "Acme" in meta["usings"]
+        assert "Acme" in meta["imports"]
 
     def test_query_returns_full_directive(self, fx):
         r = q_usings(*fx)
@@ -491,7 +491,7 @@ class TestUsingsCoarsenessGap:
         """Two 'using System.*' directives should store 'System' once."""
         src = b"using System; using System.IO; using System.Text;"
         m = extract_metadata(src, ".cs")
-        count = sum(1 for u in m["usings"] if u == "System")
+        count = sum(1 for u in m["imports"] if u == "System")
         assert count == 1, f"'System' appears {count} times — expected 1 (deduped)"
 
 

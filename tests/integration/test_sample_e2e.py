@@ -46,13 +46,10 @@ def _search(collection: str, q: str,
             per_page: int = 20) -> list[dict]:
     from indexserver.indexer import ensure_backend
     from indexserver.search import search as _backend_search
-    backend = ensure_backend(_e2e_cfg, collection, write=False)
-    try:
+    with ensure_backend(_e2e_cfg, collection, write=False) as backend:
         result = _backend_search(
             backend, q=q, query_by=query_by, per_page=per_page, num_typos=0,
         )
-    finally:
-        backend.close()
     return [h["document"] for h in result.get("hits", [])]
 
 
@@ -75,22 +72,13 @@ def _collection_info(collection: str) -> dict | None:
     if not os.path.exists(os.path.join(index_dir, "meta.json")):
         return None
     try:
-        backend = Backend(index_dir, write=False, create=False)
-        info = {"num_documents": backend.num_documents()}
-        backend.close()
-        return info
+        with Backend(index_dir, write=False, create=False) as backend:
+            return {"num_documents": backend.num_documents()}
     except Exception:
         return None
 
 
-def _delete_collection(collection: str) -> None:
-    from indexserver.backend import drop
-    from indexserver.config import index_root
-    root = next((r for r in _e2e_cfg.roots.values() if r.collection == collection), None)
-    if root is None:
-        drop(str(index_root() / collection))
-    else:
-        drop(root.index_dir)
+from tests.helpers import _delete_collection  # noqa: E402 — uses _e2e_cfg via load_config
 
 
 def _count_sample_files(src_root: str) -> int:
@@ -184,9 +172,9 @@ class TestSampleRoot1E2E(unittest.TestCase):
         self.assertIn("Processors.cs", [h["filename"] for h in hits],
             f"Expected Create in call_sites (ProcessorFactory.Create(...)): {[h["filename"] for h in hits]}")
 
-    def test_processors_usings_has_system(self):
-        hits = _search(self.coll, "System", query_by="usings")
-        self.assertIn("Processors.cs", [h["filename"] for h in hits], f"Expected System in usings: {[h["filename"] for h in hits]}")
+    def test_processors_imports_has_system(self):
+        hits = _search(self.coll, "System", query_by="imports")
+        self.assertIn("Processors.cs", [h["filename"] for h in hits], f"Expected System in imports: {[h["filename"] for h in hits]}")
 
     def test_processors_class_names_has_textprocessor(self):
         hits = _search(self.coll, "TextProcessor", query_by="class_names")
@@ -363,11 +351,11 @@ class TestSampleRoot2E2E(unittest.TestCase):
         hits = _search(self.coll, "ParamsDemo", query_by="class_names")
         self.assertIn("SynthTypes.cs", [h["filename"] for h in hits], f"class_names: {[h["filename"] for h in hits]}")
 
-    def test_synthtypes_usings_has_system(self):
+    def test_synthtypes_imports_has_system(self):
         # SynthTypes.cs has ``using System;`` at the top.
-        hits = _search(self.coll, "System", query_by="usings")
+        hits = _search(self.coll, "System", query_by="imports")
         self.assertIn("SynthTypes.cs", [h["filename"] for h in hits],
-            f"Expected SynthTypes.cs in usings[System]: {[h['filename'] for h in hits]}")
+            f"Expected SynthTypes.cs in imports[System]: {[h['filename'] for h in hits]}")
 
     # ── Search-mode queries ───────────────────────────────────────────────────
 
@@ -448,7 +436,7 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
         self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
 
     def test_rust_usings_has_std(self):
-        hits = _search(self.coll, "std", query_by="usings")
+        hits = _search(self.coll, "std", query_by="imports")
         self.assertIn("query_fixture.rs", [h["filename"] for h in hits])
 
     def test_rust_searchable_via_base_types(self):
@@ -478,7 +466,7 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
         self.assertIn("query_fixture.js", [h["filename"] for h in hits])
 
     def test_js_usings_has_events(self):
-        hits = _search(self.coll, "events", query_by="usings")
+        hits = _search(self.coll, "events", query_by="imports")
         self.assertIn("query_fixture.js", [h["filename"] for h in hits])
 
     def test_js_searchable_via_call_sites(self):
@@ -546,7 +534,7 @@ class TestSampleNewLanguagesE2E(unittest.TestCase):
         self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
 
     def test_cpp_usings_has_string(self):
-        hits = _search(self.coll, "string", query_by="usings")
+        hits = _search(self.coll, "string", query_by="imports")
         self.assertIn("query_fixture.cpp", [h["filename"] for h in hits])
 
     def test_cpp_searchable_via_base_types(self):
