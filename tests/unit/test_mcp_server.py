@@ -281,28 +281,27 @@ class TestQuerySingleFile(unittest.TestCase):
         result = _ms.query_single_file("calls", pattern="NoSuchMethod", file=_CS_FILE)
         assert "No matches found" in result
 
-    # ── text mode ─────────────────────────────────────────────────────────────
+    # ── all_refs mode ─────────────────────────────────────────────────────────
 
-    def test_text_mode_cs_finds_identifier(self):
-        """text mode aliases all_refs — every identifier occurrence of the pattern."""
-        result = _ms.query_single_file("text", pattern="IDataStore", file=_CS_FILE)
+    def test_all_refs_cs_finds_identifier(self):
+        result = _ms.query_single_file("all_refs", pattern="IDataStore", file=_CS_FILE)
         assert "DataStore.cs" in result
         assert "IDataStore" in result
 
-    def test_text_mode_matches_all_refs_output(self):
-        """text mode must produce the same matches as all_refs."""
-        text_out     = _ms.query_single_file("text", pattern="IDataStore", file=_CS_FILE)
-        all_refs_out = _ms.query_single_file("all_refs", pattern="IDataStore", file=_CS_FILE)
-        assert text_out == all_refs_out
-
-    def test_text_mode_python(self):
-        """text mode works for Python files too (aliases py_q_ident)."""
-        result = _ms.query_single_file("text", pattern="process", file=_PY_FILE)
+    def test_all_refs_python(self):
+        result = _ms.query_single_file("all_refs", pattern="process", file=_PY_FILE)
         assert "pipeline.py" in result
 
-    def test_text_mode_no_match(self):
-        result = _ms.query_single_file("text", pattern="NoSuchSymbolXYZ", file=_CS_FILE)
+    def test_all_refs_no_match(self):
+        result = _ms.query_single_file("all_refs", pattern="NoSuchSymbolXYZ", file=_CS_FILE)
         assert "No matches found" in result
+
+    def test_unknown_mode_reports_supported_modes(self):
+        # Unknown modes should error out with the list of supported modes
+        # rather than silently returning nothing.
+        result = _ms.query_single_file("nonsense_mode", pattern="IDataStore", file=_CS_FILE)
+        assert "Error" in result
+        assert "all_refs" in result or "Supported modes" in result
 
     # ── Python ────────────────────────────────────────────────────────────────
 
@@ -356,7 +355,7 @@ class TestQueryCodbaseListingRedirect(unittest.TestCase):
     def test_methods(self):   self._assert_redirects("methods")
     def test_fields(self):    self._assert_redirects("fields")
     def test_classes(self):   self._assert_redirects("classes")
-    def test_usings(self):    self._assert_redirects("usings")
+    def test_usings(self):    self._assert_redirects("imports")
     def test_imports(self):   self._assert_redirects("imports")
 
     def test_valid_pattern_mode_does_not_redirect(self):

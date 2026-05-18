@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 import time
@@ -121,10 +122,17 @@ def run_verify(cfg, src_root: str | None = None,
     src_root  = normalize_path(src_root or cfg.src_root)
     coll_name = collection or cfg.collection
 
-    own_backend = backend is None
-    if own_backend:
-        backend = ensure_backend(cfg, coll_name)
+    with contextlib.ExitStack() as _stack:
+        if backend is None:
+            backend = _stack.enter_context(ensure_backend(cfg, coll_name))
+        _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
+                             on_complete, delete_orphans, stop_event,
+                             extensions, backend)
 
+
+def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
+                         on_complete, delete_orphans, stop_event, extensions,
+                         backend):
     progress: dict = {
         "status":          "running",
         "phase":           "starting",
@@ -232,8 +240,6 @@ def run_verify(cfg, src_root: str | None = None,
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         if on_progress: on_progress(progress)
         print("[verifier] Cancelled.", flush=True)
-        if own_backend:
-            backend.close()
         return
 
     total_to_update = n_enqueued if queue is not None else len(to_update)
@@ -244,8 +250,6 @@ def run_verify(cfg, src_root: str | None = None,
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         if on_progress: on_progress(progress)
         print("[verifier] Index is already up to date.", flush=True)
-        if own_backend:
-            backend.close()
         return
 
     if queue is not None:
@@ -320,8 +324,6 @@ def run_verify(cfg, src_root: str | None = None,
             progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             if on_progress: on_progress(progress)
             print("[verifier] Cancelled during upsert.", flush=True)
-            if own_backend:
-                backend.close()
             return
 
         if delete_orphans and orphaned_ids:
@@ -347,8 +349,6 @@ def run_verify(cfg, src_root: str | None = None,
         )
         if on_complete:
             on_complete()
-        if own_backend:
-            backend.close()
 
 
 # ── entry point ────────────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ import sys
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, AttrInfo, CallSiteInfo, TreeIndex
+from ._util import _run_dispatch, FileDescription, ClassInfo, MethodInfo, ImportInfo, AttrInfo, CallSiteInfo, TreeIndex
 
 _JS_LANG  = Language(tsjs.language())
 _js_parser  = Parser(_JS_LANG)
@@ -411,16 +411,11 @@ def query_js_bytes(src_bytes: bytes, mode: str, mode_arg: str, ext: str = ".js",
         "declarations": lambda: js_q_declarations(src_bytes, tree, lines, mode_arg,
                                                   include_body=include_body),
         "all_refs":     lambda: js_q_all_refs(src_bytes, tree, lines, mode_arg),
-        "text":         lambda: js_q_all_refs(src_bytes, tree, lines, mode_arg),
         "imports":      lambda: js_q_imports(src_bytes, tree, lines),
         "params":       lambda: js_q_params(src_bytes, tree, lines, mode_arg),
         "attrs":        lambda: js_q_attrs(src_bytes, tree, lines, mode_arg),
     }
-
-    fn = dispatch.get(mode)
-    if fn is None:
-        raise ValueError(f"Unknown mode: {mode!r}")
-    return _make_matches(fn() or [])
+    return _run_dispatch(mode, "JavaScript/TypeScript", dispatch)
 
 
 

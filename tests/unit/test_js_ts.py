@@ -82,7 +82,7 @@ class TestExtractJsMetadata(unittest.TestCase):
         self.assertIn("process", self._meta["call_sites"])
 
     def test_imports_in_usings(self):
-        self.assertIn("events", self._meta["usings"])
+        self.assertIn("events", self._meta["imports"])
 
     def test_member_sigs_indexed(self):
         sigs = self._meta["member_sigs"]
@@ -209,7 +209,7 @@ class TestExtractTsMetadata(unittest.TestCase):
         self.assertIn("serializable", self._meta["attr_names"])
 
     def test_imports_in_usings(self):
-        self.assertIn("events", self._meta["usings"])
+        self.assertIn("events", self._meta["imports"])
 
 
 @unittest.skipIf(_SKIP_TS, _SKIP_MSG_TS)

@@ -12,7 +12,7 @@ import re
 import sys
 import tree_sitter_c_sharp as tscsharp
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, ImportInfo, AttrInfo, CallSiteInfo, CastInfo, LocalVarInfo, MemberAccessInfo, TreeIndex
+from ._util import _run_dispatch, FileDescription, ClassInfo, MethodInfo, FieldInfo, ImportInfo, AttrInfo, CallSiteInfo, CastInfo, LocalVarInfo, MemberAccessInfo, TreeIndex
 
 _CS_LANG = Language(tscsharp.language())
 _cs_parser = Parser(_CS_LANG)
@@ -909,6 +909,109 @@ def q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None)
     return results
 
 
+_SCOPE_NODE_NAMES = (
+    _TYPE_DECL_NODES
+    | _MEMBER_DECL_NODES
+    | {"namespace_declaration", "file_scoped_namespace_declaration"}
+)
+
+
+def q_at(src, tree, lines, position: str):
+    """Identify the symbol and enclosing scope chain at ``line:col``.
+
+    ``position`` is parsed as ``"LINE:COL"`` (1-indexed, matching editor URLs).
+    Returns a single match whose text contains:
+
+      * the token/node at the position (the deepest AST node covering it),
+      * the chain of enclosing named declarations (innermost-first), each
+        with its line range.
+
+    Useful for resolving stack traces, test failures, and review comments
+    that mention a file:line[:col] location.
+    """
+    try:
+        line_str, _, col_str = position.partition(":")
+        target_row = int(line_str) - 1
+        target_col = int(col_str) - 1 if col_str else 0
+    except (TypeError, ValueError):
+        return []
+    if target_row < 0:
+        return []
+
+    # Walk the tree finding the deepest node whose range covers the target
+    # (row, col). Tree-sitter rows/cols are 0-indexed; ``end_point`` is the
+    # position AFTER the last char (exclusive) — half-open range [start, end).
+    root = tree.root_node
+    er, ec = root.end_point
+    if (target_row, target_col) >= (er, ec):
+        return []
+
+    def _contains(n) -> bool:
+        sr, sc = n.start_point
+        er2, ec2 = n.end_point
+        if (target_row, target_col) < (sr, sc):
+            return False
+        if (target_row, target_col) >= (er2, ec2):
+            return False
+        return True
+
+    cursor = root
+    deepest = None
+    while True:
+        next_child = None
+        for child in cursor.children:
+            if _contains(child):
+                next_child = child
+                break
+        if next_child is None:
+            break
+        cursor = next_child
+        deepest = next_child
+
+    if deepest is None:
+        # Position is inside the file but no concrete node covers it
+        # (e.g. trailing whitespace). Not useful to report the root.
+        return []
+
+    # Collect named scope ancestors, innermost-first.
+    scopes = []
+    walker = deepest
+    while walker is not None:
+        if walker.type in _SCOPE_NODE_NAMES:
+            name_node = walker.child_by_field_name("name")
+            if name_node:
+                scopes.append({
+                    "kind":  _node_kind(walker),
+                    "name":  _text(name_node, src).strip(),
+                    "start": walker.start_point[0] + 1,
+                    "end":   walker.end_point[0] + 1,
+                })
+        walker = walker.parent
+
+    # Render — one entry, with the chain in the text.
+    token = _text(deepest, src)
+    if len(token) > 60:
+        token = token[:57] + "..."
+    token = token.replace("\n", " ").strip() or "(no text)"
+    parts = [f"{deepest.type}: {token!r}"]
+    for sc in scopes:
+        parts.append(f"  in [{sc['kind']}] {sc['name']}  (lines {sc['start']}-{sc['end']})")
+    text = "\n".join(parts)
+    out_line = deepest.start_point[0] + 1
+    return [(out_line, text)]
+
+
+def q_body(src, tree, lines, name, symbol_kind=None):
+    """Return the full source of every member declaration named ``name``.
+
+    Sugar for ``q_declarations(..., include_body=True)`` with a single-name
+    intent: the agent says "give me the source of SaveChanges" and gets the
+    whole method block (or every overload, if more than one matches).
+    """
+    return q_declarations(src, tree, lines, name,
+                          include_body=True, symbol_kind=symbol_kind)
+
+
 def q_params(src, tree, lines, method_name):
     results = []
     for node in _find_all(tree.root_node,
@@ -1299,20 +1402,17 @@ def query_cs_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fals
         "uses":         lambda: q_uses(src_bytes, tree, lines, mode_arg, uses_kind=uses_kind),
         "accesses_on":  lambda: q_accesses_on(src_bytes, tree, lines, mode_arg),
         "all_refs":     lambda: q_all_refs(src_bytes, tree, lines, mode_arg),
-        "text":         lambda: q_all_refs(src_bytes, tree, lines, mode_arg),
         "casts":        lambda: q_casts(src_bytes, tree, lines, mode_arg),
         "attrs":        lambda: q_attrs(src_bytes, tree, lines, mode_arg),
         "accesses_of":  lambda: q_accesses_of(src_bytes, tree, lines, mode_arg),
-        "usings":       lambda: q_usings(src_bytes, tree, lines),
+        "imports":      lambda: q_usings(src_bytes, tree, lines),
         "declarations": lambda: q_declarations(src_bytes, tree, lines, mode_arg,
                                                include_body=include_body, symbol_kind=symbol_kind),
+        "body":         lambda: q_body(src_bytes, tree, lines, mode_arg, symbol_kind=symbol_kind),
+        "at":           lambda: q_at(src_bytes, tree, lines, mode_arg),
         "params":       lambda: q_params(src_bytes, tree, lines, mode_arg),
     }
-
-    fn = dispatch.get(mode)
-    if fn is None:
-        raise ValueError(f"Unknown mode: {mode!r}")
-    return _make_matches(fn() or [])
+    return _run_dispatch(mode, "C#", dispatch)
 
 
 def describe_cs_file(src_bytes: bytes, ext: str = "") -> FileDescription:

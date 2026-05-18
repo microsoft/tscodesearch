@@ -302,10 +302,10 @@ class TestSemanticFieldDiscrim(unittest.TestCase):
         self.assertEqual(self._files("BaseImplementor", "class_names"),
                          {"BaseImplementor.cs"})
 
-    # ── usings: only the file that imports the namespace ──────────────────────
+    # ── imports: only the file that imports the namespace ────────────────────
 
-    def test_usings_finds_only_importer(self):
-        self.assertEqual(self._files("System", "usings"),
+    def test_imports_finds_only_importer(self):
+        self.assertEqual(self._files("System", "imports"),
                          {"BaseImplementor.cs"})
 
     # ── namespace: every file in this fixture shares ``Discrim`` ──────────────

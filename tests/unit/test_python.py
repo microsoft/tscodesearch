@@ -69,21 +69,21 @@ class TestExtractPyMetadata(unittest.TestCase):
         meta = self._meta(_BAR_PY)
         self.assertIn("process", meta["call_sites"])
 
-    def test_decorators_in_attr_names(self):
+    def test_attrs_in_attr_names(self):
         meta = self._meta(_FOO_PY)
         self.assertIn("dataclass", meta["attr_names"])
 
     def test_imports_in_usings(self):
         meta = self._meta(_FOO_PY)
-        self.assertIn("os", meta["usings"])
+        self.assertIn("os", meta["imports"])
 
     def test_from_imports_in_usings(self):
         meta = self._meta(_FOO_PY)
-        self.assertIn("typing", meta["usings"])
+        self.assertIn("typing", meta["imports"])
 
     def test_from_imports_top_level_module(self):
         meta = self._meta(_BAR_PY)
-        self.assertIn("myapp", meta["usings"])
+        self.assertIn("myapp", meta["imports"])
 
     def test_type_refs_from_annotations(self):
         meta = self._meta(_FOO_PY)
@@ -189,12 +189,12 @@ class TestQueryPy(unittest.TestCase):
     # ── mode: ident ───────────────────────────────────────────────────────────
 
     def test_ident_finds_foo(self):
-        n, out = self._run(self.foo_path, "ident", "Foo")
+        n, out = self._run(self.foo_path, "all_refs", "Foo")
         self.assertGreater(n, 0)
         self.assertIn("Foo", out)
 
     def test_ident_absent_no_match(self):
-        n, out = self._run(self.foo_path, "ident", "ZZZNonExistentXXX")
+        n, out = self._run(self.foo_path, "all_refs", "ZZZNonExistentXXX")
         self.assertEqual(n, 0)
 
     # ── mode: declarations ────────────────────────────────────────────────────
@@ -211,18 +211,18 @@ class TestQueryPy(unittest.TestCase):
 
     # ── mode: decorators ──────────────────────────────────────────────────────
 
-    def test_decorators_found(self):
-        n, out = self._run(self.foo_path, "decorators")
+    def test_attrs_found(self):
+        n, out = self._run(self.foo_path, "attrs")
         self.assertGreater(n, 0)
         self.assertIn("dataclass", out)
 
-    def test_decorators_filtered_by_name(self):
-        n, out = self._run(self.foo_path, "decorators", "dataclass")
+    def test_attrs_filtered_by_name(self):
+        n, out = self._run(self.foo_path, "attrs", "dataclass")
         self.assertGreater(n, 0)
         self.assertIn("dataclass", out)
 
-    def test_decorators_filter_no_match(self):
-        n, out = self._run(self.foo_path, "decorators", "nonexistent_decorator_xyz")
+    def test_attrs_filter_no_match(self):
+        n, out = self._run(self.foo_path, "attrs", "nonexistent_decorator_xyz")
         self.assertEqual(n, 0)
 
     # ── mode: imports ─────────────────────────────────────────────────────────
@@ -335,15 +335,15 @@ class TestQueryPy(unittest.TestCase):
         n, out = self._run(self.bar_path, "calls", "process")
         self.assertGreater(n, 0)
 
-    def test_decorators_consistent(self):
+    def test_attrs_consistent(self):
         meta = extract_metadata(_FOO_PY.encode(), ".py")
         self.assertIn("dataclass", meta["attr_names"])
-        n, out = self._run(self.foo_path, "decorators", "dataclass")
+        n, out = self._run(self.foo_path, "attrs", "dataclass")
         self.assertGreater(n, 0)
 
     def test_imports_consistent(self):
         meta = extract_metadata(_FOO_PY.encode(), ".py")
-        self.assertIn("os", meta["usings"])
+        self.assertIn("os", meta["imports"])
         n, out = self._run(self.foo_path, "imports")
         self.assertIn("os", out)
 

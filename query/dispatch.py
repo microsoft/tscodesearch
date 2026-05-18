@@ -71,10 +71,21 @@ ALL_EXTS = set(_EXT_TO_QUERY_BYTES.keys())
 
 def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
                include_body=False, symbol_kind=None, uses_kind=None, **kwargs):
-    """Query src_bytes using the given mode. Returns list[{"line": N, "text": "..."}]."""
+    """Query src_bytes using the given mode.
+
+    Returns ``list[{"line": N, "text": "..."}]`` on success.
+
+    Raises ``ValueError`` if the extension has no registered language or if
+    the mode isn't supported for that language — explicit errors beat silent
+    empties for tool-using agents. Use ``mode='capabilities'`` to ask which
+    modes a given file supports.
+    """
     fn = _EXT_TO_QUERY_BYTES.get(ext)
     if fn is None:
-        return []
+        raise ValueError(
+            f"extension {ext!r} has no registered language parser. "
+            f"Supported extensions: {', '.join(sorted(ALL_EXTS))}"
+        )
     return fn(src_bytes, mode, mode_arg,
               include_body=include_body, symbol_kind=symbol_kind, uses_kind=uses_kind, **kwargs)
 

@@ -10,7 +10,7 @@ used by the indexer for semantic field population.
 """
 
 import re
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, FieldInfo, CallSiteInfo
+from ._util import _run_dispatch, FileDescription, ClassInfo, MethodInfo, FieldInfo, CallSiteInfo
 
 try:
     import tree_sitter_sql as tssql
@@ -450,16 +450,18 @@ def query_sql_bytes(src_bytes: bytes, mode: str, mode_arg: str, **kwargs):
     lines = text.splitlines()
 
     dispatch = {
-        "text":         lambda: sql_q_text(lines, mode_arg),
+        "all_refs":     lambda: sql_q_text(lines, mode_arg),
         "declarations": lambda: sql_q_declarations(text, lines, mode_arg),
         "fields":       lambda: sql_q_fields(text, lines, mode_arg),
         "calls":        lambda: sql_q_calls(text, lines, mode_arg),
         "classes":      lambda: sql_q_classes(text, lines),
         "methods":      lambda: sql_q_methods(text, lines),
     }
-
-    fn = dispatch.get(mode) or (lambda: sql_q_text(lines, mode_arg) if mode_arg else [])
-    return _make_matches(fn() or [])
+    return _run_dispatch(
+        mode, "SQL", dispatch,
+        extra_note=("Note: SQL has no tree-sitter parser here, so all_refs is "
+                    "a plain-substring scan over lines, not an AST identifier walk."),
+    )
 
 
 def describe_sql_file(src_bytes: bytes, ext: str = "") -> FileDescription:

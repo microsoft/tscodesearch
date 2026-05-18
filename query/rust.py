@@ -17,7 +17,7 @@ EXTENSIONS = frozenset({".rs"})
 import sys
 import tree_sitter_rust as tsrust
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo, TreeIndex
+from ._util import _run_dispatch, FileDescription, ClassInfo, MethodInfo, ImportInfo, CallSiteInfo, TreeIndex
 
 _RUST_LANG   = Language(tsrust.language())
 _rust_parser = Parser(_RUST_LANG)
@@ -391,15 +391,10 @@ def query_rust_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fa
         "declarations": lambda: rust_q_declarations(src_bytes, tree, lines, mode_arg,
                                                     include_body=include_body),
         "all_refs":     lambda: rust_q_all_refs(src_bytes, tree, lines, mode_arg),
-        "text":         lambda: rust_q_all_refs(src_bytes, tree, lines, mode_arg),
         "imports":      lambda: rust_q_imports(src_bytes, tree, lines),
         "params":       lambda: rust_q_params(src_bytes, tree, lines, mode_arg),
     }
-
-    fn = dispatch.get(mode)
-    if fn is None:
-        raise ValueError(f"Unknown mode: {mode!r}")
-    return _make_matches(fn() or [])
+    return _run_dispatch(mode, "Rust", dispatch)
 
 
 

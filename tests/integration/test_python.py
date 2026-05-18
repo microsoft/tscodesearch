@@ -144,15 +144,15 @@ class TestPySemanticFieldDiscrim(unittest.TestCase):
         self.assertEqual(self._files("dataclass", "attr_names"),
                          {"decorated.py"})
 
-    # ── usings: only the importing file ───────────────────────────────────────
+    # ── imports: only the importing file ──────────────────────────────────────
 
-    def test_usings_finds_only_importer(self):
-        self.assertEqual(self._files("json", "usings"),
+    def test_imports_finds_only_importer(self):
+        self.assertEqual(self._files("json", "imports"),
                          {"importer.py"})
 
-    def test_usings_excludes_files_without_that_import(self):
+    def test_imports_excludes_files_without_that_import(self):
         # impl.py imports os, not json. caller.py imports app.impl, not json.
-        files = self._files("os", "usings")
+        files = self._files("os", "imports")
         self.assertEqual(files, {"impl.py"},
             f"only impl.py imports os, got {files}")
 
@@ -160,7 +160,7 @@ class TestPySemanticFieldDiscrim(unittest.TestCase):
 
     def test_string_mentions_excluded_from_structured_fields(self):
         for field in ("class_names", "method_names", "base_types",
-                      "call_sites", "attr_names", "usings", "tokens"):
+                      "call_sites", "attr_names", "imports", "tokens"):
             self.assertNotIn(
                 "string_mention.py", self._files("IFoo", field),
                 f"string_mention.py leaked into {field} (string literal)",
@@ -178,7 +178,7 @@ class TestPySemanticFieldDiscrim(unittest.TestCase):
             ("process",     "method_names"),
             ("Implementor", "class_names"),
             ("dataclass",   "attr_names"),
-            ("json",        "usings"),
+            ("json",        "imports"),
         ):
             self.assertNotIn(
                 "unrelated.py", self._files(ident, field),

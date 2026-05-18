@@ -167,6 +167,30 @@ This opens the on-disk Tantivy index in read-only mode, so it works whether or n
 .client-venv\Scripts\python.exe -m query --mode calls   --file C:/myproject/src/Widget.cs --pattern SaveChanges
 ```
 
+## AST query modes
+
+One canonical mode name per concept across every language. Listing modes take no pattern; pattern modes expect a single identifier (or `LINE:COL` for `at`). Unknown modes raise `ValueError` with the supported-mode list — use `capabilities` to introspect which modes a given file's language actually supports.
+
+| Mode | Arg | Concept | Languages |
+|------|-----|---------|-----------|
+| `capabilities` | — | List the modes supported for this file's language | all |
+| `classes` | — | Type declarations (class/interface/struct/enum/record/…) | all |
+| `methods` | — | Method/ctor/property/field/event declarations | all |
+| `fields` | — | Field / property / column declarations | C#, SQL |
+| `imports` | — | `using` / `import` / `include` directives | all except SQL |
+| `params` | METHOD | Parameter list for METHOD | C#, Python, JS, Rust, C++ |
+| `declarations` | NAME | Declaration(s) of NAME (narrow with `symbol_kind`) | all |
+| `body` | NAME | Full source of NAME's declaration | C# only |
+| `at` | LINE:COL | Deepest AST node at position + enclosing scope chain | C# only |
+| `calls` | METHOD | Call sites of METHOD (`Repo.Save` restricts by receiver) | all |
+| `implements` | TYPE | Types that inherit/implement TYPE | all except SQL |
+| `uses` | TYPE | Type references; narrow with `uses_kind` (`field`/`param`/`return`/`cast`/`base`/`locals`) | C# only |
+| `casts` | TYPE | `(TYPE)expr` / `as TYPE` sites | C# only |
+| `attrs` | NAME? | `[Attribute]` / `@decorator` / `#[attribute]` usages (omit NAME to list all) | C#, Python, JS |
+| `accesses_of` | MEMBER | Access sites of property/field by name (`Order.Status` restricts) | C# only |
+| `accesses_on` | TYPE | `.Member` accesses on locals/params/fields typed as TYPE | C# only |
+| `all_refs` | NAME | Every identifier occurrence (broadest — AST-only, skips strings/comments). For SQL this is a plain substring scan over lines. | all |
+
 ## Architecture
 
 ### Two-layer search
@@ -258,7 +282,7 @@ Every text field uses Tantivy's `raw` tokenizer: each entry is one verbatim term
 | `member_accesses` | RHS of `.Member` access expressions | `accesses_of` |
 | `member_sig_tokens` | every identifier in any member signature — attribute names, parameter names, generic args, default-value identifiers | — (auxiliary; covers signature content) |
 | `attr_names` | `[Attribute]` decorations | `attrs` |
-| `usings` | `using`/`import` modules | — (auxiliary) |
+| `imports` | `using`/`import`/`include` modules | `imports` |
 | `namespace` | per-component split of the file's primary namespace (e.g. `Acme.Billing.Service` → 3 entries) | — (auxiliary) |
 | `class_names`, `method_names` | type and method/property/field declarations | `declarations`, `all_refs` |
 | `tokens` | deduped bag of every identifier in the file (code only — no strings or comments) | `all_refs` |

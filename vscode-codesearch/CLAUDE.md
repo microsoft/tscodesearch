@@ -54,15 +54,19 @@ Defined in `client.ts` `MODES` array. Each entry has `key`, `label`, `queryBy`, 
 
 The `queryBy`/`weights` fields on `MODES` are **not** sent to the daemon — `/query-codebase` resolves them server-side from `astMode` + `uses_kind` (see `_resolve_query_params` in `tsquery_server.py`). They survive on the client only as labels for the panel UI and may go away in a future cleanup. The intent column below describes what the user sees; the actual field set queried is determined by the server.
 
+Mode names are canonical and match the MCP `query_codebase` modes. The
+`text` entry (which used to send the unrecognized mode `text` to the daemon
+and silently fail) has been removed; use `all_refs` for broad identifier
+search.
+
 | Key | `astMode` sent to daemon | `uses_kind` | Intent |
 |-----|--------------------------|-------------|--------|
-| `text` | (key is sent as-is — falls through to `all_refs` server-side) | — | Broad identifier search |
 | `declarations` | `declarations` | — | Method/type signature search [T1] |
 | `implements` | `implements` | — | Interface implementors [T1] |
 | `calls` | `calls` | — | Call sites of a method [T1] |
 | `uses` | `uses` | — | Type reference search (default `type_refs,cast_types`) [T2] |
 | `casts` | `casts` | — | Explicit `(T)expr` / `as T` cast sites [T1] |
-| `attrs` | `attrs` | — | `[Attribute]` decoration [T1] |
+| `attrs` | `attrs` | — | `[Attribute]` / `@decorator` / `#[attribute]` [T1] |
 | `all_refs` | `all_refs` | — | All identifier occurrences — broadest |
 | `accesses_on` | `accesses_on` | — | `.Member` accesses on instances of a type |
 | `uses_field` | `uses` | `field` | Fields/properties declared as a given type |

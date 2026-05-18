@@ -136,7 +136,7 @@ describe('renderTextTree', () => {
 
     it('shows "(no results)" when found is 0', () => {
         const result = { hits: [], found: 0, elapsed: 5, facet_counts: [] };
-        assert.ok(renderTextTree(result, 'Foo', 'text').includes('(no results)'));
+        assert.ok(renderTextTree(result, 'Foo', 'all_refs').includes('(no results)'));
     });
 
     it('includes mode label in output', () => {
@@ -157,14 +157,10 @@ describe('renderTextTree', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MODES — text is search-only, AST modes have astMode
+// MODES — AST modes have astMode
 // ---------------------------------------------------------------------------
 
 describe('MODES structure', () => {
-    it('text mode has no astMode (search-only)', () => {
-        assert.equal(MODES.find((m) => m.key === 'text')!.astMode, undefined);
-    });
-
     it('uses mode has astMode=uses', () => {
         assert.equal(MODES.find((m) => m.key === 'uses')!.astMode, 'uses');
     });

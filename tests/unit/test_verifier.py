@@ -52,7 +52,7 @@ def _seed_doc(backend, doc_id: str, mtime: int) -> None:
         "call_sites":       [],
         "member_accesses":  [],
         "attr_names":       [],
-        "usings":           [],
+        "imports":          [],
     }
     backend.upsert_many([doc])
 

@@ -35,13 +35,6 @@ export const MODES: Array<{
     astMode?: string; uses_kind?: string;
 }> = [
     {
-        key: 'text',
-        label: 'Text',
-        queryBy: 'filename,symbols,class_names,method_names,content',
-        weights: '5,4,4,4,1',
-        desc: 'Full-text search across filenames, symbols, and file content',
-    },
-    {
         key: 'declarations',
         label: 'Declarations',
         queryBy: 'method_sigs,method_names,symbols,filename',

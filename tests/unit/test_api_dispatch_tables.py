@@ -22,7 +22,7 @@ class TestDispatchConsistency(unittest.TestCase):
 
     # Modes that are listing-only and have no meaningful pattern arg —
     # _run_query supports them but they're not pattern-searchable codebase modes.
-    _LISTING_MODES = frozenset({"classes", "methods", "fields", "usings"})
+    _LISTING_MODES = frozenset({"classes", "methods", "fields", "imports"})
 
     def test_all_routing_modes_handled_by_run_query(self):
         """Every mode in _EXT_TO_TS_AND_AST must not raise in _run_query."""

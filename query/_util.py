@@ -144,6 +144,30 @@ class AttrInfo:
     attr_name: str = ""
 
 
+def _run_dispatch(mode: str, language: str, dispatch: dict, *, extra_note: str = ""):
+    """Resolve ``mode`` against ``dispatch`` and return ``_make_matches`` of the result.
+
+    ``dispatch`` maps mode names to zero-argument callables (typically lambdas
+    that close over the parsed tree, source bytes, and mode_arg). The mode
+    ``capabilities`` is handled here — it returns the sorted list of supported
+    modes for introspection and never reaches ``dispatch``.
+
+    Unsupported modes raise ``ValueError`` with the supported-mode list
+    appended. ``extra_note`` lets a language append a one-line caveat (used by
+    SQL to explain that its ``all_refs`` is a substring scan, not an AST walk).
+    """
+    if mode == "capabilities":
+        return [{"line": 0, "text": ",".join(sorted(dispatch))}]
+    fn = dispatch.get(mode)
+    if fn is None:
+        msg = (f"mode {mode!r} is not supported for {language}. "
+               f"Supported modes: {', '.join(sorted(dispatch))}.")
+        if extra_note:
+            msg += f" {extra_note}"
+        raise ValueError(msg)
+    return _make_matches(fn() or [])
+
+
 def _make_matches(results):
     """Convert tuples from query functions to list of match dicts.
 

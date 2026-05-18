@@ -11,7 +11,7 @@ EXTENSIONS = frozenset({".py"})
 import sys
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser
-from ._util import _make_matches, FileDescription, ClassInfo, MethodInfo, AttrInfo, ImportInfo, CallSiteInfo, TreeIndex
+from ._util import _run_dispatch, FileDescription, ClassInfo, MethodInfo, AttrInfo, ImportInfo, CallSiteInfo, TreeIndex
 
 from .cs import _find_all, _text
 
@@ -344,20 +344,13 @@ def query_py_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fals
         "methods":      lambda: py_q_methods(src_bytes, tree, lines),
         "calls":        lambda: py_q_calls(src_bytes, tree, lines, mode_arg),
         "implements":   lambda: py_q_implements(src_bytes, tree, lines, mode_arg),
-        "ident":        lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
         "all_refs":     lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
-        "text":         lambda: py_q_ident(src_bytes, tree, lines, mode_arg),
         "declarations": lambda: py_q_declarations(src_bytes, tree, lines, mode_arg),
-        "decorators":   lambda: py_q_decorators(src_bytes, tree, lines, mode_arg),
         "attrs":        lambda: py_q_decorators(src_bytes, tree, lines, mode_arg),
         "imports":      lambda: py_q_imports(src_bytes, tree, lines),
         "params":       lambda: py_q_params(src_bytes, tree, lines, mode_arg),
     }
-
-    fn = dispatch.get(mode)
-    if fn is None:
-        raise ValueError(f"Unknown mode: {mode!r}")
-    return _make_matches(fn() or [])
+    return _run_dispatch(mode, "Python", dispatch)
 
 
 
