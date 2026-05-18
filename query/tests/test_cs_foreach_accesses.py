@@ -107,12 +107,11 @@ class TestAccessesOnForeach(unittest.TestCase):
         assert nested_line in _lines(r), \
             f"Line {nested_line} (nested foreach access) missing: {r}"
 
-    def test_var_foreach_not_tracked(self):
+    def test_var_foreach_resolves_through_collection(self):
         """
-        foreach (var entry in items) — 'entry' type cannot be resolved
-        without type inference; var-inferred iteration variables are not tracked.
-        The var loop (ProcessVar) must NOT produce spurious results.
-        (entry.Name must be absent since it is on a different line from explicit hits.)
+        ``foreach (var entry in items)`` where ``items: List<Item>`` resolves
+        the iteration variable to ``Item`` via the collection's element type.
+        ``entry.Name`` should appear in accesses_on Item results.
         """
         r = self._on("Item")
         src_lines = _SRC.splitlines()
@@ -121,8 +120,8 @@ class TestAccessesOnForeach(unittest.TestCase):
             None
         )
         assert var_line is not None, "ForeachAccess.cs must have entry.Name line"
-        assert var_line not in _lines(r), \
-            f"var-inferred foreach line {var_line} must not appear in Item accesses: {r}"
+        assert var_line in _lines(r), \
+            f"var-inferred foreach line {var_line} should resolve via List<Item> element type: {r}"
 
     def test_unrelated_type_returns_empty(self):
         assert self._on("NoSuchType") == []

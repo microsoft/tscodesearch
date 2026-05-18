@@ -319,7 +319,7 @@ def js_q_declarations(src, tree, lines, name, include_body=False):
                 content = "\n".join(lines[start_row:sig_end]).rstrip()
             else:
                 content = "\n".join(lines[start_row:end_row + 1])
-        header = f"── [{kind}] {name}  (lines {start_row + 1}–{end_row + 1}) ──"
+        header = f"[{kind}] {name} {start_row + 1}-{end_row + 1}:"
         results.append((_line(node), f"{header}\n{content}"))
     return results
 

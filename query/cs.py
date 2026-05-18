@@ -303,6 +303,83 @@ def _build_sig(node, src) -> str:
     return f"{ret_txt} {name_txt}({params_txt})".strip() if ret_txt else f"{name_txt}({params_txt})"
 
 
+_CS_VISIBILITY_TOKENS = ("public", "internal", "protected", "private")
+
+
+def _cs_explicit_visibility(node) -> str:
+    """Return the most-specific access modifier present on ``node`` as a
+    canonical single-word string, or ``""`` if none is written.
+
+    C# allows compound modifiers (``protected internal``, ``private
+    protected``). For filtering purposes the *outermost* visibility is the
+    one that matters: ``protected internal`` is reachable from outside the
+    assembly through inheritance, so it's classified as ``protected``;
+    ``private protected`` is the most-restricted form, classified as
+    ``private``. Anything else collapses to the matching keyword.
+    """
+    mods = [c for c in node.children if c.type == "modifier"]
+    if not mods:
+        return ""
+    seen = []
+    for m in mods:
+        for child in m.children:
+            t = child.type
+            if t in _CS_VISIBILITY_TOKENS and t not in seen:
+                seen.append(t)
+    if not seen:
+        return ""
+    if "private" in seen and "protected" in seen:
+        return "private"     # private protected = most restricted
+    if "protected" in seen and "internal" in seen:
+        return "protected"   # protected internal — reachable via inheritance
+    # Single-keyword forms.
+    for tok in _CS_VISIBILITY_TOKENS:
+        if tok in seen:
+            return tok
+    return ""
+
+
+def _cs_type_visibility(node) -> str:
+    """Visibility for a top-level type declaration. Explicit modifier wins;
+    otherwise nested types in a class default to ``private``, and types at
+    namespace/file level default to ``internal`` (C# defaults)."""
+    explicit = _cs_explicit_visibility(node)
+    if explicit:
+        return explicit
+    # Walk up to find the immediate scope: another type → private; else
+    # namespace / compilation_unit → internal.
+    p = node.parent
+    while p is not None:
+        if p.type in _TYPE_DECL_NODES:
+            return "private"
+        if p.type in ("namespace_declaration",
+                      "file_scoped_namespace_declaration",
+                      "compilation_unit"):
+            return "internal"
+        p = p.parent
+    return "internal"
+
+
+def _cs_member_visibility(node) -> str:
+    """Visibility for a member declaration (method, field, prop, event,
+    ctor). Explicit modifier wins; absence of any modifier inside an
+    interface or enum defaults to ``public`` (the language's rule).
+    Anywhere else, absence defaults to ``private``."""
+    explicit = _cs_explicit_visibility(node)
+    if explicit:
+        return explicit
+    p = node.parent
+    while p is not None:
+        if p.type == "interface_declaration":
+            return "public"
+        if p.type == "enum_declaration":
+            return "public"
+        if p.type in _TYPE_DECL_NODES:
+            return "private"
+        p = p.parent
+    return "private"
+
+
 def _enclosing_type_name(node, src) -> str:
     p = node.parent
     while p:
@@ -312,6 +389,518 @@ def _enclosing_type_name(node, src) -> str:
                 return _text(nn, src).strip()
         p = p.parent
     return ""
+
+
+# ── Block-scoped variable-type resolver ───────────────────────────────────────
+
+# Node types that introduce a new variable scope. A call site inside one of
+# these nodes resolves variable names against this node's local map first,
+# then walks outward through every enclosing scope. The grammar's ``block``
+# nodes are included so sibling blocks (if/else branches, try and each catch,
+# the two arms of a switch) isolate their declarations — without that, real
+# code like ``if (b) { Foo x = ...; } else { Bar x = ...; }`` collides under
+# a single method-wide map.
+_SCOPE_NODES = frozenset({
+    # Method-like containers (carry parameters but no body locals — those
+    # live in the body block, which is its own scope below).
+    "method_declaration", "constructor_declaration", "destructor_declaration",
+    "operator_declaration", "conversion_operator_declaration",
+    "local_function_statement",
+    "accessor_declaration",
+    "lambda_expression", "anonymous_method_expression",
+    # Block and the statements that declare a variable visible only inside
+    # their body.
+    "block",
+    "catch_clause",
+    "for_statement",
+    "foreach_statement",
+    "using_statement",
+})
+
+# Subset of scope nodes that carry a ``parameters`` field — used to decide
+# which declaration channels the per-scope walker should consult.
+_PARAMETERIZED_SCOPES = frozenset({
+    "method_declaration", "constructor_declaration", "destructor_declaration",
+    "operator_declaration", "conversion_operator_declaration",
+    "local_function_statement",
+    "accessor_declaration",
+    "lambda_expression", "anonymous_method_expression",
+})
+
+
+class _VarTypeMap:
+    """Method-scoped variable name → resolved type.
+
+    ``resolve_at(name, node)`` walks up from ``node`` through every enclosing
+    scope node, returning the first matching declared/inferred type. A name
+    that maps to conflicting types within one scope is sentinelled to ``None``
+    and never produces a qualified call form.
+
+    Scope identity is keyed by ``tree_sitter.Node.id`` (the underlying C-side
+    node pointer) rather than Python ``id()``, because tree-sitter creates
+    fresh Python wrapper objects for each traversal — ``node.parent`` from
+    one call site produces a different Python object than the same node
+    found via a top-down walk, even though both wrap the same AST node.
+    """
+
+    __slots__ = ("_scope_maps", "_file_map")
+
+    def __init__(self, scope_maps: dict[int, dict[str, str | None]],
+                 file_map: dict[str, str | None]):
+        self._scope_maps = scope_maps
+        self._file_map = file_map
+
+    def resolve_at(self, var_name: str, node) -> str | None:
+        """Return resolved type for ``var_name`` from ``node``'s position.
+
+        Returns ``None`` when the name is unknown or conflicts in its scope.
+        """
+        if not var_name:
+            return None
+        p = node
+        while p is not None:
+            sm = self._scope_maps.get(p.id)
+            if sm is not None and var_name in sm:
+                return sm[var_name]
+            p = p.parent
+        return self._file_map.get(var_name)
+
+
+_MISSING = object()
+
+
+def _scope_add(m: dict, name: str, type_txt: str) -> None:
+    """Insert name→type into m, suppressing on conflict (set to None)."""
+    if not name or not type_txt:
+        return
+    existing = m.get(name, _MISSING)
+    if existing is _MISSING:
+        m[name] = type_txt
+    elif existing is None:
+        return
+    elif existing != type_txt:
+        m[name] = None
+
+
+def _generic_type_arg(generic_node, src) -> str:
+    """Return the first type argument from a ``generic_name``'s
+    ``type_argument_list`` child, or ``""`` if not present."""
+    for c in generic_node.children:
+        if c.type == "type_argument_list":
+            for g in c.children:
+                if g.is_named:
+                    return _text(g, src).strip()
+    return ""
+
+
+def _infer_var_type(expr, src, scope_map: dict) -> str:
+    """Best-effort syntactic type inference for a ``var`` initialiser.
+
+    Handles, in order:
+      * ``await E``                            — unwrap and recurse
+      * ``new T(...)`` / ``new T[...]``        — exact type
+      * ``(T)expr`` / ``expr as T``            — cast/as target
+      * ``arr[i]`` where ``arr: T[]``          — element type from scope
+      * ``GenericMethod<T>(...)``              — first type arg (DI/factory idiom)
+      * ``recv.GenericMethod<T>(...)``         — same; ignores the receiver
+      * ``TypeName.Method(...)``               — assume TypeName is the result
+                                                 (static factory idiom)
+
+    The factory and generic heuristics deliberately favour over-emission:
+    AI agents post-filter results, and a missing qualified form is worse
+    than a few harmless extras (they don't match a real call line in the
+    AST stage anyway).
+
+    Returns ``""`` when no plausible type is derivable.
+    """
+    if expr is None:
+        return ""
+
+    # Strip await wrappers — ``await E`` has the same observed type as E for
+    # our purposes (we don't model Task<T> unwrapping, but the inner type
+    # is almost always more useful than nothing).
+    if expr.type == "await_expression":
+        inner = next((c for c in expr.children if c.is_named), None)
+        return _infer_var_type(inner, src, scope_map)
+
+    t = expr.type
+    if t == "object_creation_expression":
+        tn = expr.child_by_field_name("type")
+        return _text(tn, src).strip() if tn else ""
+    if t == "array_creation_expression":
+        tn = expr.child_by_field_name("type")
+        return _text(tn, src).strip() if tn else ""
+    if t == "cast_expression":
+        tn = expr.child_by_field_name("type")
+        return _text(tn, src).strip() if tn else ""
+    if t == "as_expression":
+        tn = expr.child_by_field_name("right") or expr.child_by_field_name("type")
+        return _text(tn, src).strip() if tn else ""
+    if t == "element_access_expression":
+        obj = expr.child_by_field_name("expression")
+        if obj and obj.type == "identifier":
+            arr_type = scope_map.get(_text(obj, src).strip())
+            if isinstance(arr_type, str) and arr_type.endswith("[]"):
+                return arr_type[:-2].strip()
+        return ""
+    if t == "invocation_expression":
+        fn = expr.child_by_field_name("function")
+        if fn is None:
+            return ""
+        # Bare ``GenericMethod<T>(...)`` — the type argument is almost
+        # always the return type (DI ``Resolve<T>``, ``Get<T>`` patterns).
+        if fn.type == "generic_name":
+            ta = _generic_type_arg(fn, src)
+            if ta:
+                return ta
+        if fn.type == "member_access_expression":
+            name     = fn.child_by_field_name("name")
+            receiver = fn.child_by_field_name("expression")
+            # ``recv.GenericMethod<T>(...)`` — same heuristic.
+            if name is not None and name.type == "generic_name":
+                ta = _generic_type_arg(name, src)
+                if ta:
+                    return ta
+            # ``TypeName.Method(...)`` — static factory pattern. Receiver is
+            # a bare PascalCase identifier and isn't a declared variable in
+            # this scope. False-positive friendly: a static method that
+            # returns something other than its enclosing type still yields
+            # a qualified form that AST post-filtering will reject if no
+            # matching call exists.
+            if (receiver is not None
+                    and receiver.type == "identifier"):
+                rtxt = _text(receiver, src).strip()
+                if (rtxt and rtxt[:1].isupper()
+                        and scope_map.get(rtxt, _MISSING) is _MISSING):
+                    return rtxt
+        return ""
+
+    if t == "member_access_expression":
+        name     = expr.child_by_field_name("name")
+        receiver = expr.child_by_field_name("expression")
+        if name is None:
+            return ""
+        # Static property access: ``TypeName.Member`` — guess TypeName.
+        # Mirrors the invocation-side factory heuristic.
+        if (receiver is not None and receiver.type == "identifier"):
+            rtxt = _text(receiver, src).strip()
+            if (rtxt and rtxt[:1].isupper()
+                    and scope_map.get(rtxt, _MISSING) is _MISSING):
+                return rtxt
+        # Instance property access: ``obj.PascalProperty`` — guess that the
+        # property's type matches its name (.NET convention; very common
+        # for typed wrapper/sub-object properties like
+        # ``request.RequestMetrics``, ``ctx.AuthContext``). False positives
+        # for primitive-named properties (``Count``, ``Length``, ``Name``)
+        # are tolerated — the qualified form they produce doesn't match
+        # any real call line at the AST stage.
+        if name.type == "identifier":
+            ptxt = _text(name, src).strip()
+            if ptxt and ptxt[:1].isupper():
+                return ptxt
+        return ""
+
+    if t == "conditional_expression":
+        # ``cond ? A : B`` — try each branch in turn; the first that yields
+        # a type wins. Captures patterns like
+        # ``var x = useNear ? group.Near : group.Far`` where both branches
+        # are property accesses (instance heuristic above resolves them
+        # individually).
+        for field in ("consequence", "alternative"):
+            branch = expr.child_by_field_name(field)
+            if branch is not None:
+                r = _infer_var_type(branch, src, scope_map)
+                if r:
+                    return r
+        return ""
+
+    return ""
+
+
+def _get_init_expr(declarator):
+    children = declarator.children
+    if len(children) >= 3 and children[1].type == "=":
+        return children[2]
+    return None
+
+
+def _add_variable_decl(node, src, scope_map: dict,
+                       explicit: list, var_inferred: list) -> None:
+    """Split a ``variable_declaration`` into explicit / var-inferred buckets.
+
+    ``explicit`` and ``var_inferred`` are appended to so the caller can apply
+    explicit declarations first (so element-access var-inference can resolve
+    against known array types).
+    """
+    tn = node.child_by_field_name("type")
+    if tn is None:
+        return
+    ttxt = _text(tn, src).strip()
+    is_var = (ttxt == "var" or tn.type == "implicit_type")
+    for decl in _find_all(node, lambda x: x.type == "variable_declarator"):
+        vn = decl.child_by_field_name("name")
+        if vn is None:
+            continue
+        if is_var:
+            var_inferred.append((vn, _get_init_expr(decl)))
+        else:
+            explicit.append((vn, ttxt))
+
+
+def _collect_scope_locals(scope_node, src, scope_map: dict,
+                          scope_maps: dict, file_map: dict) -> None:
+    """Populate scope_map with every variable declared **directly** in scope_node.
+
+    Declarations inside nested scope nodes (other blocks, catch clauses,
+    nested methods, lambdas, …) belong to their own maps and are skipped.
+    The resolver walks the parent chain at lookup time, so an inner scope
+    transparently inherits names from outer scopes without needing the
+    inner map to copy them.
+
+    ``scope_maps`` and ``file_map`` are the partial-state used for
+    cross-scope lookups at construction time — chiefly to resolve
+    ``foreach (var x in coll)`` where ``coll`` is a field or outer-method
+    parameter and the iterator type can be derived from its element type.
+    """
+    nt = scope_node.type
+
+    # ── Method-like nodes own their parameters; their body is a separate
+    #    block scope that handles its own locals.
+    if nt in _PARAMETERIZED_SCOPES:
+        params = scope_node.child_by_field_name("parameters")
+        if params is not None:
+            for p in _find_all(params, lambda n: n.type == "parameter"):
+                pt = p.child_by_field_name("type")
+                pn = p.child_by_field_name("name")
+                if pt and pn:
+                    _scope_add(scope_map, _text(pn, src).strip(),
+                               _text(pt, src).strip())
+        # Lambdas may have an expression body (no block) — pattern/decl
+        # bindings inside the expression head still bind into this scope.
+        body = scope_node.child_by_field_name("body")
+        if body is not None and body.type != "block":
+            _absorb_pattern_bindings(body, src, scope_map)
+        return
+
+    # ── catch_clause: (TypeName ident) declares ``ident: TypeName``.
+    if nt == "catch_clause":
+        decl = next((c for c in scope_node.children if c.type == "catch_declaration"), None)
+        if decl is not None:
+            idents = [c for c in decl.children if c.type == "identifier"]
+            if len(idents) >= 2:
+                _scope_add(scope_map, _text(idents[1], src).strip(),
+                           _text(idents[0], src).strip())
+        return
+
+    # ── for_statement: initializer may carry a variable_declaration.
+    if nt == "for_statement":
+        explicit: list = []
+        var_inferred: list = []
+        for c in scope_node.children:
+            if c.type == "variable_declaration":
+                _add_variable_decl(c, src, scope_map, explicit, var_inferred)
+        for vn, ttxt in explicit:
+            _scope_add(scope_map, _text(vn, src).strip(), ttxt)
+        for vn, expr in var_inferred:
+            inferred = _infer_var_type(expr, src, scope_map)
+            if inferred:
+                _scope_add(scope_map, _text(vn, src).strip(), inferred)
+        return
+
+    # ── foreach_statement: declares ``left: type``.
+    if nt == "foreach_statement":
+        tn = scope_node.child_by_field_name("type")
+        nm = scope_node.child_by_field_name("left")
+        if tn is None or nm is None:
+            return
+        if tn.type != "implicit_type":
+            _scope_add(scope_map, _text(nm, src).strip(), _text(tn, src).strip())
+            return
+        # ``foreach (var x in coll)`` — derive x's type from coll's
+        # collection element type. We need to look up ``coll`` across the
+        # enclosing scopes (it's commonly a field or method param, not a
+        # local in the foreach itself), which means consulting the partial
+        # scope state and the file map.
+        coll = scope_node.child_by_field_name("right")
+        if coll is None or coll.type != "identifier":
+            return
+        coll_name = _text(coll, src).strip()
+        coll_type = _walk_partial_scopes(coll_name, scope_node, scope_maps, file_map)
+        if not isinstance(coll_type, str):
+            return
+        elem = _collection_element_type(coll_type)
+        if elem:
+            _scope_add(scope_map, _text(nm, src).strip(), elem)
+        return
+
+    # ── using_statement: ``using (var x = ...)`` or ``using (T x = ...)``.
+    if nt == "using_statement":
+        explicit = []
+        var_inferred = []
+        for c in scope_node.children:
+            if c.type == "variable_declaration":
+                _add_variable_decl(c, src, scope_map, explicit, var_inferred)
+        for vn, ttxt in explicit:
+            _scope_add(scope_map, _text(vn, src).strip(), ttxt)
+        for vn, expr in var_inferred:
+            inferred = _infer_var_type(expr, src, scope_map)
+            if inferred:
+                _scope_add(scope_map, _text(vn, src).strip(), inferred)
+        return
+
+    # ── block: walk direct children, stopping at nested scope nodes. Picks
+    #    up local_declaration_statement (variable_declaration), declaration
+    #    patterns inside expressions, and out-var declarations.
+    explicit = []
+    var_inferred = []
+    pattern_nodes: list = []
+    decl_expr_nodes: list = []
+
+    stack = list(scope_node.children)
+    while stack:
+        n = stack.pop()
+        sub_nt = n.type
+        if sub_nt in _SCOPE_NODES:
+            continue  # nested scope owns its declarations
+        if sub_nt == "variable_declaration":
+            _add_variable_decl(n, src, scope_map, explicit, var_inferred)
+        elif sub_nt in ("declaration_pattern", "recursive_pattern"):
+            pattern_nodes.append(n)
+        elif sub_nt == "declaration_expression":
+            decl_expr_nodes.append(n)
+        stack.extend(n.children)
+
+    for vn, ttxt in explicit:
+        _scope_add(scope_map, _text(vn, src).strip(), ttxt)
+
+    for n in pattern_nodes:
+        tn = n.child_by_field_name("type")
+        nm = n.child_by_field_name("name")
+        if tn is not None and nm is not None:
+            _scope_add(scope_map, _text(nm, src).strip(), _text(tn, src).strip())
+
+    for n in decl_expr_nodes:
+        tn = n.child_by_field_name("type")
+        nm = n.child_by_field_name("name")
+        if tn is not None and nm is not None and tn.type != "implicit_type":
+            _scope_add(scope_map, _text(nm, src).strip(), _text(tn, src).strip())
+
+    for vn, expr in var_inferred:
+        inferred = _infer_var_type(expr, src, scope_map)
+        if inferred:
+            _scope_add(scope_map, _text(vn, src).strip(), inferred)
+
+
+def _absorb_pattern_bindings(node, src, scope_map: dict) -> None:
+    """Collect declaration-pattern and out-var bindings inside ``node``.
+
+    Used for lambdas with an expression body (`x => x is T t ? t.M() : null`).
+    Walks past nested scope nodes so nested lambdas don't leak.
+    """
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        nt = n.type
+        if n is not node and nt in _SCOPE_NODES:
+            continue
+        if nt in ("declaration_pattern", "recursive_pattern", "declaration_expression"):
+            tn = n.child_by_field_name("type")
+            nm = n.child_by_field_name("name")
+            if tn is not None and nm is not None and tn.type != "implicit_type":
+                _scope_add(scope_map, _text(nm, src).strip(),
+                           _text(tn, src).strip())
+        stack.extend(n.children)
+
+
+def _walk_partial_scopes(name: str, start_node, scope_maps: dict,
+                         file_map: dict):
+    """Walk up the parent chain looking for ``name`` in the partial state.
+
+    Called from inside scope construction — ``scope_maps`` only contains
+    scopes built so far. The DFS-preorder iteration in
+    ``_build_var_type_map`` guarantees that every *enclosing* scope is
+    already built by the time we look at an inner one, so this works for
+    cross-scope name resolution at construction time (e.g. resolving a
+    field/property/outer-method-param from inside a foreach).
+    """
+    if not name:
+        return None
+    p = start_node
+    while p is not None:
+        sm = scope_maps.get(p.id)
+        if sm is not None and name in sm:
+            return sm[name]
+        p = p.parent
+    return file_map.get(name)
+
+
+def _collection_element_type(type_txt: str) -> str:
+    """Best-guess element type for a collection type string.
+
+    Handles ``T[]`` (most precise), and PascalCase-generic forms with one
+    type arg (``List<T>``, ``IEnumerable<T>``, ``HashSet<T>``, …). For
+    multi-arg generics (``Dictionary<K, V>``, ``KeyValuePair<K, V>``) the
+    element type isn't a single name, so we return "" — callers fall back
+    to leaving the iterator unresolved rather than guessing wrong.
+    """
+    t = type_txt.strip()
+    if not t:
+        return ""
+    if t.endswith("[]"):
+        return t[:-2].strip()
+    lt = t.find("<")
+    if lt > 0 and t.endswith(">"):
+        inner = t[lt + 1:-1].strip()
+        if inner and "," not in inner:
+            return inner
+    return ""
+
+
+def _build_var_type_map(tree, src) -> _VarTypeMap:
+    """Build a block-scoped variable-name → resolved-type map for the file.
+
+    File scope holds fields/properties/events declared at the type level;
+    every block/catch/loop/method gets its own per-scope map layered on
+    top. Conflicting types within one scope are sentinelled to ``None``:
+    the resolver still reports the name as "known but ambiguous" so the
+    caller can choose not to emit a qualified form.
+    """
+    file_map: dict[str, str | None] = {}
+
+    # Fields and properties at the type level — visible inside every method
+    # of the enclosing type, so they belong to file scope for resolution.
+    for node in _find_all(tree.root_node, lambda n: n.type in (
+            "field_declaration", "event_field_declaration")):
+        var_decl = next((c for c in node.children if c.type == "variable_declaration"), None)
+        if not var_decl:
+            continue
+        tn = var_decl.child_by_field_name("type")
+        if not tn:
+            continue
+        ttxt = _text(tn, src).strip()
+        for decl in _find_all(var_decl, lambda x: x.type == "variable_declarator"):
+            vn = decl.child_by_field_name("name")
+            if vn:
+                _scope_add(file_map, _text(vn, src).strip(), ttxt)
+
+    for node in _find_all(tree.root_node, lambda n: n.type == "property_declaration"):
+        tn = node.child_by_field_name("type")
+        nm = node.child_by_field_name("name")
+        if tn and nm:
+            _scope_add(file_map, _text(nm, src).strip(), _text(tn, src).strip())
+
+    # Per-scope maps for every block/method-like/lambda/loop/catch. We rely
+    # on ``_find_all``'s DFS-preorder order: an outer scope is processed
+    # before any inner scope it contains, so when a foreach (or other
+    # cross-scope inference) walks up to resolve a name, the parent
+    # scope's map is already populated.
+    scope_maps: dict[int, dict[str, str | None]] = {}
+    for node in _find_all(tree.root_node, lambda n: n.type in _SCOPE_NODES):
+        m: dict[str, str | None] = {}
+        _collect_scope_locals(node, src, m, scope_maps, file_map)
+        scope_maps[node.id] = m
+
+    return _VarTypeMap(scope_maps, file_map)
 
 
 # ── Shared traversal helpers ───────────────────────────────────────────────────
@@ -475,7 +1064,8 @@ def _q_classes_data(src, idx: TreeIndex) -> list:
         name  = _text(name_node, src).strip()
         bases = _base_type_names(node, src)
         results.append(ClassInfo(line=_line(node), end_line=_end_line(node),
-                                 name=name, kind=kind, bases=bases))
+                                 name=name, kind=kind, bases=bases,
+                                 visibility=_cs_type_visibility(node)))
     return results
 
 
@@ -486,6 +1076,7 @@ def _q_methods_data(src, idx: TreeIndex) -> list:
         ln       = _line(node)
         end      = _end_line(node)
         toks     = _sig_tokens(node, src)
+        vis      = _cs_member_visibility(node)
         if node.type == "field_declaration":
             type_txt = _field_type(node, src)
             for var in _find_all(node, lambda n: n.type == "variable_declarator"):
@@ -494,7 +1085,7 @@ def _q_methods_data(src, idx: TreeIndex) -> list:
                     name = _text(vn, src).strip()
                     results.append(MethodInfo(line=ln, end_line=end, name=name, kind="field",
                                               sig=f"{type_txt} {name}".strip(),
-                                              sig_tokens=toks))
+                                              sig_tokens=toks, visibility=vis))
         elif node.type == "property_declaration":
             type_node = node.child_by_field_name("type")
             name_node = node.child_by_field_name("name")
@@ -503,7 +1094,7 @@ def _q_methods_data(src, idx: TreeIndex) -> list:
                 name = _text(name_node, src).strip()
                 results.append(MethodInfo(line=ln, end_line=end, name=name, kind="prop",
                                           sig=f"{type_txt} {name}".strip(),
-                                          sig_tokens=toks))
+                                          sig_tokens=toks, visibility=vis))
         elif node.type == "event_declaration":
             type_node = node.child_by_field_name("type")
             name_node = node.child_by_field_name("name")
@@ -512,7 +1103,7 @@ def _q_methods_data(src, idx: TreeIndex) -> list:
                 name = _text(name_node, src).strip()
                 results.append(MethodInfo(line=ln, end_line=end, name=name, kind="event",
                                           sig=f"{type_txt} {name}".strip(),
-                                          sig_tokens=toks))
+                                          sig_tokens=toks, visibility=vis))
         elif node.type == "event_field_declaration":
             type_txt = _field_type(node, src)
             for var in _find_all(node, lambda n: n.type == "variable_declarator"):
@@ -521,7 +1112,7 @@ def _q_methods_data(src, idx: TreeIndex) -> list:
                     name = _text(vn, src).strip()
                     results.append(MethodInfo(line=ln, end_line=end, name=name, kind="event",
                                               sig=f"{type_txt} {name}".strip(),
-                                              sig_tokens=toks))
+                                              sig_tokens=toks, visibility=vis))
         elif node.type in ("method_declaration", "local_function_statement"):
             sig = _build_sig(node, src)
             if sig:
@@ -539,7 +1130,7 @@ def _q_methods_data(src, idx: TreeIndex) -> list:
                 results.append(MethodInfo(line=ln, end_line=end, name=name, kind="method",
                                           sig=sig, return_type=ret_txt,
                                           param_types=param_types,
-                                          sig_tokens=toks))
+                                          sig_tokens=toks, visibility=vis))
         elif node.type == "constructor_declaration":
             sig = _build_sig(node, src)
             if sig:
@@ -554,7 +1145,7 @@ def _q_methods_data(src, idx: TreeIndex) -> list:
                             param_types.append(_text(pt, src).strip())
                 results.append(MethodInfo(line=ln, end_line=end, name=name, kind="ctor",
                                           sig=sig, param_types=param_types,
-                                          sig_tokens=toks))
+                                          sig_tokens=toks, visibility=vis))
     return results
 
 
@@ -565,6 +1156,7 @@ def _q_fields_data(src, idx: TreeIndex) -> list:
         ln   = _line(node)
         end  = _end_line(node)
         toks = _sig_tokens(node, src)
+        vis  = _cs_member_visibility(node)
         if node.type == "field_declaration":
             type_txt = _field_type(node, src)
             for var in _find_all(node, lambda n: n.type == "variable_declarator"):
@@ -573,7 +1165,7 @@ def _q_fields_data(src, idx: TreeIndex) -> list:
                     name = _text(vn, src).strip()
                     results.append(FieldInfo(line=ln, end_line=end, name=name, kind="field",
                                              field_type=type_txt,
-                                             sig_tokens=toks))
+                                             sig_tokens=toks, visibility=vis))
         else:
             type_node = node.child_by_field_name("type")
             type_txt  = _text(type_node, src).strip() if type_node else ""
@@ -582,7 +1174,7 @@ def _q_fields_data(src, idx: TreeIndex) -> list:
                 name = _text(name_node, src).strip()
                 results.append(FieldInfo(line=ln, end_line=end, name=name, kind="prop",
                                          field_type=type_txt,
-                                         sig_tokens=toks))
+                                         sig_tokens=toks, visibility=vis))
     return results
 
 
@@ -621,8 +1213,17 @@ def _q_attrs_data(src, idx: TreeIndex, attr_name=None) -> list:
     return results
 
 
-def _q_all_call_site_infos(src, idx: TreeIndex) -> list:
-    """Extract call sites as CallSiteInfo objects, capturing PascalCase receivers."""
+def _q_all_call_site_infos(src, idx: TreeIndex, var_map: _VarTypeMap | None = None) -> list:
+    """Extract call sites as ``CallSiteInfo`` objects.
+
+    Captures the literal identifier receiver when one is present (``Foo`` in
+    ``Foo.Bar()`` or ``repo`` in ``repo.Save()``) and, when ``var_map`` is
+    provided, resolves that receiver to its declared/inferred type so the
+    indexer can emit a stable ``Type.Method`` token. Receivers whose name
+    isn't in scope or maps to conflicting types in the same scope leave
+    ``resolved_type`` empty — the bare-name + literal-receiver fallback in
+    the indexer keeps the call discoverable either way.
+    """
     result = []
     for node in idx.of("invocation_expression"):
         fn_node = node.child_by_field_name("function")
@@ -632,7 +1233,16 @@ def _q_all_call_site_infos(src, idx: TreeIndex) -> list:
                 expr = fn_node.child_by_field_name("expression")
                 if nn:
                     receiver = _text(expr, src).strip() if (expr and expr.type == "identifier") else ""
-                    result.append(CallSiteInfo(name=_text(nn, src).strip(), receiver=receiver))
+                    resolved = ""
+                    if receiver and var_map is not None:
+                        rt = var_map.resolve_at(receiver, node)
+                        if rt:
+                            resolved = _strip_generic(rt.rsplit(".", 1)[-1])
+                    result.append(CallSiteInfo(
+                        name=_text(nn, src).strip(),
+                        receiver=receiver,
+                        resolved_type=resolved,
+                    ))
             elif fn_node.type == "identifier":
                 result.append(CallSiteInfo(name=_text(fn_node, src).strip()))
     for name in _collect_ctor_names(idx, src):
@@ -681,19 +1291,53 @@ def _q_all_local_types_data(src, idx: TreeIndex) -> list:
 
 # ── Query functions ────────────────────────────────────────────────────────────
 
-def q_classes(src, tree, lines):
+def _parse_visibility_filter(visibility):
+    """Normalise the optional visibility filter into a set of canonical
+    tokens (or None when no filter is requested). Accepts a single value
+    (``"public"``), a comma-separated string (``"public,internal"``), or
+    any iterable. Unknown tokens are dropped silently — callers shouldn't
+    crash on a typo, just get back nothing matching their typo."""
+    if not visibility:
+        return None
+    if isinstance(visibility, str):
+        toks = [t.strip().lower() for t in visibility.split(",")]
+    else:
+        toks = [str(t).strip().lower() for t in visibility]
+    keep = {t for t in toks if t}
+    return keep or None
+
+
+def _visibility_keep(info_visibility: str, allowed) -> bool:
+    """True when ``info_visibility`` passes the optional filter.
+
+    Empty string on the info means "language didn't capture a visibility"
+    and is treated as a hard miss — searching ``visibility="public"`` over
+    e.g. SQL files never matches, which is the right answer.
+    """
+    if allowed is None:
+        return True
+    return bool(info_visibility) and info_visibility in allowed
+
+
+def q_classes(src, tree, lines, visibility=None):
+    allowed = _parse_visibility_filter(visibility)
     return [(_r.line, _r.end_line, _r.text)
-            for _r in _q_classes_data(src, _CsIndex(src, tree, _TYPE_DECL_NODES))]
+            for _r in _q_classes_data(src, _CsIndex(src, tree, _TYPE_DECL_NODES))
+            if _visibility_keep(getattr(_r, "visibility", ""), allowed)]
 
 
-def q_methods(src, tree, lines):
+def q_methods(src, tree, lines, visibility=None):
+    allowed = _parse_visibility_filter(visibility)
     return [(_r.line, _r.end_line, _r.text)
-            for _r in _q_methods_data(src, _CsIndex(src, tree, _MEMBER_DECL_NODES))]
+            for _r in _q_methods_data(src, _CsIndex(src, tree, _MEMBER_DECL_NODES))
+            if _visibility_keep(getattr(_r, "visibility", ""), allowed)]
 
 
-def q_fields(src, tree, lines):
+def q_fields(src, tree, lines, visibility=None):
+    allowed = _parse_visibility_filter(visibility)
     return [(_r.line, _r.end_line, _r.text)
-            for _r in _q_fields_data(src, _CsIndex(src, tree, {"field_declaration", "property_declaration"}))]
+            for _r in _q_fields_data(src, _CsIndex(src, tree, {"field_declaration", "property_declaration"}))
+            if _visibility_keep(getattr(_r, "visibility", ""), allowed)]
 
 
 def q_calls(src, tree, lines, method_name):
@@ -701,6 +1345,50 @@ def q_calls(src, tree, lines, method_name):
         qualifier, bare_name = method_name.rsplit(".", 1)
     else:
         qualifier, bare_name = None, method_name
+
+    # Build the var-type map lazily — only when a qualified pattern is
+    # supplied. Bare-method searches don't need receiver resolution.
+    var_map = _build_var_type_map(tree, src) if qualifier else None
+
+    _qualifier_str: str = qualifier or ""
+
+    def _qualifier_matches(expr_node) -> bool:
+        """True if ``expr_node`` (the receiver of a member access) matches
+        ``qualifier`` either by literal text or by resolved type."""
+        if expr_node is None or not _qualifier_str:
+            return False
+        expr_txt = _text(expr_node, src).strip()
+        if expr_txt == _qualifier_str or expr_txt.endswith("." + _qualifier_str):
+            return True
+        # Resolved-type fallback: look up an identifier receiver in the
+        # method-scoped var-type map and compare its unqualified type name.
+        if expr_node.type == "identifier" and var_map is not None:
+            rt = var_map.resolve_at(expr_txt, expr_node)
+            if isinstance(rt, str) and rt:
+                resolved = _strip_generic(rt.rsplit(".", 1)[-1])
+                if resolved == _qualifier_str:
+                    return True
+        return False
+
+    def _report(node, name_node):
+        """Build a result tuple pinpointing the method-name token.
+
+        Reports the line of ``name_node`` (where the matched identifier
+        actually appears) rather than the start of the surrounding
+        invocation — for chained calls like ``a.B().Method(...)`` that
+        means the result lands on the line of ``Method``, not on
+        whichever line the chain begins. Source text is the single line
+        containing the name, not the multi-line invocation node.
+        """
+        anchor = name_node if name_node is not None else node
+        row = anchor.start_point[0]
+        line_text = lines[row].strip() if 0 <= row < len(lines) else ""
+        if not line_text:
+            # Fall back to a truncated render of the node when the source
+            # row is empty/missing (defensive — shouldn't happen for real
+            # call sites).
+            line_text = _truncate_raw(node, src)
+        return (_line(anchor), line_text)
 
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "invocation_expression"):
@@ -710,30 +1398,39 @@ def q_calls(src, tree, lines, method_name):
         if not fn:
             continue
         matched = None
+        match_name_node = None
         if fn.type == "member_access_expression":
             nn   = fn.child_by_field_name("name")
             expr = fn.child_by_field_name("expression")
             if nn:
                 matched = _strip_generic(_text(nn, src))
+                match_name_node = nn
                 if qualifier and matched == bare_name:
-                    expr_txt = _text(expr, src).strip() if expr else ""
-                    if not (expr_txt == qualifier or expr_txt.endswith("." + qualifier)):
+                    if not _qualifier_matches(expr):
                         matched = None
         elif fn.type == "conditional_access_expression":
-            # f?.Method(...) — method name is in the trailing member_binding_expression
+            # f?.Method(...) — method name is in the trailing
+            # member_binding_expression; receiver is the ``condition``
+            # field on the conditional_access_expression.
             binding = next((c for c in fn.children
                             if c.type == "member_binding_expression"), None)
             if binding:
                 nn = binding.child_by_field_name("name")
                 if nn:
                     matched = _strip_generic(_text(nn, src))
+                    match_name_node = nn
+                    if qualifier and matched == bare_name:
+                        cond = fn.child_by_field_name("condition")
+                        if not _qualifier_matches(cond):
+                            matched = None
         elif fn.type in ("identifier", "generic_name"):
             if qualifier is None:
                 nn = fn.child_by_field_name("name") if fn.type == "generic_name" else fn
                 if nn:
                     matched = _strip_generic(_text(nn, src))
+                    match_name_node = nn
         if matched == bare_name:
-            results.append((_line(node), _truncate_raw(node, src)))
+            results.append(_report(node, match_name_node))
 
     if qualifier is None:
         for node in _find_all(tree.root_node, lambda n: n.type == "object_creation_expression"):
@@ -746,7 +1443,8 @@ def q_calls(src, tree, lines, method_name):
             if not idents:
                 continue
             if _strip_generic(_text(idents[-1], src)) == bare_name:
-                results.append((_line(node), _truncate_raw(node, src)))
+                # ``new T(...)`` — anchor at the type name token.
+                results.append(_report(node, idents[-1]))
     return results
 
 
@@ -887,14 +1585,26 @@ def q_usings(src, tree, lines):
     return [(_r.line, _r.text) for _r in _q_usings_data(src, _CsIndex(src, tree, {"using_directive"}))]
 
 
-def q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None):
+def q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None,
+                   visibility=None):
     kind_nodes = SYMBOL_KIND_TO_NODES.get((symbol_kind or "").lower().strip())
     target_nodes = kind_nodes if kind_nodes is not None else (_TYPE_DECL_NODES | _MEMBER_DECL_NODES)
+    allowed = _parse_visibility_filter(visibility)
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in target_nodes):
         name_node = node.child_by_field_name("name")
         if not name_node or _text(name_node, src).strip() != name:
             continue
+        if allowed is not None:
+            # Use the same defaults as the indexer so the AST stage stays
+            # consistent with the index pre-filter — type kinds get the
+            # type-level default, members get the member-level default.
+            if node.type in _TYPE_DECL_NODES:
+                vis = _cs_type_visibility(node)
+            else:
+                vis = _cs_member_visibility(node)
+            if not _visibility_keep(vis, allowed):
+                continue
         kind      = _node_kind(node)
         start_row = node.start_point[0]
         end_row   = node.end_point[0]
@@ -904,7 +1614,7 @@ def q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None)
             content = "\n".join(lines[start_row:sig_end_row]).rstrip()
         else:
             content = "\n".join(lines[start_row:end_row + 1])
-        header = f"── [{kind}] {name}  (lines {start_row + 1}–{end_row + 1}) ──"
+        header = f"[{kind}] {name} {start_row + 1}-{end_row + 1}:"
         results.append((_line(node), f"{header}\n{content}"))
     return results
 
@@ -914,6 +1624,28 @@ _SCOPE_NODE_NAMES = (
     | _MEMBER_DECL_NODES
     | {"namespace_declaration", "file_scoped_namespace_declaration"}
 )
+
+
+def _field_declarator_name(field_node, target_row: int, target_col: int):
+    """Find the ``variable_declarator``'s name inside a field_declaration or
+    event_field_declaration. When the field declares multiple variables on
+    one line (``int a, b, c``), pick the declarator whose range contains
+    the target; fall back to the first when none does (e.g. cursor sits on
+    a modifier keyword like ``readonly``)."""
+    var_decl = next((c for c in field_node.children
+                     if c.type == "variable_declaration"), None)
+    if var_decl is None:
+        return None
+    declarators = [c for c in var_decl.children
+                   if c.type == "variable_declarator"]
+    if not declarators:
+        return None
+    for d in declarators:
+        sr, sc = d.start_point
+        er, ec = d.end_point
+        if (sr, sc) <= (target_row, target_col) < (er, ec):
+            return d.child_by_field_name("name")
+    return declarators[0].child_by_field_name("name")
 
 
 def q_at(src, tree, lines, position: str):
@@ -979,6 +1711,13 @@ def q_at(src, tree, lines, position: str):
     while walker is not None:
         if walker.type in _SCOPE_NODE_NAMES:
             name_node = walker.child_by_field_name("name")
+            # ``field_declaration`` / ``event_field_declaration`` carry their
+            # name inside a nested ``variable_declaration`` → ``variable_declarator``
+            # rather than on a direct ``name`` field. Pick the declarator
+            # whose range contains the target, else the first declarator.
+            if name_node is None and walker.type in (
+                    "field_declaration", "event_field_declaration"):
+                name_node = _field_declarator_name(walker, target_row, target_col)
             if name_node:
                 scopes.append({
                     "kind":  _node_kind(walker),
@@ -1191,112 +1930,12 @@ def q_casts(src, tree, lines, type_name):
     return results
 
 
-def _add_typed_vars(tree, src, var_names, node_types, type_name, *,
-                    name_field="name", skip_implicit=False):
-    """
-    Walk nodes of the given types; for each, check that the 'type' field matches
-    `type_name`, then add the variable name to `var_names`.
-    If `skip_implicit` is True, nodes with an implicit_type (var) are skipped.
-    """
-    for _, _, var_txt in _iter_single_field_locals(
-            tree, src, type_name, node_types, name_field, skip_implicit=skip_implicit):
-        var_names.add(var_txt)
-
-
-def _get_init_expr(declarator):
-    children = declarator.children
-    if len(children) >= 3 and children[1].type == "=":
-        return children[2]
-    return None
-
-
-def _collect_typed_var_names(tree, src, type_name):
-    """
-    Return (var_names, array_names) for q_accesses_on.
-
-    var_names:   names of variables whose declared or inferred type is `type_name`.
-    array_names: names of variables whose type is an array of `type_name` elements.
-
-    Covers explicitly-typed declarations, parameters, properties, foreach loops,
-    declaration patterns, out variables, and var-inferred declarations initialised
-    with object_creation_expression, array_creation_expression, cast_expression, or
-    as_expression.
-    """
-    var_names   = set()
-    array_names = set()
-
-    # Explicitly typed variable declarations (locals and fields)
-    for node in _find_all(tree.root_node, lambda n: n.type == "variable_declaration"):
-        type_node = node.child_by_field_name("type")
-        if not type_node or type_name not in _type_names(_text(type_node, src).strip()):
-            continue
-        for decl in _find_all(node, lambda n: n.type == "variable_declarator"):
-            vn = decl.child_by_field_name("name")
-            if vn:
-                var_names.add(_text(vn, src).strip())
-
-    # Parameters, property declarations, foreach, declaration patterns, out vars
-    _add_typed_vars(tree, src, var_names, {"parameter", "property_declaration"}, type_name)
-    _add_typed_vars(tree, src, var_names, {"foreach_statement"}, type_name,
-                    name_field="left", skip_implicit=True)
-    _add_typed_vars(tree, src, var_names,
-                    {"declaration_pattern", "declaration_expression", "recursive_pattern"},
-                    type_name)
-
-    # var-inferred declarations whose initialiser reveals the type
-    for node in _find_all(tree.root_node, lambda n: n.type == "variable_declaration"):
-        type_node = node.child_by_field_name("type")
-        if not type_node or _text(type_node, src).strip() != "var":
-            continue
-        for decl in _find_all(node, lambda n: n.type == "variable_declarator"):
-            vn = decl.child_by_field_name("name")
-            if not vn:
-                continue
-            expr = _get_init_expr(decl)
-            if not expr:
-                continue
-            name = _text(vn, src).strip()
-            if expr.type == "object_creation_expression":
-                t = expr.child_by_field_name("type")
-                if t and type_name in _type_names(_text(t, src)):
-                    var_names.add(name)
-            elif expr.type == "array_creation_expression":
-                t = expr.child_by_field_name("type")
-                if t:
-                    elem = t.child_by_field_name("type") if t.type == "array_type" else t
-                    if type_name in _type_names(_text(elem, src)):
-                        array_names.add(name)
-            elif expr.type == "cast_expression":
-                t = expr.child_by_field_name("type")
-                if t and type_name in _type_names(_text(t, src)):
-                    var_names.add(name)
-            elif expr.type == "as_expression":
-                t = expr.child_by_field_name("right") or expr.child_by_field_name("type")
-                if t and type_name in _type_names(_text(t, src)):
-                    var_names.add(name)
-
-    # var-inferred element-access variables: var x = arr[i] where arr is T[]
-    if array_names:
-        for node in _find_all(tree.root_node, lambda n: n.type == "variable_declaration"):
-            type_node = node.child_by_field_name("type")
-            if not type_node or _text(type_node, src).strip() != "var":
-                continue
-            for decl in _find_all(node, lambda n: n.type == "variable_declarator"):
-                vn = decl.child_by_field_name("name")
-                if not vn:
-                    continue
-                expr = _get_init_expr(decl)
-                if not expr or expr.type != "element_access_expression":
-                    continue
-                obj = expr.child_by_field_name("expression")
-                if obj and obj.type == "identifier" and _text(obj, src).strip() in array_names:
-                    var_names.add(_text(vn, src).strip())
-
-    return var_names, array_names
-
-
 def q_accesses_on(src, tree, lines, type_name):
-    var_names, _ = _collect_typed_var_names(tree, src, type_name)
+    var_map = _build_var_type_map(tree, src)
+
+    def _matches(name: str, node) -> bool:
+        t = var_map.resolve_at(name, node)
+        return bool(t) and type_name in _type_names(t)
 
     results = []
     seen_rows = set()
@@ -1319,7 +1958,7 @@ def q_accesses_on(src, tree, lines, type_name):
             continue
         if obj.type != "identifier":
             continue
-        if _text(obj, src).strip() not in var_names:
+        if not _matches(_text(obj, src).strip(), node):
             continue
         _emit(node, _text(member, src).strip())
 
@@ -1330,7 +1969,7 @@ def q_accesses_on(src, tree, lines, type_name):
         cond = node.child_by_field_name("condition")
         if not cond or cond.type != "identifier":
             continue
-        if _text(cond, src).strip() not in var_names:
+        if not _matches(_text(cond, src).strip(), node):
             continue
         binding = next((c for c in node.children
                         if c.type == "member_binding_expression"), None)
@@ -1352,7 +1991,7 @@ def q_accesses_on(src, tree, lines, type_name):
     # With-expression member mutations (C# 9 records) — obj with { Prop = val }
     # Each member is emitted independently for the same reason as above.
     for wi, src_ident, prop in _iter_with_members(tree, src):
-        if _text(src_ident, src).strip() not in var_names:
+        if not _matches(_text(src_ident, src).strip(), wi):
             continue
         row = wi.start_point[0]
         line_text = lines[row].strip() if row < len(lines) else ""
@@ -1379,10 +2018,54 @@ def q_all_refs(src, tree, lines, name):
     return results
 
 
+def q_var_type(src, tree, lines, name):
+    """Report the resolved type of every occurrence of ``name`` in the file.
+
+    For each identifier-position where ``name`` appears, run the method-
+    scoped var-type resolver and emit:
+
+      L<line>: name : <ResolvedType>          when the resolver returns a type
+      L<line>: name : (unresolved)            when the resolver returns None
+      L<line>: name : (conflicting)           when the name is known but its
+                                              scope had conflicting declarations
+
+    Identical (line, resolved) pairs are deduped so a name used multiple
+    times on the same line reports once. Identifiers inside string
+    literals or comments are skipped — matches mirror ``all_refs``.
+    """
+    var_map = _build_var_type_map(tree, src)
+    results = []
+    seen = set()
+    for node in _find_all(tree.root_node, lambda n: n.type == "identifier"):
+        if _text(node, src) != name:
+            continue
+        if _in_literal(node):
+            continue
+        resolved = var_map.resolve_at(name, node)
+        if resolved is None:
+            # Distinguish "name known but ambiguous" (sentinel set during
+            # construction) from "name never declared in scope". The map's
+            # resolve_at returns None for both, so re-check membership.
+            in_any = any(
+                name in m for m in var_map._scope_maps.values()  # noqa: SLF001
+            ) or name in var_map._file_map  # noqa: SLF001
+            label = "(conflicting)" if in_any else "(unresolved)"
+        else:
+            label = resolved
+        row = node.start_point[0]
+        key = (row, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        line_text = lines[row].strip() if row < len(lines) else ""
+        results.append((_line(node), f"{name} : {label}  ← {line_text}"))
+    return results
+
+
 # ── Process function ──────────────────────────────────────────────────────────
 
 def query_cs_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False,
-                   symbol_kind=None, uses_kind=None, **kwargs):
+                   symbol_kind=None, uses_kind=None, visibility=None, **kwargs):
     """Parse C# bytes and return list[{"line": N, "text": "..."}] for the given mode."""
     src_bytes = _strip_else_branches(src_bytes)
     try:
@@ -1394,9 +2077,9 @@ def query_cs_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fals
     lines = src_bytes.decode("utf-8", errors="replace").splitlines()
 
     dispatch = {
-        "classes":      lambda: q_classes(src_bytes, tree, lines),
-        "methods":      lambda: q_methods(src_bytes, tree, lines),
-        "fields":       lambda: q_fields(src_bytes, tree, lines),
+        "classes":      lambda: q_classes(src_bytes, tree, lines, visibility=visibility),
+        "methods":      lambda: q_methods(src_bytes, tree, lines, visibility=visibility),
+        "fields":       lambda: q_fields(src_bytes, tree, lines, visibility=visibility),
         "calls":        lambda: q_calls(src_bytes, tree, lines, mode_arg),
         "implements":   lambda: q_implements(src_bytes, tree, lines, mode_arg),
         "uses":         lambda: q_uses(src_bytes, tree, lines, mode_arg, uses_kind=uses_kind),
@@ -1407,10 +2090,12 @@ def query_cs_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fals
         "accesses_of":  lambda: q_accesses_of(src_bytes, tree, lines, mode_arg),
         "imports":      lambda: q_usings(src_bytes, tree, lines),
         "declarations": lambda: q_declarations(src_bytes, tree, lines, mode_arg,
-                                               include_body=include_body, symbol_kind=symbol_kind),
+                                               include_body=include_body, symbol_kind=symbol_kind,
+                                               visibility=visibility),
         "body":         lambda: q_body(src_bytes, tree, lines, mode_arg, symbol_kind=symbol_kind),
         "at":           lambda: q_at(src_bytes, tree, lines, mode_arg),
         "params":       lambda: q_params(src_bytes, tree, lines, mode_arg),
+        "var_type":     lambda: q_var_type(src_bytes, tree, lines, mode_arg),
     }
     return _run_dispatch(mode, "C#", dispatch)
 
@@ -1428,6 +2113,11 @@ def describe_cs_file(src_bytes: bytes, ext: str = "") -> FileDescription:
     # extractor needs and collects literal-aware all_refs in the same pass.
     idx = _CsIndex(src_bytes, tree, _DESCRIBE_NODE_TYPES, collect_refs=True)
 
+    # Var-type map drives qualified-call resolution at index time. Built once
+    # per file; consulted by the call-site emitter to attach a stable
+    # ``Type.Method`` token to every receiver it can pin down syntactically.
+    var_map = _build_var_type_map(tree, src_bytes)
+
     return FileDescription(
         language="cs",
         classes=_q_classes_data(src_bytes, idx),
@@ -1436,7 +2126,7 @@ def describe_cs_file(src_bytes: bytes, ext: str = "") -> FileDescription:
         imports=_q_usings_data(src_bytes, idx),
         attrs=_q_attrs_data(src_bytes, idx),
         namespace=_q_namespace(src_bytes, idx),
-        call_site_infos=_q_all_call_site_infos(src_bytes, idx),
+        call_site_infos=_q_all_call_site_infos(src_bytes, idx, var_map),
         cast_infos=[CastInfo(target_type=t) for t in _q_all_cast_types_data(src_bytes, idx)],
         local_var_infos=[LocalVarInfo(var_type=t) for t in _q_all_local_types_data(src_bytes, idx)],
         member_access_infos=[MemberAccessInfo(member=m) for m in _q_all_member_accesses_data(src_bytes, idx)],

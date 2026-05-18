@@ -47,6 +47,72 @@ class TestExtractCsMetadata(unittest.TestCase):
             f"call_sites: {meta['call_sites']}"
         )
 
+    def test_qualified_calls_static_pascal_receiver(self):
+        """``Foo.Bar()`` produces ``Foo.Bar`` in qualified_calls."""
+        src = b"class C { void M() { Foo.Bar(); } }"
+        meta = extract_metadata(src, ".cs")
+        self.assertIn("Foo.Bar", meta["qualified_calls"])
+
+    def test_qualified_calls_resolved_typed_local(self):
+        """``Repo r; r.Save()`` resolves to ``Repo.Save``."""
+        src = b"class C { void M() { Repo r = null; r.Save(); } }"
+        meta = extract_metadata(src, ".cs")
+        self.assertIn("Repo.Save", meta["qualified_calls"])
+
+    def test_qualified_calls_resolved_field(self):
+        """Field-typed receiver picks up the field's type."""
+        src = b"class C { private IRepository _repo; void M() { _repo.Save(); } }"
+        meta = extract_metadata(src, ".cs")
+        self.assertIn("IRepository.Save", meta["qualified_calls"])
+
+    def test_qualified_calls_no_resolution_for_unknown_var(self):
+        """``var x = Get(); x.Save()`` — no qualified form (just bare ``Save``)."""
+        src = b"class C { void M() { var x = Get(); x.Save(); } }"
+        meta = extract_metadata(src, ".cs")
+        self.assertNotIn("x.Save", meta["qualified_calls"])
+        self.assertIn("Save", meta["call_sites"])
+
+    def test_qualified_calls_conflict_suppressed_same_block(self):
+        """Two same-name declarations *in one block* → no qualified emission."""
+        src = b"""class C {
+            void M() {
+                Repo x = null;
+                x.Save();
+                Customer x = null;
+                x.Save();
+            }
+        }"""
+        meta = extract_metadata(src, ".cs")
+        self.assertNotIn("Repo.Save", meta["qualified_calls"])
+        self.assertNotIn("Customer.Save", meta["qualified_calls"])
+        # The bare name still survives so the call is still discoverable.
+        self.assertIn("Save", meta["call_sites"])
+
+    def test_qualified_calls_independent_branches_both_emitted(self):
+        """if/else branches each resolve independently — both forms appear."""
+        src = b"""class C {
+            void M(bool b) {
+                if (b) { Repo x = null; x.Save(); }
+                else   { Customer x = null; x.Save(); }
+            }
+        }"""
+        meta = extract_metadata(src, ".cs")
+        self.assertIn("Repo.Save", meta["qualified_calls"])
+        self.assertIn("Customer.Save", meta["qualified_calls"])
+
+    def test_qualified_calls_method_scope_isolation(self):
+        """Same variable name in two methods doesn't cross-contaminate."""
+        src = b"""class C {
+            void A() { Repo r = null; r.Save(); }
+            void B() { Customer r = null; r.Touch(); }
+        }"""
+        meta = extract_metadata(src, ".cs")
+        self.assertIn("Repo.Save", meta["qualified_calls"])
+        self.assertIn("Customer.Touch", meta["qualified_calls"])
+        # Cross-pollination would yield these — they must not appear.
+        self.assertNotIn("Repo.Touch", meta["qualified_calls"])
+        self.assertNotIn("Customer.Save", meta["qualified_calls"])
+
     def test_imports(self):
         src = b"using System; using System.Collections.Generic;"
         meta = extract_metadata(src, ".cs")

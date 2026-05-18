@@ -263,7 +263,7 @@ def py_q_declarations(src, tree, lines, name, include_body=False, symbol_kind=No
         start_row = node.start_point[0]
         end_row = node.end_point[0]
         body_lines = "\n".join(lines[start_row:end_row + 1])
-        header = f"── [{kind}] {name}  (lines {start_row + 1}–{end_row + 1}) ──"
+        header = f"[{kind}] {name} {start_row + 1}-{end_row + 1}:"
         results.append((_line(node), f"{header}\n{body_lines}"))
     return results
 

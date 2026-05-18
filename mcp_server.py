@@ -183,6 +183,7 @@ def query_codebase(
     include_body: bool = False,
     symbol_kind: str = "",
     uses_kind: str = "",
+    visibility: str = "",
     exclude_path: str = "",
 ) -> str:
     """Index pre-filter + tree-sitter AST. Returns one of three response shapes
@@ -238,7 +239,12 @@ Args:
                     `.Member` exists). When `accesses_on` is empty but you know
                     the variable exists, fall back to `all_refs` on the
                     variable name.
-                  - `accesses_of` wants a MEMBER name (e.g. "Timeout").
+                  - `accesses_of` wants a MEMBER name (e.g. "Timeout"). It
+                    only finds *qualified* reads (`expr.Timeout`). Bare
+                    identifier reads in the declaring class itself — which
+                    compile to implicit `this.Timeout` — are NOT matched.
+                    For implicit-this reads use `all_refs` on the member
+                    name.
   pattern:      A single identifier. Examples that DO work: "BlobStore",
                 "SaveChanges", "IDataStore". Examples that do NOT work:
                 "using BlobStore", "(BlobStore)", "Save Changes",
@@ -255,7 +261,18 @@ Args:
   root:         Named source root (empty = default).
   include_body: For declarations — include full body. Default false.
   symbol_kind:  For declarations — restrict to: method, class, interface, etc.
-  uses_kind:    For uses — all, field, param, return, cast, base, locals.
+  uses_kind:    For `uses` — narrow to one structural role. Values:
+                  - omitted / "all" (default): union of `type_refs` +
+                    `cast_types` — every type reference anywhere in the file.
+                  - field, param, return, cast, base, locals: narrow to that
+                    one role.
+  visibility:   For declaration modes (declarations / classes / methods /
+                fields) — comma-separated access modifiers to keep. Values:
+                public, internal, protected, private. Empty = no filter.
+                Languages that don't capture visibility (e.g. SQL) match
+                nothing when this filter is set. (C# captures explicit
+                modifiers plus interface-public / enum-public / nested
+                type defaults.)
   exclude_path: Comma-separated list of folder paths to exclude from results.
                 Each value is matched as an exact ancestor folder, not a glob —
                 wildcards are not supported. Behavior:
@@ -276,11 +293,25 @@ Examples:
   query_codebase("calls", "SaveChanges", sub="services,vendor")
   query_codebase("calls", "SaveChanges", exclude_path="tests,generated")
   query_codebase("uses", "IRepo", sub="services", exclude_path="services/legacy")"""
-    _LISTING = {"methods", "fields", "classes", "imports", "capabilities"}
+    # File-targeted modes don't make sense for a codebase-wide search.
+    # `body`/`at`/`params`/`var_type` need an explicit file; listing modes
+    # (methods/fields/classes/imports/capabilities) only describe a single
+    # file's structure. Catch them here so the agent sees an actionable
+    # redirect instead of the daemon's generic "unknown mode" error.
+    _FILE_ONLY = {
+        "methods", "fields", "classes", "imports", "capabilities",
+        "body", "at", "params", "var_type",
+    }
     m = mode.lower().strip().replace("-", "_")
-    if m in _LISTING:
-        return (f"Mode '{m}' lists file contents without filtering — use query_single_file instead:\n"
-                f'  query_single_file("{m}", file="$SRC_ROOT/path/to/File.cs")')
+    if m in _FILE_ONLY:
+        if m in ("body", "at", "params", "var_type"):
+            why = "needs a specific file"
+            example_arg = pattern or ('"SaveChanges"' if m != "at" else '"42:10"')
+            example = f'  query_single_file("{m}", {example_arg}, file="path/to/File.cs")'
+        else:
+            why = "lists one file's contents without filtering"
+            example = f'  query_single_file("{m}", file="path/to/File.cs")'
+        return (f"Mode '{m}' {why} — use query_single_file instead:\n{example}")
 
     try:
         status, data = _post("/query-codebase", {
@@ -289,6 +320,7 @@ Examples:
             "root": root or "", "limit": _QUERY_CODEBASE_LIMIT,
             "include_body": include_body,
             "symbol_kind": symbol_kind or "", "uses_kind": uses_kind or "",
+            "visibility": visibility or "",
             "exclude_path": exclude_path or "",
         })
     except Exception as e:
@@ -377,11 +409,16 @@ Examples:
     files_with_matches.sort(key=lambda fm: -len(fm[1]))
 
     def _qsf_call(file_rel: str) -> str:
-        """A query_single_file call mirroring the current query_codebase params."""
+        """A query_single_file call mirroring the current query_codebase params.
+
+        Uses the bare relative path from the tier-2/3 listing — the tool
+        accepts that directly (it prepends the default root), so injecting
+        a ``$SRC_ROOT/`` placeholder just adds noise.
+        """
         args = [f'"{m}"']
         if pattern:
             args.append(f'"{pattern}"')
-        args.append(f'file="$SRC_ROOT/{file_rel}"')
+        args.append(f'file="{file_rel}"')
         if root:
             args.append(f'root="{root}"')
         if include_body:
@@ -390,6 +427,8 @@ Examples:
             args.append(f'symbol_kind="{symbol_kind}"')
         if uses_kind:
             args.append(f'uses_kind="{uses_kind}"')
+        if visibility:
+            args.append(f'visibility="{visibility}"')
         return "query_single_file(" + ", ".join(args) + ")"
 
     # Tier 2 — many files: filenames + counts only.
@@ -445,6 +484,7 @@ def query_single_file(
     include_body: bool = False,
     symbol_kind: str = "",
     uses_kind: str = "",
+    visibility: str = "",
     head_limit: int = 250,
     offset: int = 0,
 ) -> str:
@@ -476,12 +516,17 @@ Modes (canonical, same name across languages):
                         receiver — `obj.Foo()` is matched by calls("Foo")
                         not calls("obj"); for variable usage use all_refs.
     implements TYPE     Types that inherit/implement TYPE.
-    uses TYPE           Type references; narrow with `uses_kind` (C# only)
-                        among: field, param, return, cast, base, locals.
+    uses TYPE           Type references. Omit `uses_kind` (or "all") for
+                        the union of every role; narrow with `uses_kind`
+                        ∈ {field, param, return, cast, base, locals}.
+                        (C# only.)
     casts TYPE          Explicit (TYPE)expr / as TYPE sites.
     attrs NAME?         [Attribute] / @decorator usages (omit NAME to list all).
     params METHOD       Parameters of METHOD.
-    accesses_of MEMBER  Access sites of property/field MEMBER. (C# only.)
+    accesses_of MEMBER  Qualified access sites of property/field MEMBER —
+                        `expr.MEMBER`. Bare `MEMBER` (implicit `this.MEMBER`
+                        inside the declaring class) is NOT matched; use
+                        `all_refs MEMBER` for that. (C# only.)
     accesses_on TYPE    .Member accesses on locals/params declared as TYPE.
                         Returns NOTHING when the variable is only assigned,
                         returned, or forwarded as an argument — no `.Member`
@@ -489,6 +534,12 @@ Modes (canonical, same name across languages):
                         (C# only.)
     all_refs NAME       Every identifier occurrence (broadest; AST-only,
                         skips strings/comments).
+    var_type NAME       For each occurrence of NAME, report its resolved
+                        type from the method-scoped var-type map (or
+                        `(unresolved)` / `(conflicting)`). Use this to
+                        answer "what's the type of `foo` at line 42"
+                        without having to find the exact column for `at`.
+                        (C# only today.)
 
   Position mode — `pattern` is "LINE:COL" (1-indexed):
     at LINE:COL         Identify the deepest AST node at the position and
@@ -509,8 +560,16 @@ Args:
   symbol_kind:  For `declarations` / `body` — restrict to method, ctor, class,
                 interface, struct, enum, record, delegate, property, field,
                 event, type, or member.
-  uses_kind:    For `uses` — all (default), field, param, return, cast, base,
-                or locals. (C# only.)
+  uses_kind:    For `uses` — narrow to one structural role. Omit (or pass
+                "all") for the union of every role; otherwise one of
+                field, param, return, cast, base, locals. (C# only.)
+  visibility:   For declaration modes (declarations / classes / methods /
+                fields) — comma-separated access modifiers to keep
+                (public, internal, protected, private). Omit for no
+                filter. C# captures explicit modifiers and applies the
+                language's defaults (interface members ⇒ public, nested
+                types ⇒ private, top-level types ⇒ internal); other
+                languages currently return nothing when this filter is set.
   head_limit:   Max results to return (default 250). Use with offset to page.
   offset:       Skip first N results before applying head_limit (default 0).
 
@@ -519,14 +578,16 @@ Errors:
   lists the modes that ARE supported. Use `capabilities` to enumerate them
   programmatically before calling.
 
-Examples:
-  query_single_file("capabilities", file="$SRC_ROOT/services/Widget.cs")
-  query_single_file("methods",      file="$SRC_ROOT/services/Widget.cs")
-  query_single_file("body",      "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
-  query_single_file("at",        "42:10",       file="$SRC_ROOT/data/Widget.cs")
-  query_single_file("calls",     "SaveChanges", file="$SRC_ROOT/data/Widget.cs")
+Examples (relative paths resolve against the default root; ``$SRC_ROOT/``
+prefix is still accepted for back-compat but no longer required):
+  query_single_file("capabilities", file="services/Widget.cs")
+  query_single_file("methods",      file="services/Widget.cs")
+  query_single_file("body",      "SaveChanges", file="data/Widget.cs")
+  query_single_file("at",        "42:10",       file="data/Widget.cs")
+  query_single_file("calls",     "SaveChanges", file="data/Widget.cs")
+  query_single_file("var_type",  "store",       file="data/Widget.cs")
   query_single_file("uses",      "IRepository", uses_kind="param",
-                    file="$SRC_ROOT/services/Widget.cs")"""
+                    file="services/Widget.cs")"""
     if not file:
         return "file= is required."
 
@@ -551,6 +612,7 @@ Examples:
             include_body=include_body,
             symbol_kind=symbol_kind or None,
             uses_kind=uses_kind or None,
+            visibility=visibility or None,
         )
     except ValueError as e:
         # Unknown extension or unsupported mode — propagate the helpful

@@ -32,7 +32,13 @@ def resolve_query_params(ts_mode_flag: str, uses_kind: str = "", symbol_kind: st
     if ts_mode_flag == "implements":
         return "base_types,class_names,path_tokens", "4,3,2"
     if ts_mode_flag == "calls":
-        return "call_sites,path_tokens", "4,2"
+        # ``qualified_calls`` carries ``Type.Method`` tokens (static-style
+        # ``Foo.Bar`` plus method-scoped resolved-receiver forms like
+        # ``IRepository.Save`` when the indexer pinned the type). Querying
+        # both fields lets the agent pass either a bare ``Save`` or a
+        # qualified ``IRepository.Save`` without picking the right field
+        # themselves.
+        return "call_sites,qualified_calls,path_tokens", "4,4,2"
     if ts_mode_flag == "uses":
         k = (uses_kind or "all").lower().strip()
         if k == "field":   return "field_types,path_tokens", "4,2"

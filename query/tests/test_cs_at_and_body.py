@@ -124,6 +124,58 @@ class TestQAt(unittest.TestCase):
         self.assertNotIn("[method]", text)
 
 
+# ── q_at: field/event scope-chain regression ──────────────────────────────────
+
+
+_FIELDS_SRC = """\
+namespace Acme {
+    public class Container {
+        private int _count = 0;
+        private static readonly System.Guid SettingsKS = System.Guid.NewGuid();
+        private string _first, _second;
+        public event System.Action OnChange;
+    }
+}
+"""
+
+
+class TestQAtInsideFieldDeclarations(unittest.TestCase):
+    """Regression: ``field_declaration`` and ``event_field_declaration``
+    don't expose a direct ``name`` field — the name lives inside a nested
+    ``variable_declarator``. q_at must still report the field in the
+    enclosing-scope chain rather than silently skipping it."""
+
+    def setUp(self):
+        b = _FIELDS_SRC.encode()
+        tree = _PARSER.parse(b)
+        self.fx = (b, tree, _FIELDS_SRC.splitlines())
+
+    def test_at_inside_simple_field(self):
+        # Line 3: `private int _count = 0;` — cursor on `_count`.
+        text = q_at(*self.fx, "3:24")[0][-1]
+        self.assertIn("[field] _count", text)
+        self.assertIn("[class] Container", text)
+
+    def test_at_on_field_modifier_keyword(self):
+        # Cursor on the `readonly` keyword still resolves to the field's
+        # scope — fall-back picks the first declarator's name.
+        text = q_at(*self.fx, "4:24")[0][-1]
+        self.assertIn("[field] SettingsKS", text)
+
+    def test_at_inside_multi_declarator_field_picks_correct_one(self):
+        # `private string _first, _second;` — point at `_second`.
+        text = q_at(*self.fx, "5:32")[0][-1]
+        self.assertIn("[field] _second", text)
+        # And pointing at `_first` picks _first.
+        text = q_at(*self.fx, "5:24")[0][-1]
+        self.assertIn("[field] _first", text)
+
+    def test_at_inside_event_field(self):
+        # `public event System.Action OnChange;` — cursor on `OnChange`.
+        text = q_at(*self.fx, "6:36")[0][-1]
+        self.assertIn("[event field] OnChange", text)
+
+
 # ── q_body ────────────────────────────────────────────────────────────────────
 
 class TestQBody(unittest.TestCase):

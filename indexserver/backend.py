@@ -21,10 +21,43 @@ import gc
 import os
 import re
 import shutil
+import sys
 import threading
+import time
 from pathlib import Path
 
 import tantivy
+
+
+# ── Transient Windows IO retry ────────────────────────────────────────────────
+#
+# On Windows, ``IndexWriter.commit()`` occasionally fails with
+# ``Access is denied`` / ``PermissionDenied`` when opening a new segment
+# file for write — even for a freshly-created collection directory.
+# Suspected causes include Windows Defender scanning newly created files,
+# stale mmap handles from earlier reader Backends releasing asynchronously
+# in the same process, and the OS taking a moment to make a just-deleted
+# directory's namespace available again. The errors are transient: a brief
+# settle delay followed by re-running the same write succeeds. Retry only
+# at the ``upsert_many`` level because the writer's in-memory buffer is
+# discarded on a failed commit, so we have to re-add the docs.
+
+_COMMIT_RETRY_ATTEMPTS = 4
+_COMMIT_RETRY_BASE_DELAY = 0.2  # seconds; doubled each attempt
+
+
+def _is_transient_windows_io_error(err: BaseException) -> bool:
+    """Return True for the Windows-only file-handle races we retry over."""
+    if sys.platform != "win32":
+        return False
+    msg = str(err).lower()
+    return (
+        "access is denied" in msg
+        or "permission denied" in msg
+        or "permissiondenied" in msg
+        or "os error 5" in msg
+        or "(os error 32)" in msg  # The process cannot access the file.
+    )
 
 
 # Schema definition — kept here because the same field set is consulted by
@@ -46,8 +79,9 @@ SEARCHABLE_FIELDS: tuple[str, ...] = (
     "member_sig_tokens",
     "base_types", "field_types", "local_types",
     "param_types", "return_types", "cast_types",
-    "type_refs", "call_sites", "member_accesses",
+    "type_refs", "call_sites", "qualified_calls", "member_accesses",
     "attr_names", "imports",
+    "type_visibilities", "member_visibilities",
     "path_tokens",
 )
 
@@ -57,8 +91,9 @@ MULTI_VALUE_FIELDS: frozenset[str] = frozenset({
     "member_sig_tokens",
     "base_types", "field_types", "local_types",
     "param_types", "return_types", "cast_types",
-    "type_refs", "call_sites", "member_accesses",
+    "type_refs", "call_sites", "qualified_calls", "member_accesses",
     "attr_names", "imports",
+    "type_visibilities", "member_visibilities",
     "namespace",
     "tokens",
     "path_tokens",
@@ -104,8 +139,15 @@ def build_schema() -> tantivy.Schema:
         "member_sig_tokens",   # every identifier inside a sig
         "base_types", "field_types", "local_types",
         "param_types", "return_types", "cast_types",
-        "type_refs", "call_sites", "member_accesses",
+        "type_refs", "call_sites",
+        "qualified_calls",     # ``Type.Method`` forms (static + resolved-receiver)
+        "member_accesses",
         "attr_names", "imports",
+        # Canonical access modifiers captured per declaration. Two parallel
+        # fields so a query for "files that have at least one public
+        # member" doesn't catch files that only have public *types*.
+        "type_visibilities",
+        "member_visibilities",
         "tokens",       # deduped bag of every identifier in the file
         "path_tokens",  # per-directory + filename parts
     ):
@@ -318,23 +360,51 @@ class Backend:
 
         Returns (n_ok, n_failed). On commit failure all docs are reported as
         failed (Tantivy's commit is atomic — partial application isn't a
-        thing here).
+        thing here). Transient Windows IO errors are retried with backoff:
+        the writer's in-memory buffer is discarded on a failed commit so
+        we re-run the entire add + commit sequence after a brief settle
+        delay.
         """
         if not docs:
             return 0, 0
-        n_added = 0
-        for d in docs:
+
+        last_err: BaseException | None = None
+        for attempt in range(_COMMIT_RETRY_ATTEMPTS):
+            n_added = 0
+            for d in docs:
+                try:
+                    self.add(d)
+                    n_added += 1
+                except Exception as e:
+                    rel = d.get("relative_path", d.get("id", "?"))
+                    print(f"[backend] add failed for {rel}: {type(e).__name__}: {e}", flush=True)
             try:
-                self.add(d)
-                n_added += 1
-            except Exception as e:
-                rel = d.get("relative_path", d.get("id", "?"))
-                print(f"[backend] add failed for {rel}: {type(e).__name__}: {e}", flush=True)
-        try:
-            self.commit()
-        except Exception:
-            return 0, len(docs)
-        return n_added, len(docs) - n_added
+                self.commit()
+                return n_added, len(docs) - n_added
+            except Exception as commit_err:
+                last_err = commit_err
+                if (attempt + 1 >= _COMMIT_RETRY_ATTEMPTS
+                        or not _is_transient_windows_io_error(commit_err)):
+                    break
+                delay = _COMMIT_RETRY_BASE_DELAY * (2 ** attempt)
+                print(
+                    f"[backend] commit attempt {attempt + 1}/{_COMMIT_RETRY_ATTEMPTS} "
+                    f"hit a transient Windows IO error in {self.path}; "
+                    f"retrying after {delay:.2f}s",
+                    flush=True,
+                )
+                # commit()'s error handler already rolled back and reopened
+                # the writer, so we just need to settle and retry.
+                gc.collect()
+                time.sleep(delay)
+        # Out of retries or non-transient error: caller treats as full failure.
+        if last_err is not None:
+            print(
+                f"[backend] upsert_many giving up on {len(docs)} docs in "
+                f"{self.path}: {type(last_err).__name__}: {last_err}",
+                flush=True,
+            )
+        return 0, len(docs)
 
     def delete_many(self, ids: list[str]) -> int:
         if not ids:

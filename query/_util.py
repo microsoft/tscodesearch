@@ -17,6 +17,12 @@ class CallSiteInfo:
     """A function or method call site."""
     name: str
     receiver: str = ""  # receiver identifier when it looks like a type (e.g. "Repo" in Repo.Save())
+    # Resolved receiver type when the language's local analyser can pin it down
+    # unambiguously (static class name, declared field/param/local). Empty when
+    # the receiver isn't an identifier, the identifier isn't in scope, or the
+    # name resolves to conflicting types within its scope. Drives the indexer's
+    # ``qualified_calls`` field.
+    resolved_type: str = ""
 
 
 @dataclass
@@ -61,6 +67,22 @@ class FileDescription:
     all_refs:            set  = dc_field(default_factory=set)
 
 
+# Canonical visibility tokens. Each language extractor maps its native
+# modifier set into one of these. ``""`` means "the language did not
+# capture a visibility for this declaration" — typically because it's a
+# language where the concept doesn't apply (Python module-level functions,
+# Rust impl items, SQL columns). Callers filtering by visibility should
+# treat empty as "unknown", not as "public".
+VISIBILITY_PUBLIC    = "public"
+VISIBILITY_INTERNAL  = "internal"
+VISIBILITY_PROTECTED = "protected"
+VISIBILITY_PRIVATE   = "private"
+KNOWN_VISIBILITIES   = frozenset({
+    VISIBILITY_PUBLIC, VISIBILITY_INTERNAL,
+    VISIBILITY_PROTECTED, VISIBILITY_PRIVATE,
+})
+
+
 @dataclass
 class ClassInfo:
     """A type declaration (class, struct, interface, enum, trait, union, …).
@@ -74,6 +96,10 @@ class ClassInfo:
     kind: str
     bases: list = dc_field(default_factory=list)
     end_line: int = 0
+    # Canonical access modifier: ``public`` / ``internal`` / ``protected`` /
+    # ``private`` / ``""`` (unknown). Captured by language extractors that
+    # have explicit modifier keywords; empty for languages that don't.
+    visibility: str = ""
 
     @property
     def text(self) -> str:
@@ -103,6 +129,8 @@ class MethodInfo:
     # means the language doesn't yet emit them.
     sig_tokens: list = dc_field(default_factory=list)
     end_line: int = 0
+    # Canonical access modifier — same values as ClassInfo.visibility.
+    visibility: str = ""
 
     @property
     def text(self) -> str:
@@ -122,6 +150,8 @@ class FieldInfo:
     # field/property declaration excluding any initialiser body.
     sig_tokens: list = dc_field(default_factory=list)
     end_line: int = 0
+    # Canonical access modifier — same values as ClassInfo.visibility.
+    visibility: str = ""
 
     @property
     def text(self) -> str:

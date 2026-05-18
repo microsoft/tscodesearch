@@ -106,7 +106,7 @@ def _get_query_module():
 
 def _run_query(mode: str, pattern: str, files: list[Path],
                include_body: bool = False, symbol_kind: str = "",
-               uses_kind: str = "") -> list:
+               uses_kind: str = "", visibility: str = "") -> list:
     _q = _get_query_module()
     results = []
     for path in files:
@@ -120,7 +120,8 @@ def _run_query(mode: str, pattern: str, files: list[Path],
         matches = _q.query_file(src_bytes, ext, mode, pattern,
                                 include_body=include_body,
                                 symbol_kind=symbol_kind,
-                                uses_kind=uses_kind)
+                                uses_kind=uses_kind,
+                                visibility=visibility)
         if matches:
             results.append({"file": str(native), "matches": matches})
     return results
@@ -484,6 +485,7 @@ class _Handler(BaseHTTPRequestHandler):
             include_body = bool(body.get("include_body", False))
             symbol_kind  = str(body.get("symbol_kind", "") or "")
             uses_kind    = str(body.get("uses_kind", "") or "")
+            visibility   = str(body.get("visibility", "") or "")
             exclude_path = str(body.get("exclude_path", "") or "")
 
             if mode not in _EXT_TO_TS_AND_AST:
@@ -556,7 +558,8 @@ class _Handler(BaseHTTPRequestHandler):
 
             ast_results = _run_query(ast_mode, pattern, file_list,
                                      include_body=include_body,
-                                     symbol_kind=symbol_kind, uses_kind=uses_kind)
+                                     symbol_kind=symbol_kind, uses_kind=uses_kind,
+                                     visibility=visibility)
 
             response_hits = []
             for ast_item in ast_results:

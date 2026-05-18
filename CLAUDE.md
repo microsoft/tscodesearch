@@ -146,6 +146,8 @@ There is **no longer a WSL or indexserver venv** — Tantivy runs in-process in 
 
 ## Tool selection guide
 
+MCP tools are invoked with the full namespaced name `mcp__tscodesearch__<name>` (e.g. `mcp__tscodesearch__query_codebase`). Shortening to `mcp__tscodesearch` returns "No such tool available" — the suffix is required.
+
 | Goal | Tool |
 |------|------|
 | Exact line-level results across the codebase | `query_codebase` |
@@ -163,7 +165,7 @@ The daemon ignores any caller-supplied `query_by`/`weights` for `/query-codebase
 |------|---------------------|-------|
 | `declarations` (default) | `class_names`, `method_names`, `path_tokens` | [T1] — narrowed by `symbol_kind`: type kinds → `class_names,path_tokens`; member kinds → `method_names,path_tokens` |
 | `implements` | `base_types`, `class_names`, `path_tokens` | [T1] |
-| `calls` | `call_sites`, `path_tokens` | [T1] |
+| `calls` | `call_sites`, `qualified_calls`, `path_tokens` | [T1] — bare `Save` hits `call_sites`; qualified `IRepository.Save` / `Foo.Save` hits `qualified_calls` |
 | `uses` (default) | `type_refs`, `cast_types`, `path_tokens` | [T2] — narrowed by `uses_kind` (see below) |
 | `uses` `uses_kind=field` | `field_types`, `path_tokens` | [T1] |
 | `uses` `uses_kind=param` | `param_types`, `path_tokens` | [T1] |
@@ -194,11 +196,13 @@ Only a small set of fields is `stored=True` (retrievable from the index at searc
 | `path_segments` | Cumulative ancestor folders for the `sub=` filter (`["services", "services/billing"]`). |
 | `mtime` | Read by the verifier to diff fs vs. index. |
 
-Every other text field — `class_names`, `method_names`, `base_types`, `field_types`, `local_types`, `param_types`, `return_types`, `cast_types`, `type_refs`, `call_sites`, `member_accesses`, `attr_names`, `imports`, `namespace`, `tokens`, `path_tokens`, `member_sig_tokens` — is `stored=False`. The fields are indexed for search but never read back from the index. The daemon's pipeline pre-filters with Tantivy then runs tree-sitter on the candidate files, and the AST output is what carries line-level results all the way to the caller.
+Every other text field — `class_names`, `method_names`, `base_types`, `field_types`, `local_types`, `param_types`, `return_types`, `cast_types`, `type_refs`, `call_sites`, `qualified_calls`, `member_accesses`, `attr_names`, `imports`, `namespace`, `tokens`, `path_tokens`, `member_sig_tokens` — is `stored=False`. The fields are indexed for search but never read back from the index. The daemon's pipeline pre-filters with Tantivy then runs tree-sitter on the candidate files, and the AST output is what carries line-level results all the way to the caller.
 
 `path_tokens` collects every directory name plus the filename, the filename stem, and the extension for one file — so a search for `billing` finds every file under any `billing/` directory at any depth, and a search for `Foo` matches `Foo.cs`. `namespace` is a multi-value field; the indexer splits on `.` for C#/Python/Java/JS (other languages can return a pre-split list from their extractor). `member_sig_tokens` is every identifier appearing in any member signature — attribute names, parameter names, generic args, default-value identifiers — collected by each language's AST extractor walking the member node and skipping the body. The legacy `member_sigs` (full signature strings) field is gone; the structured fields (`method_names`, `return_types`, `param_types`, `class_names`) plus `member_sig_tokens` cover the same searches.
 
 `tokens` is the per-file deduped bag of every identifier — identifiers inside string literals, char literals, and comments are excluded.
+
+`qualified_calls` carries `Type.Method` tokens for call sites whose receiver type is *syntactically obvious*: PascalCase identifier receivers (`Foo.Save()` → `Foo.Save` — captures both static class calls and PascalCase locals literally) and receivers whose declared/inferred type was pinned by the per-file var-type map (`repo.Save()` where `repo: IRepository` → `IRepository.Save`). The map is method-scoped and conflict-suppressing: a name with two distinct types in one method's scope (e.g. shadowed across `if`/`else` branches) emits no qualified form for that call. Cases the map *doesn't* resolve — `var x = GetThing()`, generic inference, LINQ lambdas without typed params — leave the qualified form absent; the bare name in `call_sites` still finds the call. Agents that know the receiver's type query the qualified form for precision; agents that don't fall back to the bare method name.
 
 ## tree-sitter query modes
 
@@ -215,7 +219,7 @@ Every other text field — `class_names`, `method_names`, `base_types`, `field_t
 | `declarations` | NAME | The declaration(s) of NAME (narrow with `symbol_kind`) | all |
 | `body` | NAME | Full source of NAME's declaration | C# only |
 | `at` | LINE:COL | Deepest AST node at position + enclosing scope chain | C# only |
-| `calls` | METHOD | Call sites of METHOD (`"Repo.Save"` to restrict by receiver). Pass a METHOD name only — a variable/receiver name silently returns empty; use `all_refs` on the variable for that. | all |
+| `calls` | METHOD | Call sites of METHOD. Qualify with `Type.Method` to restrict by receiver — the qualifier matches both the literal receiver text (`Foo.Save()`) **and** any receiver whose declared/inferred type resolves to that name via the method-scoped var-type map (`store.Save()` where `store: IRepository` matches `IRepository.Save`). When the receiver's type is conflicted in its scope, the qualified match is skipped — the bare name still finds the call. Pass a METHOD name only — a variable/receiver name silently returns empty; use `all_refs` on the variable for that. | all |
 | `implements` | TYPE | Types that inherit/implement TYPE | all except SQL |
 | `uses` | TYPE | Type references; narrow with `uses_kind` (`field`/`param`/`return`/`cast`/`base`/`locals`) | C# only |
 | `casts` | TYPE | `(TYPE)expr` / `as TYPE` sites | C# only |
@@ -223,6 +227,9 @@ Every other text field — `class_names`, `method_names`, `base_types`, `field_t
 | `accesses_of` | MEMBER | Access sites of property/field by name (`"Order.Status"` restricts) | C# only |
 | `accesses_on` | TYPE | `.Member` accesses on locals/params/fields typed as TYPE (plus `new T { … }` and `with` mutations). Returns nothing when the variable is only assigned, returned, or forwarded as an argument — no `.Member` exists. Fall back to `all_refs` on the variable name. | C# only |
 | `all_refs` | NAME | Every identifier occurrence (broadest — AST-only, skips strings/comments). For SQL this is a plain substring scan over lines. | all |
+| `var_type` | NAME | For each occurrence of NAME, report the resolved type from the method-scoped var-type map, or `(unresolved)` / `(conflicting)` when the resolver can't pin it down. Saves an `at LINE:COL` round-trip when you just want the type. | C# only |
+
+**Visibility filter (declaration modes).** `declarations`, `classes`, `methods`, `fields` accept `visibility="public,internal,protected,private"` (comma-separated, any subset). The filter is applied AST-side per declaration using the same defaults the indexer uses: top-level types default to `internal`, nested types to `private`, interface members to `public`, enum members to `public`, class/struct/record members to `private`. Compound modifiers collapse to their dominant role (`protected internal` → `protected`, `private protected` → `private`). Languages other than C# currently don't capture visibility — passing the filter against them returns nothing rather than over-matching.
 
 ---
 

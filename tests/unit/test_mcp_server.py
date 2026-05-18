@@ -484,9 +484,12 @@ class TestQueryCodebaseTier2(unittest.TestCase):
         assert "(3 hits)" in result
         # No grep-style line:content body
         assert "src/F0.cs:1:" not in result
-        # Suggestion to drill into a single file
+        # Suggestion to drill into a single file: the file= argument uses the
+        # bare relative path (no $SRC_ROOT/ placeholder — the tool accepts
+        # relative paths directly).
         assert "query_single_file" in result
-        assert 'file="$SRC_ROOT/' in result
+        assert 'file="src/F0.cs"' in result
+        assert '$SRC_ROOT' not in result
 
     def test_below_threshold_is_tier3_not_tier2(self):
         """19 files → tier 3 (per-line content shown)."""
@@ -573,10 +576,11 @@ class TestQueryCodebaseTier3(unittest.TestCase):
         # Lines 11-25 absent
         for i in range(11, 26):
             assert f"src/Big.cs:{i}:" not in result
-        # Per-file suggestion appended
+        # Per-file suggestion appended — uses bare relative path, not the
+        # legacy $SRC_ROOT/ placeholder.
         assert "25 total hits" in result
         assert "query_single_file" in result
-        assert 'file="$SRC_ROOT/src/Big.cs"' in result
+        assert 'file="src/Big.cs"' in result
 
     def test_no_suggestion_when_under_cap(self):
         """File with <=10 hits shouldn't trigger a per-file suggestion."""

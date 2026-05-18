@@ -70,7 +70,8 @@ ALL_EXTS = set(_EXT_TO_QUERY_BYTES.keys())
 
 
 def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
-               include_body=False, symbol_kind=None, uses_kind=None, **kwargs):
+               include_body=False, symbol_kind=None, uses_kind=None,
+               visibility=None, **kwargs):
     """Query src_bytes using the given mode.
 
     Returns ``list[{"line": N, "text": "..."}]`` on success.
@@ -79,6 +80,10 @@ def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
     the mode isn't supported for that language — explicit errors beat silent
     empties for tool-using agents. Use ``mode='capabilities'`` to ask which
     modes a given file supports.
+
+    ``visibility`` is an optional comma-separated filter for declaration
+    modes (``classes``/``methods``/``fields``/``declarations``). Languages
+    that don't capture visibility silently ignore it.
     """
     fn = _EXT_TO_QUERY_BYTES.get(ext)
     if fn is None:
@@ -87,7 +92,8 @@ def query_file(src_bytes: bytes, ext: str, mode: str, mode_arg: str = "",
             f"Supported extensions: {', '.join(sorted(ALL_EXTS))}"
         )
     return fn(src_bytes, mode, mode_arg,
-              include_body=include_body, symbol_kind=symbol_kind, uses_kind=uses_kind, **kwargs)
+              include_body=include_body, symbol_kind=symbol_kind,
+              uses_kind=uses_kind, visibility=visibility, **kwargs)
 
 
 def describe_file(src_bytes: bytes, ext: str) -> FileDescription:
