@@ -576,11 +576,12 @@ class TestQueryCodebaseTier3(unittest.TestCase):
         # Lines 11-25 absent
         for i in range(11, 26):
             assert f"src/Big.cs:{i}:" not in result
-        # Per-file suggestion appended -- uses bare relative path, not the
-        # legacy $SRC_ROOT/ placeholder.
-        assert "25 total hits" in result
+        # Per-file suggestion appended in the compact ``[+K capped] path`` form.
+        # 25 hits - 10 shown = 15 capped.
+        assert "[+15 capped] src/Big.cs" in result
+        # The general "issue query_single_file(...)" reminder is at the top
+        # of the suggestion block (one line shared across all capped files).
         assert "query_single_file" in result
-        assert 'file="src/Big.cs"' in result
 
     def test_no_suggestion_when_under_cap(self):
         """File with <=10 hits shouldn't trigger a per-file suggestion."""
@@ -631,9 +632,10 @@ class TestQueryCodebaseTier3(unittest.TestCase):
         # Small.cs shown in full
         assert "src/Small.cs:1: hit 1" in result
         assert "src/Small.cs:2: hit 2" in result
-        # Suggestion only for Big.cs
-        assert "src/Big.cs"   in result
-        assert "15 total hits" in result
+        # Suggestion only for Big.cs: 15 hits - 10 shown = 5 capped.
+        assert "[+5 capped] src/Big.cs" in result
+        # Small.cs is fully shown so it should NOT appear in the capped list.
+        assert "capped] src/Small.cs" not in result
 
 
 # -- _sync_state ---------------------------------------------------------------

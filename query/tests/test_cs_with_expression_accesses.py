@@ -42,7 +42,15 @@ def _lns(results):
     return {ln for ln, _ in results}
 
 def _members(results):
-    return {txt.split("  <-")[0].lstrip(".") for _, txt in results}
+    # Same logic as the object-initializer test: extract the member token
+    # between the last ``.`` and the ``  <-`` source separator. Tolerates
+    # an optional leading ``[in TypeName.MemberName] `` scope prefix.
+    out = set()
+    for _, txt in results:
+        before = txt.split("  <-", 1)[0]
+        if "." in before:
+            out.add(before.rsplit(".", 1)[1].strip())
+    return out
 
 def _line_no(fragment):
     for i, ln in enumerate(_LINES):
@@ -74,7 +82,7 @@ class TestWithExpressionAccesses(unittest.TestCase):
         r = self._accesses("Coord")
         line = _line_no("X = 0, Y = 0")
         line_results = [(ln, txt) for ln, txt in r if ln == line]
-        names = {txt.split("  <-")[0].lstrip(".") for _, txt in line_results}
+        names = _members(line_results)
         assert "X" in names and "Y" in names, \
             f"Both X and Y must appear on same-line with result: {line_results}"
 

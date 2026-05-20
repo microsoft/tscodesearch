@@ -184,6 +184,9 @@ def query_codebase(
     symbol_kind: str = "",
     uses_kind: str = "",
     visibility: str = "",
+    head_lines: int = 0,
+    enclosing_method: str = "",
+    enclosing_class: str = "",
     exclude_path: str = "",
 ) -> str:
     """Index pre-filter + tree-sitter AST. Returns one of three response shapes
@@ -273,6 +276,19 @@ Args:
                 nothing when this filter is set. (C# captures explicit
                 modifiers plus interface-public / enum-public / nested
                 type defaults.)
+  head_lines:   For `body` and `declarations include_body=True` -- truncate
+                each emitted body to the first N source lines (signature +
+                body together), with a `... +K more lines` tail marker.
+                Default 0 = no truncation. Useful when scanning many bodies
+                at once.
+  enclosing_method:
+                For pattern modes (calls / uses / casts / accesses_of /
+                accesses_on / all_refs) -- only keep hits inside a member
+                with this exact name. Combine with `enclosing_class=` to
+                pinpoint a specific call-site context. (C# only.)
+  enclosing_class:
+                Same as above, narrowed to a type by name. Composes with
+                `enclosing_method=` as a logical AND. (C# only.)
   exclude_path: Comma-separated list of folder paths to exclude from results.
                 Each value is matched as an exact ancestor folder, not a glob --
                 wildcards are not supported. Behavior:
@@ -290,21 +306,25 @@ Examples:
   query_codebase("uses", "IDataStore", uses_kind="param", sub="services")
   query_codebase("implements", "IRepository")
   query_codebase("declarations", "SaveChanges", symbol_kind="method")
+  query_codebase("body", "SaveChanges", symbol_kind="method")  # full source of every match
+  query_codebase("var_type", "store", sub="services")  # resolved type of every ``store`` occurrence
   query_codebase("calls", "SaveChanges", sub="services,vendor")
   query_codebase("calls", "SaveChanges", exclude_path="tests,generated")
   query_codebase("uses", "IRepo", sub="services", exclude_path="services/legacy")"""
     # File-targeted modes don't make sense for a codebase-wide search.
-    # `body`/`at`/`params`/`var_type` need an explicit file; listing modes
+    # `at`/`params` need an explicit file; listing modes
     # (methods/fields/classes/imports/capabilities) only describe a single
     # file's structure. Catch them here so the agent sees an actionable
     # redirect instead of the daemon's generic "unknown mode" error.
+    # ``body`` and ``var_type`` work codebase-wide now (index pre-filter
+    # + per-file AST), so they're no longer in this set.
     _FILE_ONLY = {
         "methods", "fields", "classes", "imports", "capabilities",
-        "body", "at", "params", "var_type",
+        "at", "params",
     }
     m = mode.lower().strip().replace("-", "_")
     if m in _FILE_ONLY:
-        if m in ("body", "at", "params", "var_type"):
+        if m in ("at", "params"):
             why = "needs a specific file"
             example_arg = pattern or ('"SaveChanges"' if m != "at" else '"42:10"')
             example = f'  query_single_file("{m}", {example_arg}, file="path/to/File.cs")'
@@ -321,6 +341,9 @@ Examples:
             "include_body": include_body,
             "symbol_kind": symbol_kind or "", "uses_kind": uses_kind or "",
             "visibility": visibility or "",
+            "head_lines": int(head_lines) if head_lines else 0,
+            "enclosing_method": enclosing_method or "",
+            "enclosing_class": enclosing_class or "",
             "exclude_path": exclude_path or "",
         })
     except Exception as e:
@@ -429,6 +452,12 @@ Examples:
             args.append(f'uses_kind="{uses_kind}"')
         if visibility:
             args.append(f'visibility="{visibility}"')
+        if head_lines:
+            args.append(f'head_lines={int(head_lines)}')
+        if enclosing_method:
+            args.append(f'enclosing_method="{enclosing_method}"')
+        if enclosing_class:
+            args.append(f'enclosing_class="{enclosing_class}"')
         return "query_single_file(" + ", ".join(args) + ")"
 
     # Tier 2 -- many files: filenames + counts only.
@@ -459,11 +488,19 @@ Examples:
 
     output = "\n".join(out_lines)
     if truncated_files:
-        notes = [f"\n\n{len(truncated_files)} file(s) had more than "
-                 f"{_PER_FILE_DETAIL_LINES} hits -- showing first "
-                 f"{_PER_FILE_DETAIL_LINES} of each. To see all hits in a file:"]
+        # Compact form: one short line per capped file showing how many
+        # extra hits are available. The agent already knows the mode and
+        # pattern; spelling out the full ``query_single_file(...)`` call
+        # for every capped file would burn ~100 chars per file in pure
+        # boilerplate. ``[+K capped] path`` is enough -- the agent can
+        # reissue a query_single_file call when it wants the rest.
+        notes = [f"\n\n{len(truncated_files)} file(s) capped at "
+                 f"{_PER_FILE_DETAIL_LINES} hits each. Issue "
+                 f"query_single_file(\"{m}\", \"{pattern}\", file=...) "
+                 f"to see all hits."]
         for rel, total in truncated_files:
-            notes.append(f"  {_qsf_call(rel)}  # {total} total hits")
+            extra = total - _PER_FILE_DETAIL_LINES
+            notes.append(f"  [+{extra} capped] {rel}")
         output += "\n".join(notes)
 
     output, truncated = _truncate(output)
@@ -485,6 +522,9 @@ def query_single_file(
     symbol_kind: str = "",
     uses_kind: str = "",
     visibility: str = "",
+    head_lines: int = 0,
+    enclosing_method: str = "",
+    enclosing_class: str = "",
     head_limit: int = 250,
     offset: int = 0,
 ) -> str:
@@ -515,6 +555,14 @@ Modes (canonical, same name across languages):
     calls METHOD        Call sites of METHOD. Pass a METHOD name, not a
                         receiver -- `obj.Foo()` is matched by calls("Foo")
                         not calls("obj"); for variable usage use all_refs.
+    caller_of METHOD    Like ``calls``, but groups results by the enclosing
+                        caller -- one row per ``(TypeName.MemberName)``
+                        with a count of how many call sites it contains.
+                        (C# only.)
+    callee_of METHOD    The inverse: walk the body of the method named
+                        METHOD and emit one row per distinct callee with
+                        invocation counts. Constructor calls show as
+                        ``T (N invocations, ctor)``. (C# only.)
     implements TYPE     Types that inherit/implement TYPE.
     uses TYPE           Type references. Omit `uses_kind` (or "all") for
                         the union of every role; narrow with `uses_kind`
@@ -570,6 +618,14 @@ Args:
                 language's defaults (interface members => public, nested
                 types => private, top-level types => internal); other
                 languages currently return nothing when this filter is set.
+  head_lines:   For `body` and `declarations include_body=True` -- truncate
+                each body to the first N source lines (signature + body
+                together) with a `... +K more lines` tail marker.
+                Default 0 = no truncation.
+  enclosing_method / enclosing_class:
+                For pattern modes -- restrict hits to those inside a
+                member / type with the given name. Composes with both
+                filters as a logical AND. (C# only.)
   head_limit:   Max results to return (default 250). Use with offset to page.
   offset:       Skip first N results before applying head_limit (default 0).
 
@@ -613,6 +669,9 @@ prefix is still accepted for back-compat but no longer required):
             symbol_kind=symbol_kind or None,
             uses_kind=uses_kind or None,
             visibility=visibility or None,
+            head_lines=int(head_lines) if head_lines else None,
+            enclosing_method=enclosing_method or None,
+            enclosing_class=enclosing_class or None,
         )
     except ValueError as e:
         # Unknown extension or unsupported mode -- propagate the helpful

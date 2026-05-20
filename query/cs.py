@@ -227,6 +227,78 @@ def _cls_prefix(node, src) -> str:
     return f"[in {cls}] " if cls else ""
 
 
+def _member_decl_name_node(member_node):
+    """Return the name node for a member declaration, or ``None``.
+
+    Most member kinds expose their name via ``child_by_field_name("name")``;
+    ``field_declaration`` and ``event_field_declaration`` carry the name in
+    a nested ``variable_declarator`` and need the unwrap. When multiple
+    declarators share one ``int a, b, c`` field, the first is returned --
+    the position-aware variant (``_field_declarator_name``) lives below
+    and is used by ``q_at``.
+    """
+    nm = member_node.child_by_field_name("name")
+    if nm is not None:
+        return nm
+    if member_node.type in ("field_declaration", "event_field_declaration"):
+        vd = next((c for c in member_node.children
+                   if c.type == "variable_declaration"), None)
+        if vd is not None:
+            decl = next((c for c in vd.children
+                         if c.type == "variable_declarator"), None)
+            if decl is not None:
+                return decl.child_by_field_name("name")
+    return None
+
+
+def _enclosing_member_name(node, src) -> str:
+    """Walk up to find the enclosing member declaration and return its name.
+
+    Returns ``""`` when the node is at type-level (e.g. a static initialiser
+    sitting outside any member) or at namespace level.
+    """
+    p = node.parent
+    while p is not None:
+        if p.type in _MEMBER_DECL_NODES:
+            name_node = _member_decl_name_node(p)
+            return _text(name_node, src).strip() if name_node is not None else ""
+        p = p.parent
+    return ""
+
+
+def _scope_prefix(node, src) -> str:
+    """Return ``'[in TypeName.MemberName] '`` for a node inside a member,
+    ``'[in TypeName] '`` for a node at type-level, or ``''`` at namespace
+    level. Used to enrich AST hits in pattern modes (``calls`` / ``uses`` /
+    ``accesses_of`` / ``accesses_on`` / ``casts``) with the enclosing scope
+    so the agent doesn't have to issue a follow-up ``at LINE:COL`` query.
+    """
+    type_name   = _enclosing_type_name(node, src)
+    member_name = _enclosing_member_name(node, src)
+    if type_name and member_name:
+        return f"[in {type_name}.{member_name}] "
+    if type_name:
+        return f"[in {type_name}] "
+    return ""
+
+
+def _passes_enclosing_filter(node, src,
+                             enclosing_method: str | None,
+                             enclosing_class: str | None) -> bool:
+    """True if ``node`` lives inside a member named ``enclosing_method`` and
+    a type named ``enclosing_class``. Either filter can be ``None`` / empty
+    to skip that dimension. Used to narrow pattern-mode hits to a specific
+    call-site context, e.g. ``calls("Save", enclosing_method="WriteBack")``.
+    """
+    if enclosing_method:
+        if _enclosing_member_name(node, src) != enclosing_method:
+            return False
+    if enclosing_class:
+        if _enclosing_type_name(node, src) != enclosing_class:
+            return False
+    return True
+
+
 _LITERAL_NODES = {
     "comment", "string_literal", "verbatim_string_literal",
     "interpolated_string_expression", "character_literal",
@@ -1340,28 +1412,33 @@ def q_fields(src, tree, lines, visibility=None):
             if _visibility_keep(getattr(_r, "visibility", ""), allowed)]
 
 
-def q_calls(src, tree, lines, method_name):
+def _iter_call_sites(tree, src, method_name):
+    """Yield ``(invocation_node, name_node)`` for every call site of
+    ``method_name`` in the tree.
+
+    ``method_name`` may be qualified as ``Type.Method`` -- the qualifier
+    matches the receiver either by literal text or by resolved type via
+    the per-method var-type map. When no qualifier is supplied,
+    ``new T(...)`` object-creation expressions for a type named
+    ``method_name`` are also yielded.
+
+    Shared by ``q_calls`` and ``q_caller_of`` so both modes have
+    identical matching semantics.
+    """
     if "." in method_name:
         qualifier, bare_name = method_name.rsplit(".", 1)
     else:
         qualifier, bare_name = None, method_name
 
-    # Build the var-type map lazily -- only when a qualified pattern is
-    # supplied. Bare-method searches don't need receiver resolution.
     var_map = _build_var_type_map(tree, src) if qualifier else None
+    _qualifier_str = qualifier or ""
 
-    _qualifier_str: str = qualifier or ""
-
-    def _qualifier_matches(expr_node) -> bool:
-        """True if ``expr_node`` (the receiver of a member access) matches
-        ``qualifier`` either by literal text or by resolved type."""
+    def _qualifier_matches(expr_node):
         if expr_node is None or not _qualifier_str:
             return False
         expr_txt = _text(expr_node, src).strip()
         if expr_txt == _qualifier_str or expr_txt.endswith("." + _qualifier_str):
             return True
-        # Resolved-type fallback: look up an identifier receiver in the
-        # method-scoped var-type map and compare its unqualified type name.
         if expr_node.type == "identifier" and var_map is not None:
             rt = var_map.resolve_at(expr_txt, expr_node)
             if isinstance(rt, str) and rt:
@@ -1370,27 +1447,6 @@ def q_calls(src, tree, lines, method_name):
                     return True
         return False
 
-    def _report(node, name_node):
-        """Build a result tuple pinpointing the method-name token.
-
-        Reports the line of ``name_node`` (where the matched identifier
-        actually appears) rather than the start of the surrounding
-        invocation -- for chained calls like ``a.B().Method(...)`` that
-        means the result lands on the line of ``Method``, not on
-        whichever line the chain begins. Source text is the single line
-        containing the name, not the multi-line invocation node.
-        """
-        anchor = name_node if name_node is not None else node
-        row = anchor.start_point[0]
-        line_text = lines[row].strip() if 0 <= row < len(lines) else ""
-        if not line_text:
-            # Fall back to a truncated render of the node when the source
-            # row is empty/missing (defensive -- shouldn't happen for real
-            # call sites).
-            line_text = _truncate_raw(node, src)
-        return (_line(anchor), line_text)
-
-    results = []
     for node in _find_all(tree.root_node, lambda n: n.type == "invocation_expression"):
         if _in_literal(node):
             continue
@@ -1429,8 +1485,8 @@ def q_calls(src, tree, lines, method_name):
                 if nn:
                     matched = _strip_generic(_text(nn, src))
                     match_name_node = nn
-        if matched == bare_name:
-            results.append(_report(node, match_name_node))
+        if matched == bare_name and match_name_node is not None:
+            yield node, match_name_node
 
     if qualifier is None:
         for node in _find_all(tree.root_node, lambda n: n.type == "object_creation_expression"):
@@ -1444,11 +1500,153 @@ def q_calls(src, tree, lines, method_name):
                 continue
             if _strip_generic(_text(idents[-1], src)) == bare_name:
                 # ``new T(...)`` -- anchor at the type name token.
-                results.append(_report(node, idents[-1]))
+                yield node, idents[-1]
+
+
+def q_calls(src, tree, lines, method_name,
+            enclosing_method=None, enclosing_class=None):
+    """Reports the line of the matched-name token (e.g. ``Method`` in
+    ``a.B().Method(...)`` lands on ``Method``'s line, not the start of
+    the chain). Source text is the single line containing that token,
+    prefixed with the enclosing scope chain so agents don't need a
+    follow-up ``at LINE:COL`` query.
+    """
+    results = []
+    for node, name_node in _iter_call_sites(tree, src, method_name):
+        if not _passes_enclosing_filter(node, src,
+                                        enclosing_method, enclosing_class):
+            continue
+        row = name_node.start_point[0]
+        line_text = lines[row].strip() if 0 <= row < len(lines) else ""
+        if not line_text:
+            # Defensive fallback for empty/missing rows -- shouldn't
+            # happen for real call sites.
+            line_text = _truncate_raw(node, src)
+        results.append((_line(name_node),
+                        f"{_scope_prefix(node, src)}{line_text}"))
     return results
 
 
-def q_accesses_of(src, tree, lines, member_name):
+def q_caller_of(src, tree, lines, method_name):
+    """Group ``calls`` hits by the enclosing method.
+
+    Where ``calls METHOD`` returns one row per call site (potentially many
+    inside the same caller), ``caller_of METHOD`` collapses those into one
+    row per (TypeName.MemberName) caller, with a count of how many call
+    sites that caller contains. Useful for impact analysis ("who depends
+    on this") without the per-site noise.
+
+    Result text per caller: ``[in TypeName.MemberName]  (N call sites)``.
+    Rows are emitted at the line of the *first* call site so the caller
+    line ordering matches source ordering.
+    """
+    # Walk the AST directly via the shared call-site iterator -- the
+    # caller key comes straight from _scope_prefix's components, no
+    # text-format coupling to q_calls' output.
+    by_caller: dict[str, list[int]] = {}
+    for node, name_node in _iter_call_sites(tree, src, method_name):
+        type_name   = _enclosing_type_name(node, src)
+        member_name = _enclosing_member_name(node, src)
+        if type_name and member_name:
+            caller = f"{type_name}.{member_name}"
+        elif type_name:
+            caller = type_name
+        else:
+            caller = "<top-level>"
+        by_caller.setdefault(caller, []).append(_line(name_node))
+    results = []
+    for caller, line_nos in by_caller.items():
+        first_line = min(line_nos)
+        n = len(line_nos)
+        plural = "site" if n == 1 else "sites"
+        results.append((first_line, f"[in {caller}]  ({n} call {plural})"))
+    results.sort(key=lambda x: x[0])
+    return results
+
+
+def q_callee_of(src, tree, lines, method_name):
+    """List every callee invoked inside the method named ``method_name``.
+
+    The inverse of ``caller_of``: given a method, walk its body and return
+    one row per distinct callee name, with a count of how many times that
+    callee is invoked inside this method. Useful for "what does this
+    method depend on" / "what could be slow here" analysis without having
+    to read the full body.
+
+    Result text per callee: ``Callee  (N invocations)``. Constructor calls
+    (``new T()``) are reported as ``T  (N invocations, ctor)``.
+    """
+    # Find every method-shaped declaration with the given name.
+    target_types = {"method_declaration", "constructor_declaration",
+                    "local_function_statement"}
+    matches: list = []
+    for node in _find_all(tree.root_node, lambda n: n.type in target_types):
+        nm = node.child_by_field_name("name")
+        if nm and _text(nm, src).strip() == method_name:
+            matches.append(node)
+    if not matches:
+        return []
+
+    results = []
+    for method_node in matches:
+        body = method_node.child_by_field_name("body")
+        if body is None:
+            continue
+        counts: dict[tuple[str, bool], int] = {}
+        first_seen: dict[tuple[str, bool], int] = {}
+        for inv in _find_all(body, lambda n: n.type == "invocation_expression"):
+            if _in_literal(inv):
+                continue
+            fn = inv.child_by_field_name("function")
+            if fn is None:
+                continue
+            callee_name = ""
+            if fn.type == "member_access_expression":
+                nm = fn.child_by_field_name("name")
+                if nm:
+                    callee_name = _strip_generic(_text(nm, src))
+            elif fn.type in ("identifier", "generic_name"):
+                callee_name = _strip_generic(_text(fn, src))
+            elif fn.type == "conditional_access_expression":
+                binding = next((c for c in fn.children
+                                if c.type == "member_binding_expression"), None)
+                if binding:
+                    nm = binding.child_by_field_name("name")
+                    if nm:
+                        callee_name = _strip_generic(_text(nm, src))
+            if not callee_name:
+                continue
+            key = (callee_name, False)
+            counts[key] = counts.get(key, 0) + 1
+            first_seen.setdefault(key, _line(inv))
+        # Constructor calls -- ``new T(...)`` -- treated as callees of T.
+        for ctor in _find_all(body, lambda n: n.type == "object_creation_expression"):
+            if _in_literal(ctor):
+                continue
+            tn = ctor.child_by_field_name("type")
+            if tn is None:
+                continue
+            idents = _find_all(tn, lambda n: n.type == "identifier")
+            if not idents:
+                continue
+            callee_name = _strip_generic(_text(idents[-1], src))
+            key = (callee_name, True)
+            counts[key] = counts.get(key, 0) + 1
+            first_seen.setdefault(key, _line(ctor))
+        # Per-method anchor: emit each callee at its first-invocation line.
+        for (callee, is_ctor), n in counts.items():
+            anchor = first_seen[(callee, is_ctor)]
+            plural = "invocation" if n == 1 else "invocations"
+            suffix = ", ctor" if is_ctor else ""
+            results.append(
+                (anchor,
+                 f"[in {method_name}]  {callee}  ({n} {plural}{suffix})"))
+    results.sort(key=lambda x: x[0])
+    return results
+
+
+def q_accesses_of(src, tree, lines, member_name,
+                  enclosing_method=None, enclosing_class=None):
     if "." in member_name:
         qualifier, bare_name = member_name.rsplit(".", 1)
     else:
@@ -1456,6 +1654,11 @@ def q_accesses_of(src, tree, lines, member_name):
 
     results = []
     seen_rows = set()
+
+    def _emit(containing_node, text):
+        prefix = _scope_prefix(containing_node, src)
+        results.append((_line(containing_node),
+                        f"{prefix}{text}" if prefix else text))
 
     def _check_access(member_node, expr_node, containing_node):
         if not member_node:
@@ -1466,11 +1669,14 @@ def q_accesses_of(src, tree, lines, member_name):
             expr_txt = _text(expr_node, src).strip() if expr_node else ""
             if not (expr_txt == qualifier or expr_txt.endswith("." + qualifier)):
                 return
+        if not _passes_enclosing_filter(containing_node, src,
+                                        enclosing_method, enclosing_class):
+            return
         row = containing_node.start_point[0]
         if row in seen_rows:
             return
         seen_rows.add(row)
-        results.append((_line(containing_node), _truncate_raw(containing_node, src)))
+        _emit(containing_node, _truncate_raw(containing_node, src))
 
     for node in _find_all(tree.root_node, lambda n: n.type == "member_access_expression"):
         if _in_literal(node):
@@ -1494,11 +1700,14 @@ def q_accesses_of(src, tree, lines, member_name):
         obj_type = _unqualify(_text(type_node, src).strip()) if type_node else None
         if qualifier and obj_type != qualifier:
             continue
+        if not _passes_enclosing_filter(assign, src,
+                                        enclosing_method, enclosing_class):
+            continue
         row = assign.start_point[0]
         if row in seen_rows:
             continue
         seen_rows.add(row)
-        results.append((_line(assign), _truncate_raw(assign, src)))
+        _emit(assign, _truncate_raw(assign, src))
 
     # With-expression member mutations -- w with { Value = 10 }
     for wi, src_ident, prop in _iter_with_members(tree, src):
@@ -1506,11 +1715,14 @@ def q_accesses_of(src, tree, lines, member_name):
             continue
         if qualifier and _text(src_ident, src).strip() != qualifier:
             continue
+        if not _passes_enclosing_filter(wi, src,
+                                        enclosing_method, enclosing_class):
+            continue
         row = wi.start_point[0]
         if row in seen_rows:
             continue
         seen_rows.add(row)
-        results.append((_line(wi), _truncate_raw(wi, src)))
+        _emit(wi, _truncate_raw(wi, src))
 
     results.sort(key=lambda x: x[0])
     return results
@@ -1534,7 +1746,8 @@ def q_implements(src, tree, lines, type_name):
     return results
 
 
-def _q_uses_all(src, tree, lines, type_name):
+def _q_uses_all(src, tree, lines, type_name,
+                enclosing_method=None, enclosing_class=None):
     results  = []
     seen_rows = set()
 
@@ -1568,6 +1781,9 @@ def _q_uses_all(src, tree, lines, type_name):
             continue
         if _is_invocation_target(node):
             continue
+        if not _passes_enclosing_filter(node, src,
+                                        enclosing_method, enclosing_class):
+            continue
         row = node.start_point[0]
         if row in seen_rows:
             continue
@@ -1586,10 +1802,17 @@ def q_usings(src, tree, lines):
 
 
 def q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None,
-                   visibility=None):
+                   visibility=None, head_lines=None):
     kind_nodes = SYMBOL_KIND_TO_NODES.get((symbol_kind or "").lower().strip())
     target_nodes = kind_nodes if kind_nodes is not None else (_TYPE_DECL_NODES | _MEMBER_DECL_NODES)
     allowed = _parse_visibility_filter(visibility)
+    # head_lines normalisation: None / 0 / negative means "no truncation".
+    try:
+        head_n = int(head_lines) if head_lines is not None else None
+    except (TypeError, ValueError):
+        head_n = None
+    if head_n is not None and head_n <= 0:
+        head_n = None
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in target_nodes):
         name_node = node.child_by_field_name("name")
@@ -1611,9 +1834,19 @@ def q_declarations(src, tree, lines, name, include_body=False, symbol_kind=None,
         body_node = node.child_by_field_name("body")
         if body_node and not include_body:
             sig_end_row = body_node.start_point[0]
-            content = "\n".join(lines[start_row:sig_end_row]).rstrip()
+            content_lines = lines[start_row:sig_end_row]
+            content = "\n".join(content_lines).rstrip()
         else:
-            content = "\n".join(lines[start_row:end_row + 1])
+            content_lines = lines[start_row:end_row + 1]
+            content = "\n".join(content_lines)
+        # head_lines truncation: clip the content (signature + body together)
+        # to the first N source lines, appending a "... +K more lines" tail
+        # marker so the agent knows there's more to fetch if it wants.
+        if head_n is not None and head_n < len(content_lines):
+            kept = content_lines[:head_n]
+            remaining = len(content_lines) - head_n
+            content = "\n".join(kept).rstrip()
+            content = f"{content}\n... +{remaining} more lines"
         header = f"[{kind}] {name} {start_row + 1}-{end_row + 1}:"
         results.append((_line(node), f"{header}\n{content}"))
     return results
@@ -1740,15 +1973,21 @@ def q_at(src, tree, lines, position: str):
     return [(out_line, text)]
 
 
-def q_body(src, tree, lines, name, symbol_kind=None):
+def q_body(src, tree, lines, name, symbol_kind=None, head_lines=None):
     """Return the full source of every member declaration named ``name``.
 
     Sugar for ``q_declarations(..., include_body=True)`` with a single-name
     intent: the agent says "give me the source of SaveChanges" and gets the
     whole method block (or every overload, if more than one matches).
+
+    ``head_lines`` truncates each body to the first N source lines (header
+    line excluded; truncation indicator appended). Useful when scanning
+    many bodies at once and the signature plus the first few lines is
+    enough.
     """
     return q_declarations(src, tree, lines, name,
-                          include_body=True, symbol_kind=symbol_kind)
+                          include_body=True, symbol_kind=symbol_kind,
+                          head_lines=head_lines)
 
 
 def q_params(src, tree, lines, method_name):
@@ -1784,12 +2023,16 @@ def q_params(src, tree, lines, method_name):
     return results
 
 
-def _q_field_type(src, tree, lines, type_name):
+def _q_field_type(src, tree, lines, type_name,
+                  enclosing_method=None, enclosing_class=None):
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("field_declaration",
                                                "event_field_declaration",
                                                "property_declaration")):
+        if not _passes_enclosing_filter(node, src,
+                                        enclosing_method, enclosing_class):
+            continue
         if node.type in ("field_declaration", "event_field_declaration"):
             type_txt = _field_type(node, src)
             if type_name not in _type_names(type_txt):
@@ -1815,7 +2058,8 @@ def _q_field_type(src, tree, lines, type_name):
     return results
 
 
-def _q_param_type(src, tree, lines, type_name):
+def _q_param_type(src, tree, lines, type_name,
+                  enclosing_method=None, enclosing_class=None):
     results = []
     for mnode in _find_all(tree.root_node,
                            lambda n: n.type in ("method_declaration", "constructor_declaration",
@@ -1823,6 +2067,9 @@ def _q_param_type(src, tree, lines, type_name):
                                                 "lambda_expression")):
         params_node = mnode.child_by_field_name("parameters")
         if not params_node:
+            continue
+        if not _passes_enclosing_filter(mnode, src,
+                                        enclosing_method, enclosing_class):
             continue
         name_node = mnode.child_by_field_name("name")
         mname = _text(name_node, src).strip() if name_node else "<lambda>"
@@ -1843,13 +2090,17 @@ def _q_param_type(src, tree, lines, type_name):
     return results
 
 
-def _q_return_type(src, tree, lines, type_name):
+def _q_return_type(src, tree, lines, type_name,
+                   enclosing_method=None, enclosing_class=None):
     results = []
     for node in _find_all(tree.root_node,
                           lambda n: n.type in ("method_declaration",
                                                "constructor_declaration",
                                                "local_function_statement",
                                                "delegate_declaration")):
+        if not _passes_enclosing_filter(node, src,
+                                        enclosing_method, enclosing_class):
+            continue
         # method_declaration exposes its return type via "returns"; all other
         # supported node types use "type".
         if node.type == "method_declaration":
@@ -1875,20 +2126,27 @@ def _q_return_type(src, tree, lines, type_name):
     return results
 
 
-def _q_local_type(src, tree, lines, type_name):
+def _q_local_type(src, tree, lines, type_name,
+                  enclosing_method=None, enclosing_class=None):
     results = [
-        (_line(node), f"[local] {type_txt} {var_txt}  {_cls_prefix(node, src)}")
+        (_line(node), f"{_scope_prefix(node, src)}[local] {type_txt} {var_txt}")
         for node, type_txt, var_txt in _iter_all_locals(tree, src, type_name)
+        if _passes_enclosing_filter(node, src,
+                                    enclosing_method, enclosing_class)
     ]
     results.sort(key=lambda x: x[0])
     return results
 
 
-def _q_base_uses(src, tree, lines, type_name):
+def _q_base_uses(src, tree, lines, type_name,
+                 enclosing_method=None, enclosing_class=None):
     results = []
     for node in _find_all(tree.root_node, lambda n: n.type in _TYPE_DECL_NODES):
         bases = _base_type_names(node, src)
         if not any(type_name in _type_names(b) for b in bases):
+            continue
+        if not _passes_enclosing_filter(node, src,
+                                        enclosing_method, enclosing_class):
             continue
         name_node = node.child_by_field_name("name")
         if not name_node:
@@ -1902,35 +2160,55 @@ def _q_base_uses(src, tree, lines, type_name):
     return results
 
 
-def q_uses(src, tree, lines, type_name, uses_kind=None):
+def q_uses(src, tree, lines, type_name, uses_kind=None,
+           enclosing_method=None, enclosing_class=None):
+    """Type-reference query, narrowable by ``uses_kind``.
+
+    Each sub-helper applies the optional ``enclosing_method`` /
+    ``enclosing_class`` filter during its own walk -- there's no
+    post-pass. Note that for declaration-level kinds (``field``,
+    ``param``, ``return``, ``base``) the enclosing-method check runs
+    against the *declaration* node itself, which has no enclosing
+    method by definition, so passing ``enclosing_method`` against these
+    drops every row. Use ``locals`` / ``cast`` / ``all`` (or no
+    ``uses_kind``) when you want call-site context.
+    """
     k = (uses_kind or "all").lower().strip()
+    kw = {"enclosing_method": enclosing_method,
+          "enclosing_class":  enclosing_class}
     if k == "field":
-        return _q_field_type(src, tree, lines, type_name)
-    elif k == "param":
-        return _q_param_type(src, tree, lines, type_name)
-    elif k == "return":
-        return _q_return_type(src, tree, lines, type_name)
-    elif k == "cast":
-        return q_casts(src, tree, lines, type_name)
-    elif k == "base":
-        return _q_base_uses(src, tree, lines, type_name)
-    elif k == "locals":
-        return _q_local_type(src, tree, lines, type_name)
-    else:
-        return _q_uses_all(src, tree, lines, type_name)
+        return _q_field_type(src, tree, lines, type_name, **kw)
+    if k == "param":
+        return _q_param_type(src, tree, lines, type_name, **kw)
+    if k == "return":
+        return _q_return_type(src, tree, lines, type_name, **kw)
+    if k == "cast":
+        return q_casts(src, tree, lines, type_name, **kw)
+    if k == "base":
+        return _q_base_uses(src, tree, lines, type_name, **kw)
+    if k == "locals":
+        return _q_local_type(src, tree, lines, type_name, **kw)
+    return _q_uses_all(src, tree, lines, type_name, **kw)
 
 
-def q_casts(src, tree, lines, type_name):
-    results = [
-        (_line(node), lines[node.start_point[0]].strip()
-         if node.start_point[0] < len(lines) else "")
-        for node in _iter_cast_nodes(tree, src, type_name)
-    ]
+def q_casts(src, tree, lines, type_name,
+            enclosing_method=None, enclosing_class=None):
+    results = []
+    for node in _iter_cast_nodes(tree, src, type_name):
+        if not _passes_enclosing_filter(node, src,
+                                        enclosing_method, enclosing_class):
+            continue
+        row = node.start_point[0]
+        snippet = lines[row].strip() if row < len(lines) else ""
+        prefix = _scope_prefix(node, src)
+        results.append((_line(node),
+                        f"{prefix}{snippet}" if prefix else snippet))
     results.sort(key=lambda x: x[0])
     return results
 
 
-def q_accesses_on(src, tree, lines, type_name):
+def q_accesses_on(src, tree, lines, type_name,
+                  enclosing_method=None, enclosing_class=None):
     var_map = _build_var_type_map(tree, src)
 
     def _matches(name: str, node) -> bool:
@@ -1941,12 +2219,19 @@ def q_accesses_on(src, tree, lines, type_name):
     seen_rows = set()
 
     def _emit(node, member_name):
+        if not _passes_enclosing_filter(node, src,
+                                        enclosing_method, enclosing_class):
+            return
         row = node.start_point[0]
         if row in seen_rows:
             return
         seen_rows.add(row)
         line_text = lines[row].strip() if row < len(lines) else ""
-        results.append((_line(node), f".{member_name}  <- {line_text}"))
+        prefix = _scope_prefix(node, src)
+        results.append(
+            (_line(node),
+             f"{prefix}.{member_name}  <- {line_text}"
+             if prefix else f".{member_name}  <- {line_text}"))
 
     # Direct member access: var.Member
     for node in _find_all(tree.root_node, lambda n: n.type == "member_access_expression"):
@@ -1984,30 +2269,44 @@ def q_accesses_on(src, tree, lines, type_name):
     for assign, type_node, lhs in _iter_initializer_members(tree, src):
         if not type_node or type_name not in _type_names(_text(type_node, src).strip()):
             continue
+        if not _passes_enclosing_filter(assign, src,
+                                        enclosing_method, enclosing_class):
+            continue
         row = assign.start_point[0]
         line_text = lines[row].strip() if row < len(lines) else ""
-        results.append((_line(assign), f".{_text(lhs, src).strip()}  <- {line_text}"))
+        prefix = _scope_prefix(assign, src)
+        body = f".{_text(lhs, src).strip()}  <- {line_text}"
+        results.append((_line(assign), f"{prefix}{body}" if prefix else body))
 
     # With-expression member mutations (C# 9 records) -- obj with { Prop = val }
     # Each member is emitted independently for the same reason as above.
     for wi, src_ident, prop in _iter_with_members(tree, src):
         if not _matches(_text(src_ident, src).strip(), wi):
             continue
+        if not _passes_enclosing_filter(wi, src,
+                                        enclosing_method, enclosing_class):
+            continue
         row = wi.start_point[0]
         line_text = lines[row].strip() if row < len(lines) else ""
-        results.append((_line(wi), f".{_text(prop, src).strip()}  <- {line_text}"))
+        prefix = _scope_prefix(wi, src)
+        body = f".{_text(prop, src).strip()}  <- {line_text}"
+        results.append((_line(wi), f"{prefix}{body}" if prefix else body))
 
     results.sort(key=lambda x: x[0])
     return results
 
 
-def q_all_refs(src, tree, lines, name):
+def q_all_refs(src, tree, lines, name,
+               enclosing_method=None, enclosing_class=None):
     results = []
     seen_rows = set()
     for node in _find_all(tree.root_node, lambda n: n.type == "identifier"):
         if _text(node, src) != name:
             continue
         if _in_literal(node):
+            continue
+        if not _passes_enclosing_filter(node, src,
+                                        enclosing_method, enclosing_class):
             continue
         row = node.start_point[0]
         if row in seen_rows:
@@ -2065,7 +2364,9 @@ def q_var_type(src, tree, lines, name):
 # -- Process function ----------------------------------------------------------
 
 def query_cs_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=False,
-                   symbol_kind=None, uses_kind=None, visibility=None, **kwargs):
+                   symbol_kind=None, uses_kind=None, visibility=None,
+                   head_lines=None, enclosing_method=None,
+                   enclosing_class=None, **kwargs):
     """Parse C# bytes and return list[{"line": N, "text": "..."}] for the given mode."""
     src_bytes = _strip_else_branches(src_bytes)
     try:
@@ -2080,19 +2381,34 @@ def query_cs_bytes(src_bytes: bytes, mode: str, mode_arg: str, include_body=Fals
         "classes":      lambda: q_classes(src_bytes, tree, lines, visibility=visibility),
         "methods":      lambda: q_methods(src_bytes, tree, lines, visibility=visibility),
         "fields":       lambda: q_fields(src_bytes, tree, lines, visibility=visibility),
-        "calls":        lambda: q_calls(src_bytes, tree, lines, mode_arg),
+        "calls":        lambda: q_calls(src_bytes, tree, lines, mode_arg,
+                                        enclosing_method=enclosing_method,
+                                        enclosing_class=enclosing_class),
+        "caller_of":    lambda: q_caller_of(src_bytes, tree, lines, mode_arg),
+        "callee_of":    lambda: q_callee_of(src_bytes, tree, lines, mode_arg),
         "implements":   lambda: q_implements(src_bytes, tree, lines, mode_arg),
-        "uses":         lambda: q_uses(src_bytes, tree, lines, mode_arg, uses_kind=uses_kind),
-        "accesses_on":  lambda: q_accesses_on(src_bytes, tree, lines, mode_arg),
-        "all_refs":     lambda: q_all_refs(src_bytes, tree, lines, mode_arg),
-        "casts":        lambda: q_casts(src_bytes, tree, lines, mode_arg),
+        "uses":         lambda: q_uses(src_bytes, tree, lines, mode_arg, uses_kind=uses_kind,
+                                       enclosing_method=enclosing_method,
+                                       enclosing_class=enclosing_class),
+        "accesses_on":  lambda: q_accesses_on(src_bytes, tree, lines, mode_arg,
+                                              enclosing_method=enclosing_method,
+                                              enclosing_class=enclosing_class),
+        "all_refs":     lambda: q_all_refs(src_bytes, tree, lines, mode_arg,
+                                           enclosing_method=enclosing_method,
+                                           enclosing_class=enclosing_class),
+        "casts":        lambda: q_casts(src_bytes, tree, lines, mode_arg,
+                                        enclosing_method=enclosing_method,
+                                        enclosing_class=enclosing_class),
         "attrs":        lambda: q_attrs(src_bytes, tree, lines, mode_arg),
-        "accesses_of":  lambda: q_accesses_of(src_bytes, tree, lines, mode_arg),
+        "accesses_of":  lambda: q_accesses_of(src_bytes, tree, lines, mode_arg,
+                                              enclosing_method=enclosing_method,
+                                              enclosing_class=enclosing_class),
         "imports":      lambda: q_usings(src_bytes, tree, lines),
         "declarations": lambda: q_declarations(src_bytes, tree, lines, mode_arg,
                                                include_body=include_body, symbol_kind=symbol_kind,
-                                               visibility=visibility),
-        "body":         lambda: q_body(src_bytes, tree, lines, mode_arg, symbol_kind=symbol_kind),
+                                               visibility=visibility, head_lines=head_lines),
+        "body":         lambda: q_body(src_bytes, tree, lines, mode_arg,
+                                       symbol_kind=symbol_kind, head_lines=head_lines),
         "at":           lambda: q_at(src_bytes, tree, lines, mode_arg),
         "params":       lambda: q_params(src_bytes, tree, lines, mode_arg),
         "var_type":     lambda: q_var_type(src_bytes, tree, lines, mode_arg),
