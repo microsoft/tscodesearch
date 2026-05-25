@@ -2,7 +2,7 @@
 
 Full-text and structural code search for a large monorepo. Runs an in-process [Tantivy](https://github.com/quickwit-oss/tantivy) index (via [tantivy-py](https://github.com/quickwit-oss/tantivy-py)) and exposes results as MCP tools so Claude can query the codebase directly without copy-pasting.
 
-> **Early alpha.** Expect rough edges. The only supported install path is cloning the repository and running `setup.cmd`.
+> **Early alpha.** Expect rough edges.
 
 ## Installation
 
@@ -10,28 +10,21 @@ Full-text and structural code search for a large monorepo. Runs an in-process [T
 git clone https://github.com/microsoft/tscodesearch
 cd tscodesearch
 setup.cmd
-```
-
-`setup.cmd` creates a Python venv (via [uv](https://docs.astral.sh/uv/)) with all dependencies including `tantivy`, registers the MCP server with Claude Code and VS Code (GitHub Copilot), prompts for a source directory to index, creates `config.json`, and installs the VS Code extension. After it completes:
-
-```
 ts start
 ```
 
-Alternatively, install from PyPI and point it at your source:
+`setup.cmd` creates a Python venv (via [uv](https://docs.astral.sh/uv/)), registers the MCP server with Claude Code and VS Code (GitHub Copilot), prompts for a source directory to index, creates `config.json`, and installs the VS Code extension.
 
-```
-pip install tscodesearch
-python -m indexserver.daemon
-```
+To uninstall: `setup.cmd --uninstall`
 
 ## Prerequisites
 
 - Windows 11 (or Linux/macOS for the daemon, with caveats)
+- Python 3.10+
 - Node.js 20+
 - `uv` is installed automatically by `setup.mjs` if missing
 
-There is **no Docker, WSL, or Typesense** dependency anymore. The whole index is in-process.
+There is **no Docker, WSL, or Typesense** dependency. The whole index is in-process.
 
 ## One-time setup
 
