@@ -2,38 +2,72 @@
 
 Full-text and structural code search for a large monorepo. Runs an in-process [Tantivy](https://github.com/quickwit-oss/tantivy) index (via [tantivy-py](https://github.com/quickwit-oss/tantivy-py)) and exposes results as MCP tools so Claude can query the codebase directly without copy-pasting.
 
-> **Early alpha.** Expect rough edges. The only supported install path is cloning the repository and running `setup.cmd`.
+> **Early alpha.** Expect rough edges.
 
 ## Installation
+
+### pip (recommended for most users)
+
+```
+pip install tscodesearch
+```
+
+Start the daemon, pointing it at the directory you want to index:
+
+```
+python -m indexserver.daemon --root C:\path\to\source
+```
+
+Register the MCP server with your AI tool:
+
+**Claude Code**
+```
+claude mcp add --scope user tscodesearch -- python -m mcp_server
+```
+
+**VS Code / GitHub Copilot** -- add to your user `settings.json`:
+```json
+"mcp": {
+  "servers": {
+    "tscodesearch": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_server"]
+    }
+  }
+}
+```
+
+For the system-tray icon on Windows, install the optional extras:
+```
+pip install "tscodesearch[tray]"
+```
+
+### Clone + setup.cmd (full Windows setup)
+
+The clone path is recommended if you want automatic MCP registration, the VS Code extension, and the `ts` CLI for daemon management:
 
 ```
 git clone https://github.com/microsoft/tscodesearch
 cd tscodesearch
 setup.cmd
-```
-
-`setup.cmd` creates a Python venv (via [uv](https://docs.astral.sh/uv/)) with all dependencies including `tantivy`, registers the MCP server with Claude Code and VS Code (GitHub Copilot), prompts for a source directory to index, creates `config.json`, and installs the VS Code extension. After it completes:
-
-```
 ts start
 ```
 
-Alternatively, install from PyPI and point it at your source:
+`setup.cmd` creates a Python venv (via [uv](https://docs.astral.sh/uv/)), registers the MCP server with Claude Code and VS Code (GitHub Copilot), prompts for a source directory to index, creates `config.json`, and installs the VS Code extension.
 
-```
-pip install tscodesearch
-python -m indexserver.daemon
-```
+To uninstall: `setup.cmd --uninstall`
 
 ## Prerequisites
 
 - Windows 11 (or Linux/macOS for the daemon, with caveats)
-- Node.js 20+
-- `uv` is installed automatically by `setup.mjs` if missing
+- Python 3.10+
+- Node.js 20+ (clone path only)
+- `uv` is installed automatically by `setup.mjs` if missing (clone path only)
 
-There is **no Docker, WSL, or Typesense** dependency anymore. The whole index is in-process.
+There is **no Docker, WSL, or Typesense** dependency. The whole index is in-process.
 
-## One-time setup
+## One-time setup (clone path)
 
 From a Windows command prompt or PowerShell:
 
