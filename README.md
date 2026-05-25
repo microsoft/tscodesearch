@@ -12,13 +12,18 @@ cd tscodesearch
 setup.cmd
 ```
 
-`setup.cmd` creates a Python venv (via [uv](https://docs.astral.sh/uv/)) with all dependencies including `tantivy`, registers the MCP server with Claude Code, creates `config.json`, and installs the VS Code extension. After it completes:
+`setup.cmd` creates a Python venv (via [uv](https://docs.astral.sh/uv/)) with all dependencies including `tantivy`, registers the MCP server with Claude Code and VS Code (GitHub Copilot), prompts for a source directory to index, creates `config.json`, and installs the VS Code extension. After it completes:
 
 ```
 ts start
 ```
 
-Then open VS Code (or reload: **Ctrl+Shift+P > Reload Window**) and use **TsCodeSearch: Add Root** to point at your source directory.
+Alternatively, install from PyPI and point it at your source:
+
+```
+pip install tscodesearch
+python -m indexserver.daemon
+```
 
 ## Prerequisites
 
@@ -37,9 +42,9 @@ setup.cmd
 ```
 
 `setup.cmd` checks for Node.js then calls `node setup.mjs`, which:
-1. Registers the MCP server with Claude Code
+1. Registers the MCP server with Claude Code and VS Code (GitHub Copilot `mcp.servers`)
 2. Creates `.client-venv` and installs Python dependencies
-3. Creates `config.json` with an auto-generated API key
+3. Creates `config.json` -- prompts for a source directory to index (can be added later)
 4. Installs the VS Code extension
 
 After setup, start the daemon:
@@ -108,10 +113,12 @@ ready()                              # check index readiness (calls /check-ready
 verify_index(action="start")         # launch background sync/repair scan
 verify_index(action="status")        # monitor sync progress (reads from GET /status)
 verify_index(action="stop")          # cancel a running scan
-wait_for_sync(timeout_s=30)          # block until queue is drained
+wait_for_sync(timeout_s=30)          # poll until queue drained; pass 0 for instant status
 ```
 
 `ready()` returns a summary with `poll_ok` (FS walk completed), `index_ok` (zero missing/stale/orphaned), and timing. If not ready, `verify_index(action="start")` triggers the syncer to repair the index without resetting it.
+
+`wait_for_sync` sleeps up to 1 s (watcher warm-up) then polls `/status` every 0.5 s until the queue is empty. Reports `"Index synced in {N}s"` with a `"was: queue={N}"` note if work was observed, or a timeout message with recovery hints.
 
 ### From the command line
 
@@ -211,26 +218,27 @@ Typical flow: Tantivy narrows the haystack to ~50 candidate files -> tree-sitter
 `------------------------------T-----------------------------------'
                              |  HTTP  localhost:PORT
 ,-----------------------------v----------------------------------,
-|  DAEMON  tsquery_server.py  (.client-venv -- runs on Windows) |
+|  DAEMON  indexserver/daemon.py  (.client-venv)                 |
 |    * HTTP server   (management API on PORT)                  |
 |    * watcher       (ReadDirectoryChangesW)                   |
 |    * IndexQueue    (batch Tantivy writes)                    |
 |    * syncer        (on-demand, via POST /verify/start)       |
 |    * Tantivy indexes  (one per root, on disk in .tantivy/)   |
+|    * system-tray icon (Windows -- shows Stop menu item)      |
 `----------------------------------------------------------------'
 ```
 
-There is no longer a separate Typesense / Docker / WSL service -- the index lives in-process via `tantivy-py`.
+There is no longer a separate Typesense / Docker / WSL service -- the index lives in-process via `tantivy-py`. On Windows the daemon runs without a console window; right-click the magnifying-glass tray icon to stop it.
 
 ### File map
 
 | File | Purpose |
 |------|---------|
 | `mcp_server.py` | Python MCP server (FastMCP). Tools: `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `wait_for_sync`. |
-| `tsquery_server.py` | Management daemon. Owns the HTTP API, watcher, IndexQueue, syncer, and one Tantivy `Backend` per configured root. |
+| `indexserver/daemon.py` | Management daemon. Owns the HTTP API, watcher, IndexQueue, syncer, system-tray icon, and one Tantivy `Backend` per configured root. |
 | `mcp.cmd` | Windows launcher: `.client-venv\Scripts\python.exe mcp_server.py` |
 | `ts.cmd` / `ts.mjs` | Daemon CLI: start/stop/restart/status/index/verify/log/root |
-| `setup.cmd` / `setup.mjs` | One-time setup: `.client-venv`, `config.json`, MCP registration, VS Code extension |
+| `setup.cmd` / `setup.mjs` | One-time setup: `.client-venv`, `config.json`, MCP registration (Claude Code + VS Code), VS Code extension |
 | `run_tests.cmd` / `run_tests.mjs` | VS Code extension test runner |
 
 **AST query layer (`query/`)**
@@ -250,12 +258,18 @@ There is no longer a separate Typesense / Docker / WSL service -- the index live
 |------|---------|
 | `backend.py` | Tantivy schema + `Backend` class (write/read/upsert/delete/export). |
 | `search.py` | Typesense-shaped `search()` on top of `Backend` (multi-field, weights, fuzz, filter_by). |
-| `config.py` | `Config`, `Root`, `load_config()`. |
 | `indexer.py` | `walk_source_files()`, `index_file_list()`, `ensure_backend()`, `run_index()`. |
 | `verifier.py` | `run_verify()` (two-phase FS diff + repair), `check_ready()`. |
 | `watcher.py` | `run_watcher()`. `Observer` on Windows, `PollingObserver` on Linux/WSL. |
 | `index_queue.py` | Deduplicated batch queue. Writes go through a `BackendResolver`. |
+| `daemon.py` | Management daemon: HTTP server, watcher thread, IndexQueue worker, syncer, tray icon. |
 | `query_util.py` | Structural query CLI (`python -m indexserver.query_util ...`). |
+
+**Config**
+
+| File | Purpose |
+|------|--------|
+| `query/config.py` | `Config`, `Root`, `load_config()`, `collection_for_root()`. |
 
 **Scripts / infra**
 

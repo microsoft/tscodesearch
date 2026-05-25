@@ -5,7 +5,7 @@
         "scripts",
         "tests",
         "mcp_server.py",
-        "tsquery_server.py"
+        "indexserver/daemon.py"
     ],
     "exclude": [
         "**/__pycache__",

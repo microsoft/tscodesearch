@@ -12,4 +12,6 @@ tree-sitter-sql
 tantivy
 watchdog
 pathspec
+pystray
+pillow
 pytest

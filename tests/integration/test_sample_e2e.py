@@ -31,7 +31,7 @@ _CONFIG_PATH = os.path.join(_root, "config.json")
 
 # -- Connection config ---------------------------------------------------------
 
-from indexserver.config import load_config as _load_config
+from query.config import load_config as _load_config
 _e2e_cfg = _load_config()
 
 
@@ -65,7 +65,7 @@ def _get_doc(collection: str, filename: str, src_root: str = "") -> dict | None:
 
 def _collection_info(collection: str) -> dict | None:
     """Return info for an existing Tantivy index, or None if not yet created."""
-    from indexserver.config import index_root
+    from query.config import index_root
     from indexserver.backend import Backend
     root = next((r for r in _e2e_cfg.roots.values() if r.collection == collection), None)
     index_dir = root.index_dir if root else str(index_root() / collection)

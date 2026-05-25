@@ -22,7 +22,7 @@ def _search(collection: str, q: str,
             query_by: str = "path_tokens,class_names,method_names,tokens",
             per_page: int = 10) -> list[dict]:
     """Run a backend search and return the documents from each hit."""
-    from indexserver.config import load_config as _load_config
+    from query.config import load_config as _load_config
     from indexserver.indexer import ensure_backend
     from indexserver.search import search as _backend_search
     cfg = _load_config()
@@ -36,7 +36,7 @@ def _search(collection: str, q: str,
 def _collection_info(collection: str) -> dict | None:
     """Return info for an existing Tantivy index, or None if it has not been created."""
     import os
-    from indexserver.config import load_config as _load_config, index_root
+    from query.config import load_config as _load_config, index_root
     from indexserver.backend import Backend
     cfg = _load_config()
     root = next((r for r in cfg.roots.values() if r.collection == collection), None)
@@ -75,7 +75,7 @@ def _delete_collection(collection: str, timeout: float = 10.0) -> None:
     import gc as _gc
     import sys as _sys
     import time as _time
-    from indexserver.config import load_config as _load_config, index_root
+    from query.config import load_config as _load_config, index_root
     from indexserver.backend import drop
     cfg = _load_config()
     root = next((r for r in cfg.roots.values() if r.collection == collection), None)

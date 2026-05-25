@@ -8,14 +8,15 @@ Tools:
   query_single_file  - Tree-sitter AST on one file (direct import -- no daemon required)
   ready              - Quick index health snapshot
   wait_for_sync      - Block until index has caught up to all pending file events
-  verify_index       - Start/stop/monitor index repair scan
   service_status     - Daemon status
 """
 
 import json
 import os
 import re
+import signal
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -26,7 +27,7 @@ sys.path.insert(0, str(_REPO))
 
 from mcp.server.fastmcp import FastMCP
 from query.dispatch import query_file
-from indexserver.config import Root, load_config, normalize_path
+from query.config import Root, load_config, normalize_path
 
 # -- Config --------------------------------------------------------------------
 
@@ -121,43 +122,25 @@ def _queue_warning() -> str:
         status, data = _get("/status", timeout=2)
         if status != 200 or not isinstance(data, dict):
             return ""
-        depth   = data.get("queue", {}).get("depth", 0)
-        running = data.get("syncer", {}).get("running", False)
-        parts   = []
+        depth = data.get("queue", {}).get("depth", 0)
         if depth > 0:
-            parts.append(f"{depth} files queued")
-        if running:
-            parts.append("syncer walk in progress")
-        if parts:
-            return f"[WARNING: index has outstanding work -- {', '.join(parts)}. Results may be incomplete.]\n\n"
+            return f"[WARNING: index has outstanding work -- {depth} files queued. Results may be incomplete.]\n\n"
     except Exception:
-        pass  # server may not be running; warnings are best-effort
+        pass
     return ""
 
 def _sync_state(data: dict) -> tuple[bool, str]:
     """Inspect a /status response. Returns (is_synced, human_state).
 
-    Synced means: index queue is empty and the syncer is idle with no pending
-    jobs. Watcher activity alone does not block -- events flow through the
-    queue, which we already check.
+    Synced means the index queue is empty.
     """
     if not isinstance(data, dict):
         return False, "no status response"
-    queue          = data.get("queue") or {}
-    syncer         = data.get("syncer") or {}
-    depth          = int(queue.get("depth", 0) or 0)
-    syncer_running = bool(syncer.get("running", False))
-    syncer_pending = int(syncer.get("pending", 0) or 0)
-    if depth == 0 and not syncer_running and syncer_pending == 0:
-        return True, "queue empty, syncer idle"
-    parts = []
-    if depth:
-        parts.append(f"queue={depth}")
-    if syncer_running:
-        parts.append("syncer running")
-    if syncer_pending:
-        parts.append(f"syncer pending={syncer_pending}")
-    return False, ", ".join(parts) or "working"
+    queue = data.get("queue") or {}
+    depth = int(queue.get("depth", 0) or 0)
+    if depth == 0:
+        return True, "queue empty"
+    return False, f"queue={depth}"
 
 
 def _truncate(output: str) -> tuple[str, bool]:
@@ -718,10 +701,7 @@ def ready(root: str = "") -> str:
     """Check whether the code search index is fully up to date with the file system.
 
 Returns a quick status snapshot (no filesystem walk -- returns immediately).
-Shows daemon health, document count, watcher state, queue depth, and last verifier scan.
-
-To trigger a full repair scan use verify_index(action='start'), then poll
-ready() or verify_index(action='status') until complete.
+Shows daemon health, document count, watcher state, and queue depth.
 
 Args:
   root: Named source root to check (empty = default root)."""
@@ -748,34 +728,10 @@ Args:
 
     watcher = st.get("watcher", {})
     queue   = st.get("queue", {})
-    syncer  = st.get("syncer", {})
     w_state = ("running" if watcher.get("running") else
                "paused"  if watcher.get("paused")  else "stopped")
     lines.append(f"Watcher    : {w_state}")
     lines.append(f"Queue      : {queue.get('depth', 0)} pending  ({queue.get('total_queued', 0)} total processed)")
-
-    vp = syncer.get("progress", {})
-    if vp:
-        vstatus   = vp.get("status", "?")
-        missing   = vp.get("missing", 0)
-        stale     = vp.get("stale", 0)
-        orphaned  = vp.get("orphaned", 0)
-        total     = vp.get("total_to_update", 0)
-        updated   = vp.get("updated", 0)
-        remaining = max(0, total - updated) or (missing + stale)
-        lines.append(f"Verifier   : {vstatus}  phase={vp.get('phase', '')}  missing={missing}  "
-                     f"stale={stale}  orphaned={orphaned}  updated={updated}/{total}  (last: {vp.get('last_update', '?')})")
-        q_depth = queue.get("depth", 0)
-        left    = remaining + q_depth
-        if vstatus == "complete" and missing == 0 and stale == 0 and orphaned == 0 and q_depth == 0:
-            lines.append("Left to index: 0  -- index is up to date")
-        elif vstatus == "running":
-            lines.append(f"Left to index: ~{left}  ({remaining} verifier + {q_depth} queue) -- poll again for updates")
-        else:
-            lines.append("Left to index: unknown -- run verify_index(action='start') to check and repair")
-    else:
-        lines.append("Verifier   : no scan has been run yet")
-        lines.append(f"Left to index: {queue.get('depth', 0)} queued -- run verify_index(action='start') to check if index is complete")
 
     return "\n".join(lines)
 
@@ -789,24 +745,25 @@ Use this between editing files and querying the index, to make sure your
 recent edits are reflected in query_codebase results. Without it, results
 can be a second or two stale on Windows (watcher latency + queue drain).
 
-Polls the daemon's /status endpoint every 0.5 s, and returns once
-the index queue is empty AND the syncer is idle.
-A small initial delay (~1 s) is built in so events from a just-completed
-edit have time to reach the watcher before the first poll.
+Polls the daemon /status endpoint every 0.5 s until the index queue is
+empty. A warm-up delay of up to 1 s is applied first so file-system events
+from a just-completed edit have time to reach the watcher before the first
+poll. Pass timeout_s=0 to skip the warm-up and get an immediate snapshot
+of the current queue depth.
 
 Args:
   timeout_s: Maximum seconds to wait. Default 30. The indexer typically
-             catches up in well under a second when only a few files
-             changed; raise this for large rewrites or initial indexing.
+             catches up in under a second when only a few files changed;
+             raise this for large rewrites or initial indexing.
+             Pass 0 for a non-blocking status check.
   root:      Named source root (empty = default). Currently informational --
-             the indexserver tracks queue/syncer state globally, not per
-             root, so this argument is reserved for future use.
+             the daemon tracks queue state globally, not per root.
 
 Returns:
-  On success: "Index synced in {N}s" (plus a brief description of what
-  was pending when polling began, if anything).
-  On timeout: a state line describing what is still in flight.
-  On error:   a connection error message with a hint to start the daemon.
+  On success: "Index synced in {N}s" (plus "was: {state}" if work was
+  observed during polling).
+  On timeout: description of what is still in flight, with recovery hints.
+  On error:   connection error with a hint to start the daemon.
 """
     try:
         if root:
@@ -816,17 +773,18 @@ Returns:
 
     start         = time.monotonic()
     deadline      = start + max(0.0, float(timeout_s))
-    initial_delay = min(1.0, max(0.0, float(timeout_s)))
+    # Warm-up: capped at 1 s; automatically 0 when timeout_s=0 (instant check).
+    warmup        = min(1.0, max(0.0, float(timeout_s)))
     poll_interval = 0.5
-    last_state    = "unknown"
-    initial_state = None
+    first_busy:   str | None = None  # first non-empty state seen, for "was:" message
 
-    time.sleep(initial_delay)
+    # Let in-flight file-system events reach the watcher before the first poll.
+    if warmup > 0:
+        time.sleep(min(warmup, max(0.0, deadline - time.monotonic())))
 
     while True:
         try:
-            # /status touches every backend to fetch live doc counts -- under
-            # load that round-trip can spike, so use a generous timeout and
+            # /status can spike under load; use a generous per-call timeout and
             # retry transient failures rather than bailing on the first hiccup.
             status, data = _get("/status", timeout=10)
         except Exception as e:
@@ -841,100 +799,22 @@ Returns:
             return f"Status check failed: HTTP {status}"
 
         synced, state = _sync_state(data if isinstance(data, dict) else {})
-        if initial_state is None:
-            initial_state = state
-        last_state = state
+        if not synced and first_busy is None:
+            first_busy = state
+
         if synced:
             elapsed = time.monotonic() - start
-            if initial_state and initial_state != state:
-                return f"Index synced in {elapsed:.1f}s (was: {initial_state})"
+            if first_busy is not None:
+                return f"Index synced in {elapsed:.1f}s (was: {first_busy})"
             return f"Index synced in {elapsed:.1f}s"
 
         if time.monotonic() >= deadline:
             elapsed = time.monotonic() - start
-            return (f"Timed out after {elapsed:.1f}s -- still working: {last_state}.\n"
-                    f"Re-run wait_for_sync with a larger timeout_s, or run "
-                    f"verify_index(action='start') if the index looks stuck.")
+            return (f"Timed out after {elapsed:.1f}s -- still working: {state}.\n"
+                    f"Re-run wait_for_sync with a larger timeout_s, or restart the daemon if the index looks stuck.")
 
         remaining = deadline - time.monotonic()
         time.sleep(min(poll_interval, max(0.0, remaining)))
-
-# -- verify_index --------------------------------------------------------------
-
-@mcp.tool()
-def verify_index(
-    action: str = "status",
-    root: str = "",
-    delete_orphans: bool = True,
-) -> str:
-    """Verify that the code search index is up to date with the file system.
-
-Scans every source file, compares modification times against stored values,
-and re-indexes missing or stale files. Orphaned entries are removed unless
-delete_orphans=false.
-
-Args:
-  action:         "start" | "status" | "stop"
-  root:           Named source root to verify (empty = default root).
-  delete_orphans: Remove entries for deleted files. Default true."""
-    act = action.lower().strip()
-
-    if act == "stop":
-        status, data = _post("/verify/stop", {})
-        if status == 404:
-            return "No verification scan is currently running."
-        if status != 200:
-            return f"Stop failed ({status}): {data.get('error', data) if isinstance(data, dict) else data}"
-        return "Verification scan stopped."
-
-    if act == "status":
-        status, data = _get("/status")
-        if status != 200:
-            return f"Status failed ({status}): {data}"
-        syncer = data.get("syncer", {})
-        prog   = syncer.get("progress", {})
-        if not prog:
-            return "No sync has been run yet. Use action='start' to begin."
-        running = syncer.get("running", False)
-        lines   = []
-        if running:
-            tot  = prog.get("total_to_update", 0)
-            done = prog.get("updated", 0)
-            pct  = f"{done * 100 // tot}%" if tot else "--"
-            lines.append(f"Running  : yes  ({pct} complete)")
-        lines += [
-            f"Status   : {prog.get('status', '?')}",
-            f"Phase    : {prog.get('phase', '?')}",
-            f"Started  : {prog.get('started_at', '?')}",
-            f"Updated  : {prog.get('last_update', '?')}",
-            f"FS files : {prog.get('fs_files', '?')}",
-            f"Index    : {prog.get('index_docs', '?')} docs",
-            f"Missing  : {prog.get('missing', 0)}",
-            f"Stale    : {prog.get('stale', 0)}",
-            f"Orphaned : {prog.get('orphaned', 0)}",
-            f"Re-indexed: {prog.get('updated', 0)}",
-            f"Deleted  : {prog.get('deleted', 0)} orphans removed",
-            f"Errors   : {prog.get('errors', 0)}",
-        ]
-        return "\n".join(lines)
-
-    if act == "start":
-        try:
-            r = _resolve_root(root)
-        except ValueError as e:
-            return f"Error: {e}"
-        collection, src_root = r.collection, r.path
-        status, data = _post("/verify/start", {"root": root or "default", "delete_orphans": delete_orphans})
-        if status == 409:
-            return "A verification scan is already running.\nUse action='status' to monitor, or action='stop' to cancel."
-        if status != 200:
-            return f"Start failed ({status}): {data.get('error', data) if isinstance(data, dict) else data}"
-        return (f"Verification scan started.\n"
-                f"Root      : '{root or 'default'}' -> {src_root}\n"
-                f"Collection: {collection}\n"
-                f"Use action='status' to monitor progress.")
-
-    return f"Unknown action: '{action}'. Use 'start', 'status', or 'stop'."
 
 # -- service_status ------------------------------------------------------------
 
@@ -953,8 +833,7 @@ Args:
     except Exception as e:
         return f"Daemon is NOT running.\nStart it with: ts start\nError: {e}"
 
-    root_names      = [root] if root else list(_ROOTS)
-    indexer_running = (st.get("syncer") or {}).get("running", False)
+    root_names = [root] if root else list(_ROOTS)
     lines = []
 
     for root_name in root_names:
@@ -963,12 +842,11 @@ Args:
         except ValueError as e:
             lines.append(f"Error: {e}")
             continue
-        info   = (st.get("collections") or {}).get(root_name, {})
-        ndocs  = info.get("num_documents")
+        info  = (st.get("collections") or {}).get(root_name, {})
+        ndocs = info.get("num_documents")
         exists = info.get("collection_exists", ndocs is not None)
         if not exists:
-            lines.append(f"Root '{root_name}' ({coll_name}): " +
-                         ("indexing in progress" if indexer_running else "not yet indexed -- run: ts verify"))
+            lines.append(f"Root '{root_name}' ({coll_name}): not yet indexed")
         else:
             lines.append(f"Root '{root_name}' ({coll_name}): {ndocs:,} docs")
 
@@ -977,18 +855,88 @@ Args:
 
 # -- Entry point ---------------------------------------------------------------
 
-if __name__ == "__main__":
-    if "--daemon" in sys.argv:
-        from tsquery_server import start_daemon, run_until_shutdown
-        if not start_daemon():
-            sys.exit(0)
-        run_until_shutdown()
-        sys.exit(0)
+def _ensure_daemon() -> None:
+    """Spawn the daemon and wait for it to be healthy.
+
+    Spawns unconditionally -- the daemon exits immediately if the port is
+    already bound (another instance won the race).  The port binding inside
+    start_daemon() is the mutual-exclusion primitive.
+
+    The daemon is headless (pystray tray icon only) and is launched detached
+    so it survives after the MCP server exits.
+    """
+    import subprocess
+
+    # Always use the venv Python so indexserver + tantivy are importable,
+    # regardless of which Python is running the MCP server.
+    # On Windows, read pyvenv.cfg to find the base Python's real pythonw.exe
+    # (GUI subsystem -- never creates a console).  The venv shim pythonw.exe is
+    # a uv launcher that internally re-spawns python.exe (console subsystem).
+    _scripts = _REPO / ".client-venv" / "Scripts"
+    _pyvenv  = _REPO / ".client-venv" / "pyvenv.cfg"
+    py = None
+    extra_env: dict = {}
+    if sys.platform == "win32" and _pyvenv.exists():
+        for line in _pyvenv.read_text("utf-8").splitlines():
+            if line.lower().startswith("home"):
+                _, _, home = line.partition("=")
+                _base_pythonw = Path(home.strip()) / "pythonw.exe"
+                if _base_pythonw.exists():
+                    py = str(_base_pythonw)
+                    _venv = _REPO / ".client-venv"
+                    extra_env = {
+                        "VIRTUAL_ENV": str(_venv),
+                        "PYTHONPATH":  str(_venv / "Lib" / "site-packages"),
+                        "PATH": str(_scripts) + os.pathsep + os.environ.get("PATH", ""),
+                    }
+                break
+    if py is None:
+        if sys.platform == "win32":
+            _pythonw = _scripts / "pythonw.exe"
+            py = str(_pythonw) if _pythonw.exists() else str(_scripts / "python.exe")
+        else:
+            _pybin = _REPO / ".client-venv" / "bin" / "python"
+            py = str(_pybin) if _pybin.exists() else sys.executable
+
+    kwargs: dict = dict(
+        cwd=str(_REPO),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8", **extra_env},
+    )
+    if sys.platform != "win32":
+        kwargs["start_new_session"] = True
+
+    subprocess.Popen([py, "-m", "indexserver.daemon"], **kwargs)
+
+    # Wait for the daemon (ours or the winner of a concurrent race) to be healthy.
+    # Use an event so SIGTERM/SIGINT aborts the wait immediately. Signal handlers
+    # are restored before returning so FastMCP's own handlers are unaffected.
+    exit_event = threading.Event()
+    def _on_exit(sig, frame): exit_event.set()
+    old_sigterm = signal.signal(signal.SIGTERM, _on_exit)
+    try:
+        old_sigint = signal.signal(signal.SIGINT, _on_exit)
+    except (OSError, ValueError):
+        old_sigint = None
 
     try:
-        from tsquery_server import start_daemon as _start_daemon
-        _start_daemon()
-    except Exception:
-        pass
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline and not exit_event.is_set():
+            try:
+                _get("/health", timeout=2)
+                return
+            except Exception:
+                exit_event.wait(timeout=0.5)
+        if not exit_event.is_set():
+            print("[mcp_server] WARNING: daemon did not become healthy within 20s", flush=True)
+    finally:
+        signal.signal(signal.SIGTERM, old_sigterm)
+        if old_sigint is not None:
+            signal.signal(signal.SIGINT, old_sigint)
 
+
+if __name__ == "__main__":
+    _ensure_daemon()
     mcp.run()

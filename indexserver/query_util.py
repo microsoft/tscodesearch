@@ -44,7 +44,7 @@ if _ts_root not in sys.path:
     sys.path.insert(0, _ts_root)
 
 from query.dispatch import query_file, ALL_EXTS
-from indexserver.config import normalize_path
+from query.config import normalize_path
 
 
 # -- Filesystem helpers --------------------------------------------------------
@@ -118,7 +118,7 @@ def files_from_search(query, sub=None, ext="cs", limit=50,
                       collection=None, src_root=None, query_by=None,
                       exclude_path=None):
     """Run a backend search and return the local file paths of matching documents."""
-    from indexserver.config import load_config as _load_config
+    from query.config import load_config as _load_config
     from indexserver.indexer import ensure_backend
     from indexserver.search import search as _backend_search
 

@@ -25,7 +25,7 @@ else:
     from watchdog.observers.polling import PollingObserver as _WatchdogObserver
 from watchdog.events import FileSystemEventHandler
 
-from indexserver.config import normalize_path
+from query.config import normalize_path
 
 DEBOUNCE_SECONDS = 2.0
 
@@ -153,7 +153,7 @@ if __name__ == "__main__":
     ap.add_argument("--collection", default=None, help="Collection for --src")
     args = ap.parse_args()
     # Standalone mode: open a Tantivy backend per root and route writes through the queue.
-    from indexserver.config import load_config as _load_config
+    from query.config import load_config as _load_config
     from indexserver.index_queue import IndexQueue
     from indexserver.indexer import ensure_backend
     _cfg = _load_config()

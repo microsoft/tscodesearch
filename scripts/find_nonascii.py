@@ -21,7 +21,7 @@ SKIP_DIRS = {
     "__pycache__", ".pytest_cache", "vscode-codesearch",
 }
 HOT_PREFIXES = (
-    "query/", "indexserver/", "mcp_server.py", "tsquery_server.py",
+    "query/", "indexserver/", "mcp_server.py",
 )
 
 

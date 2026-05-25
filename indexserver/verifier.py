@@ -25,7 +25,7 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-from indexserver.config import normalize_path
+from query.config import normalize_path
 from indexserver.indexer import (
     walk_source_files, file_id,
     ensure_backend, index_file_list,
@@ -354,7 +354,7 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
 # -- entry point ----------------------------------------------------------------
 
 if __name__ == "__main__":
-    from indexserver.config import load_config as _load_config
+    from query.config import load_config as _load_config
     _cfg = _load_config()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)

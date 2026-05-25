@@ -21,7 +21,7 @@ class TestPathIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from indexserver.config import load_config as _load_config
+        from query.config import load_config as _load_config
         from indexserver.indexer import run_index
         cls.cfg = _load_config()
         for root in cls.cfg.roots.values():

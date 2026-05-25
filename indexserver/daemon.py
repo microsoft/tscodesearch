@@ -20,10 +20,7 @@ Entry points
 
 HTTP endpoints:
   GET  /health               -> {"ok": true}  (no auth)
-  GET  /status               -> watcher / queue / syncer / collections
-  POST /check-ready          -> check_ready() result
-  POST /verify/start         -> queue a verify/repair job
-  POST /verify/stop          -> cancel running syncer
+  GET  /status               -> watcher / queue / collections
   POST /file-events          -> accept file-change notifications
   POST /query-codebase       -> backend search + AST post-process
   POST /management/shutdown  -> graceful daemon shutdown (used by ts stop)
@@ -46,11 +43,11 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from indexserver.backend import Backend
-from indexserver.config import load_config as _load_config, normalize_path
+from query.config import load_config as _load_config, normalize_path
 from indexserver.index_queue import IndexQueue
 from indexserver.indexer import ensure_backend
 from indexserver.search_modes import build_filter_by, resolve_query_params
-from indexserver.verifier import check_ready, run_verify
+from indexserver.verifier import run_verify
 from indexserver.watcher import run_watcher
 from indexserver import search as _search_mod
 
@@ -66,22 +63,12 @@ _DEFAULT_RUN_DIR = (
 )
 _RUN_DIR     = Path(os.environ.get("TSCODESEARCH_DATA", _DEFAULT_RUN_DIR))
 _DAEMON_PID  = _RUN_DIR / "daemon.pid"
-_INDEXER_PID = _RUN_DIR / "indexer.pid"
 
 _QUERY_CODEBASE_MAX_LIMIT = 250
 
 # -- thread state ---------------------------------------------------------------
-_watcher_stop:   threading.Event  = threading.Event()
 _watcher_thread: threading.Thread | None = None
 _watcher_lock    = threading.Lock()
-
-_sync_thread:   threading.Thread | None = None
-_sync_lock      = threading.Lock()
-_sync_pending:  list = []
-_sync_stop:     threading.Event | None = None
-_sync_progress: dict = {}
-
-_synced_roots: dict[str, str] = {}   # root_name -> ISO timestamp of last successful sync
 
 # Backends keyed by collection name. The daemon owns the writer for each.
 _backends: dict[str, Backend] = {}
@@ -190,17 +177,6 @@ def _watcher_status() -> dict:
     }
 
 
-def _syncer_status() -> dict:
-    running = bool(_sync_thread and _sync_thread.is_alive())
-    result: dict = {
-        "running": running,
-        "pending": len(_sync_pending),
-    }
-    if _sync_progress:
-        result["progress"] = _sync_progress
-    return result
-
-
 def _collections_status() -> dict:
     collections: dict = {}
     for root in ALL_ROOTS.values():
@@ -214,7 +190,6 @@ def _collections_status() -> dict:
                 pass
             buffered = getattr(backend, "buffered_count", 0)
         col_live_exists = ndocs is not None
-        synced_at = _synced_roots.get(root.name)
         collections[root.name] = {
             "collection":        root.collection,
             "num_documents":     ndocs,
@@ -222,8 +197,6 @@ def _collections_status() -> dict:
             "collection_exists": col_live_exists,
             "schema_ok":         col_live_exists,
             "schema_warnings":   [],
-            "synced":            bool(synced_at),
-            "synced_at":         synced_at,
         }
     return collections
 
@@ -231,66 +204,19 @@ def _collections_status() -> dict:
 # -- Watcher --------------------------------------------------------------------
 
 def _start_watcher() -> None:
-    global _watcher_thread, _watcher_stop
+    global _watcher_thread
     with _watcher_lock:
         if _watcher_thread and _watcher_thread.is_alive():
             return
-        _watcher_stop = threading.Event()
         _watcher_thread = threading.Thread(
             target=run_watcher,
             args=(_cfg,),
-            kwargs={"stop_event": _watcher_stop, "queue": _index_queue},
+            kwargs={"stop_event": _shutdown_event, "queue": _index_queue},
             name="watcher",
             daemon=True,
         )
         _watcher_thread.start()
         print("[tsquery_server] Watcher thread started.", flush=True)
-
-
-# -- Syncer ---------------------------------------------------------------------
-
-def _drain_sync_queue() -> None:
-    global _sync_stop
-
-    while True:
-        with _sync_lock:
-            if not _sync_pending:
-                break
-            job = _sync_pending.pop(0)
-
-        root_name  = job.get("root_name", "")
-        src_root   = job["src_root"]
-        collection = job["collection"]
-        extensions = job.get("extensions")
-
-        stop = threading.Event()
-        _sync_stop = stop
-
-        _sync_progress.clear()
-        _INDEXER_PID.write_text(str(os.getpid()))
-        try:
-            run_verify(
-                _cfg,
-                src_root=src_root,
-                collection=collection,
-                queue=_index_queue,
-                delete_orphans=True,
-                stop_event=stop,
-                extensions=extensions,
-                on_complete=lambda: None,
-                on_progress=lambda p: _sync_progress.update(p),
-                backend=_backends.get(collection),
-            )
-        except Exception as e:
-            print(f"[syncer] ERROR for {collection}: {e}", flush=True)
-        else:
-            if _sync_progress.get("status") != "cancelled":
-                _synced_roots[root_name] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        finally:
-            if _INDEXER_PID.exists():
-                _INDEXER_PID.unlink()
-
-    _sync_stop = None
 
 
 # -- File-event handler ---------------------------------------------------------
@@ -355,27 +281,30 @@ def _init_backends() -> None:
 
 
 def _initialize_async(stop_event: threading.Event) -> None:
-    """Open backends, start the queue, queue the initial sync, start the watcher."""
-    global _sync_thread
-
+    """Open backends, start the queue, run initial scan, start the watcher."""
     _init_backends()
     _index_queue.start(lambda c: _backends.get(c))
-
-    with _sync_lock:
-        for root in ALL_ROOTS.values():
-            _sync_pending.append({
-                "root_name":  root.name,
-                "src_root":   root.path,
-                "collection": root.collection,
-                "extensions": root.extensions,
-            })
-        if _sync_pending:
-            _sync_thread = threading.Thread(
-                target=_drain_sync_queue, name="syncer", daemon=True
-            )
-            _sync_thread.start()
-
     _start_watcher()
+
+    for root in ALL_ROOTS.values():
+        if _shutdown_event.is_set():
+            break
+        try:
+            run_verify(
+                _cfg,
+                src_root=root.path,
+                collection=root.collection,
+                queue=_index_queue,
+                delete_orphans=True,
+                stop_event=_shutdown_event,
+                extensions=root.extensions,
+                on_complete=lambda: None,
+                on_progress=lambda _: None,
+                backend=_backends.get(root.collection),
+            )
+        except Exception as e:
+            print(f"[tsquery_server] Initial scan error ({root.collection}): {e}", flush=True)
+
     print("[tsquery_server] Initialization complete.", flush=True)
 
 
@@ -410,8 +339,6 @@ class _Handler(BaseHTTPRequestHandler):
         return {}
 
     def _handle(self) -> None:
-        global _sync_thread
-
         path   = self.path.split("?")[0].rstrip("/")
         method = self.command
 
@@ -428,7 +355,6 @@ class _Handler(BaseHTTPRequestHandler):
             result = {
                 "watcher":     _watcher_status(),
                 "queue":       _index_queue.stats(),
-                "syncer":      _syncer_status(),
                 "collections": _collections_status(),
                 # Compat: clients still inspect these keys; backend is in-process
                 # so it's always "ok" once the daemon is up.
@@ -439,62 +365,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, result)
             return
 
-        if method == "POST" and path == "/check-ready":
-            body = self._read_body()
-            try:
-                root = _cfg.get_root(body.get("root", ""))
-            except ValueError as e:
-                self._send_json(400, {"error": str(e)})
-                return
-            result = check_ready(_cfg, src_root=root.path, collection=root.collection,
-                                 extensions=root.extensions)
-            self._send_json(200, result)
-            return
-
-        if method == "POST" and path == "/verify/stop":
-            if not (_sync_thread and _sync_thread.is_alive()):
-                self._send_json(404, {"error": "no sync job is running"})
-                return
-            if _sync_stop:
-                _sync_stop.set()
-            self._send_json(200, {"stopped": True})
-            return
-
         if method == "POST" and path == "/file-events":
             body   = self._read_body()
             events = body.get("events", [])
             result = _enqueue_file_events(events)
             self._send_json(200, result)
-            return
-
-        if method == "POST" and path == "/verify/start":
-            body = self._read_body()
-            try:
-                root = _cfg.get_root(body.get("root", ""))
-            except ValueError as e:
-                self._send_json(400, {"error": str(e)})
-                return
-
-            with _sync_lock:
-                job = {"root_name": root.name, "src_root": root.path,
-                       "collection": root.collection,
-                       "extensions": root.extensions}
-                _sync_pending.append(job)
-                queued_pos = len(_sync_pending)
-                if not (_sync_thread and _sync_thread.is_alive()):
-                    _sync_thread = threading.Thread(
-                        target=_drain_sync_queue, name="syncer", daemon=True
-                    )
-                    _sync_thread.start()
-                    queued_pos = 0
-
-            self._send_json(200, {
-                "started":    queued_pos == 0,
-                "queued":     queued_pos > 0,
-                "position":   queued_pos,
-                "collection": root.collection,
-                "src_root":   root.path,
-            })
             return
 
         if method == "POST" and path == "/query-codebase":
@@ -668,7 +543,6 @@ def start_daemon() -> bool:
     global _server
 
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
-    _sync_progress.clear()
 
     try:
         _server = _ThreadedHTTPServer(("127.0.0.1", _cfg.port), _Handler)
@@ -691,6 +565,29 @@ def start_daemon() -> bool:
     return True
 
 
+def _status_printer(interval: float = 60.0) -> None:
+    """Background thread: print a compact status line every `interval` seconds."""
+    while not _shutdown_event.wait(timeout=interval):
+        try:
+            q  = _index_queue.stats()
+            w  = _watcher_status()
+            cs = _collections_status()
+            docs_parts = ", ".join(
+                f"{name}={info.get('num_documents') or 0}"
+                for name, info in cs.items()
+            )
+            q_depth  = q.get("depth", 0)
+            w_state  = ("watching" if w.get("running") else
+                        "paused"   if w.get("paused")  else "stopped")
+            q_str = f"  queue={q_depth}" if q_depth else ""
+            print(
+                f"[tsquery_server] status: {docs_parts}  watcher={w_state}{q_str}",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"[tsquery_server] status-printer error: {e}", flush=True)
+
+
 def run_until_shutdown() -> None:
     def _on_signal(sig, frame):
         print(f"[tsquery_server] Signal {sig} -- shutting down...", flush=True)
@@ -701,6 +598,11 @@ def run_until_shutdown() -> None:
         signal.signal(signal.SIGINT, _on_signal)
     except (OSError, ValueError):
         pass
+
+    _printer = threading.Thread(target=_status_printer, name="status-printer", daemon=True)
+    _printer.start()
+
+    _run_tray()
 
     _shutdown_event.wait()
 
@@ -715,30 +617,16 @@ def run_until_shutdown() -> None:
 
 
 def stop_daemon() -> None:
-    """Graceful shutdown: stop producers, drain+commit the queue, close backends.
+    """Graceful shutdown: drain+commit the queue, close backends.
 
-    The order matters: the syncer feeds the queue, the queue worker commits to
-    the backends. We stop them in that order so each layer finishes flushing
-    before the next layer goes away.
+    _shutdown_event is already set by the caller; the watcher and init scan
+    stop themselves. We just wait for the queue to flush and then close.
     """
     global _server
 
     t0 = time.monotonic()
     def _elapsed() -> str:
         return f"{time.monotonic() - t0:.1f}s"
-
-    print("[tsquery_server] Stopping -- signalling watcher...", flush=True)
-    _watcher_stop.set()
-
-    if _sync_thread and _sync_thread.is_alive():
-        print("[tsquery_server] Waiting for syncer thread...", flush=True)
-        if _sync_stop:
-            _sync_stop.set()
-        _sync_thread.join(timeout=30)
-        if _sync_thread.is_alive():
-            print(f"[tsquery_server] WARNING: syncer still alive after 30s ({_elapsed()})", flush=True)
-        else:
-            print(f"[tsquery_server] Syncer done ({_elapsed()})", flush=True)
 
     print(f"[tsquery_server] Draining index queue... ({_elapsed()})", flush=True)
     # Queue worker stops pulling new items, runs one final commit to flush
@@ -775,9 +663,142 @@ def stop_daemon() -> None:
     print(f"[tsquery_server] Stopped. total={_elapsed()}", flush=True)
 
 
+# -- System-tray icon ----------------------------------------------------------
+
+def _run_tray() -> None:
+    """Start a pystray system-tray icon in a background thread.
+
+    Falls back silently if pystray or Pillow is not installed.
+    The icon's Stop item sets _shutdown_event, which causes run_until_shutdown
+    to proceed with graceful teardown.
+    """
+    try:
+        import pystray
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return
+
+    def _make_image() -> Image.Image:
+        size = 64
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        # Lens: blue filled circle with white glass interior
+        d.ellipse([4, 4, 40, 40], fill=(0, 120, 215, 255))
+        d.ellipse([11, 11, 33, 33], fill=(220, 235, 255, 230))
+        # Handle: thick diagonal line extending from lower-right of lens
+        d.line([34, 34, 58, 58], fill=(0, 120, 215, 255), width=9)
+        return img
+
+    roots_str = ", ".join(
+        f"{n}={r.path}" for n, r in ALL_ROOTS.items()
+    )
+    title = f"Codesearch Daemon  port={_cfg.port}  {roots_str}"
+
+    def _on_stop(icon: pystray.Icon, item: object) -> None:  # noqa: ARG001
+        icon.stop()
+        _shutdown_event.set()
+
+    icon = pystray.Icon(
+        "codesearch",
+        _make_image(),
+        title,
+        menu=pystray.Menu(
+            pystray.MenuItem("Stop Daemon", _on_stop),
+        ),
+    )
+
+    def _tray_thread() -> None:
+        try:
+            icon.run()
+        except Exception as e:
+            print(f"[tsquery_server] tray icon error: {e}", flush=True)
+
+    t = threading.Thread(target=_tray_thread, name="tray", daemon=True)
+    t.start()
+
+
+# -- Logging setup -------------------------------------------------------------
+
+class _Tee:
+    """Write to multiple streams; swallow errors on individual streams."""
+    def __init__(self, *streams):
+        self._streams = [s for s in streams if s is not None]
+
+    def write(self, data: str) -> None:
+        for s in self._streams:
+            try:
+                s.write(data)
+            except Exception:
+                pass
+
+    def flush(self) -> None:
+        for s in self._streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+    @property
+    def encoding(self) -> str:
+        for s in self._streams:
+            enc = getattr(s, "encoding", None)
+            if enc:
+                return enc
+        return "ascii"
+
+    @property
+    def errors(self) -> str:
+        return "replace"
+
+
+def _setup_logging() -> None:
+    """Open the daemon log file and tee stdout/stderr into it.
+
+    Called at the very start of __main__ so all subsequent prints go to the
+    log file regardless of how the process was spawned.  When the process has
+    a real console (launched via 'start'), output also appears in that window.
+    """
+    _RUN_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _RUN_DIR / "daemon.log"
+    log_fh = open(log_path, "a", encoding="ascii", errors="replace", buffering=1)  # noqa: SIM115
+    orig_out = sys.__stdout__
+    orig_err = sys.__stderr__
+    # isatty() is True when launched in a real console (e.g. via Windows 'start').
+    has_console = orig_out is not None and getattr(orig_out, "isatty", lambda: False)()
+    if has_console:
+        sys.stdout = _Tee(orig_out, log_fh)
+        sys.stderr = _Tee(orig_err, log_fh)
+    else:
+        sys.stdout = log_fh
+        sys.stderr = log_fh
+
+
 # -- Daemon entry point ---------------------------------------------------------
 
 if __name__ == "__main__":
+    # Detach from any console that Windows allocated when spawning python.exe.
+    # The daemon is headless (pystray tray icon only); if the process was started
+    # via the uv venv shim (which re-spawns python.exe without CREATE_NO_WINDOW),
+    # Windows allocates a new console.  FreeConsole() closes that window before it
+    # is visible.  Must be called before _setup_logging() opens the log file.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.FreeConsole()
+        except Exception:
+            pass
+
+    _setup_logging()
+
+    roots_info = "  ".join(f"{n}={r.path}" for n, r in ALL_ROOTS.items())
+    print(
+        f"[tsquery_server] ================================================\n"
+        f"[tsquery_server]  Codesearch Daemon  port={_cfg.port}\n"
+        f"[tsquery_server]  roots: {roots_info}\n"
+        f"[tsquery_server] ================================================",
+        flush=True,
+    )
+
     if not start_daemon():
         print("[tsquery_server] Another instance is already running on the port.", flush=True)
         sys.exit(0)
