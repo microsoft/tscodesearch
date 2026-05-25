@@ -15,7 +15,8 @@
 
 import { spawnSync }                                    from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync,
-         unlinkSync, linkSync, copyFileSync }           from 'node:fs';
+         unlinkSync, linkSync, copyFileSync,
+         readSync }                                     from 'node:fs';
 import { join, dirname }                               from 'node:path';
 import { fileURLToPath }                               from 'node:url';
 import { randomBytes }                                 from 'node:crypto';
@@ -59,6 +60,21 @@ function commandExists(cmd) {
   return capture(checker, [cmd]) !== null;
 }
 
+function prompt(question) {
+  process.stdout.write(question);
+  const buf = Buffer.alloc(4096);
+  let input = '';
+  while (true) {
+    let n;
+    try { n = readSync(0, buf, 0, 1, null); } catch { break; }
+    if (!n) break;
+    const ch = buf.toString('utf8', 0, n);
+    if (ch === '\n') break;
+    if (ch !== '\r') input += ch;
+  }
+  return input.trim();
+}
+
 // -- Argument parsing ----------------------------------------------------------
 
 const argv      = process.argv.slice(2);
@@ -71,23 +87,37 @@ if (uninstall) {
   run('node', [join(REPO, 'ts.mjs'), 'stop'], { stdio: 'pipe' });
   console.log('Removing codesearch MCP server...');
   if (run('claude', ['mcp', 'remove', '--scope', 'user', 'tscodesearch']) !== 0)
-    console.log('WARNING: mcp remove failed (may not have been registered).');
+    console.log('WARNING: claude mcp remove failed (may not have been registered).');
   else
-    console.log('Done. Restart Claude Code for the change to take effect.');
+    console.log('  Removed from Claude Code.');
+  // Remove from VS Code / GitHub Copilot settings
+  const _vsPath = join(process.env.APPDATA ?? '', 'Code', 'User', 'settings.json');
+  try {
+    const _s = JSON.parse(readFileSync(_vsPath, 'utf8'));
+    if (_s?.mcp?.servers?.tscodesearch) {
+      delete _s.mcp.servers.tscodesearch;
+      writeFileSync(_vsPath, JSON.stringify(_s, null, 2) + '\n', 'utf8');
+      console.log('  Removed from VS Code MCP settings.');
+    }
+  } catch { /* settings.json missing or unreadable -- nothing to remove */ }
+  console.log('Done. Reload VS Code / Claude Code for the change to take effect.');
   process.exit(0);
 }
 
 // -- Main setup ----------------------------------------------------------------
 
 // [1] Register MCP
-step(1, 'Registering MCP server with Claude Code');
+step(1, 'Registering MCP server (Claude Code + GitHub Copilot)');
 run('claude', ['mcp', 'remove', '--scope', 'user', 'tscodesearch'], { stdio: 'pipe' });
-runOrDie('claude', [
+if (run('claude', [
   'mcp', 'add', '--scope', 'user', 'tscodesearch',
   '--', join(REPO, '.client-venv', 'Scripts', 'python.exe'), join(REPO, 'mcp_server.py'),
-], 'claude mcp add');
+]) === 0)
+  console.log('  Registered with Claude Code.');
+else
+  console.log('  WARNING: claude mcp add failed -- Claude Code may not be installed.');
 
-// Update VS Code tscodesearch.repoPath
+// Register with VS Code (GitHub Copilot) and set tscodesearch.repoPath
 const vscodeSettingsPath = join(process.env.APPDATA ?? '', 'Code', 'User', 'settings.json');
 try {
   let settings = {};
@@ -95,11 +125,22 @@ try {
     try { settings = JSON.parse(readFileSync(vscodeSettingsPath, 'utf8')); } catch {}
   }
   settings['tscodesearch.repoPath'] = REPO;
+  if (!settings.mcp) settings.mcp = {};
+  if (!settings.mcp.servers) settings.mcp.servers = {};
+  settings.mcp.servers.tscodesearch = {
+    type: 'stdio',
+    command: join(REPO, '.client-venv', 'Scripts', 'python.exe'),
+    args: [join(REPO, 'mcp_server.py')],
+  };
   writeFileSync(vscodeSettingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  console.log(`  Set tscodesearch.repoPath to ${REPO}`);
+  console.log('  Registered with VS Code (GitHub Copilot).');
+  console.log(`  Set tscodesearch.repoPath to ${REPO}.`);
 } catch (e) {
   console.log(`  WARNING: Could not update VS Code settings: ${e.message}`);
-  console.log(`  Set tscodesearch.repoPath manually to ${REPO}`);
+  console.log('  Add manually to VS Code settings.json:');
+  console.log(`    "mcp": { "servers": { "tscodesearch": { "type": "stdio",`);
+  console.log(`      "command": "${join(REPO, '.client-venv', 'Scripts', 'python.exe')}",`);
+  console.log(`      "args": ["${join(REPO, 'mcp_server.py')}"] } } }`);
 }
 
 // [2] Client venv (managed Python via uv)
@@ -156,9 +197,24 @@ step(3, 'config.json');
 if (existsSync(join(REPO, 'config.json'))) {
   console.log('  Already exists, skipping.');
 } else {
-  const config = { api_key: randomBytes(20).toString('hex'), port: 8108, roots: {} };
+  let rootPath = '';
+  if (process.stdin.isTTY) {
+    rootPath = prompt('  Source directory to index (leave blank to add later): ');
+    // Strip surrounding quotes and normalise slashes
+    rootPath = rootPath.replace(/^["']|["']$/g, '').replace(/\\/g, '/').trim();
+    if (rootPath && !existsSync(rootPath)) {
+      console.log(`  WARNING: '${rootPath}' does not exist -- skipping.`);
+      console.log('  Add roots later with:  ts root --add default <path>');
+      rootPath = '';
+    }
+  }
+  const roots = rootPath ? { default: { path: rootPath } } : {};
+  const config = { api_key: randomBytes(20).toString('hex'), port: 8108, roots };
   writeFileSync(join(REPO, 'config.json'), JSON.stringify(config, null, 2) + '\n', 'utf8');
-  console.log('  Created (api_key auto-generated).');
+  if (rootPath)
+    console.log(`  Created. Indexing root: ${rootPath}`);
+  else
+    console.log('  Created (no root set). Add roots later:  ts root --add default <path>');
 }
 
 // [4] VS Code extension

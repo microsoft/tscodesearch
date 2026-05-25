@@ -21,7 +21,7 @@ from tests.helpers import (
     _assert_server_ok, _search, _collection_info, _delete_collection, _make_git_repo,
     _FOO_CS, _BAR_CS, _BLOBSTORE_CS,
 )
-from indexserver.config import load_config as _load_config
+from query.config import load_config as _load_config
 from indexserver.indexer import run_index
 
 _cfg = _load_config()

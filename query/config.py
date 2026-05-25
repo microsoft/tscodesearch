@@ -1,4 +1,4 @@
-"""Server-side configuration: reads config.json from the parent codesearch directory."""
+"""Shared configuration: reads config.json for both the daemon and the MCP server."""
 
 import json
 import os

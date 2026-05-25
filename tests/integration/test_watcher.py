@@ -20,7 +20,7 @@ class TestSourceChangeHandlerIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from indexserver.config import load_config as _load_config
+        from query.config import load_config as _load_config
         _cfg = _load_config()
         stamp = int(time.time())
         cls.coll = f"test_watcher_{stamp}"
@@ -41,7 +41,7 @@ class TestSourceChangeHandlerIntegration(unittest.TestCase):
 
     def _make_handler(self):
         from indexserver.watcher import SourceChangeHandler
-        from indexserver.config import load_config as _load_config
+        from query.config import load_config as _load_config
         return SourceChangeHandler(self.queue, self.tmpdir, self.coll, _load_config())
 
     def _write(self, name: str, content: str) -> str:

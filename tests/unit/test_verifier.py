@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from tests.helpers import _FOO_CS, _BAR_CS, make_test_backend
-from indexserver.config import load_config as _load_config
+from query.config import load_config as _load_config
 from indexserver.indexer import file_id, export_index_map
 from indexserver.verifier import run_verify
 

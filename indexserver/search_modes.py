@@ -16,7 +16,7 @@ in both places automatically.
 
 from __future__ import annotations
 
-from indexserver.config import normalize_path
+from query.config import normalize_path
 
 
 # -- Mode -> (query_by, weights) ------------------------------------------------

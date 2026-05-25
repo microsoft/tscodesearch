@@ -15,7 +15,7 @@ import tempfile
 import unittest
 
 from tests.helpers import _FakeEvent
-from indexserver.config import load_config as _load_config
+from query.config import load_config as _load_config
 
 _cfg = _load_config()
 

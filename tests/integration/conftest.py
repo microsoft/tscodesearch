@@ -18,7 +18,7 @@ import tempfile
 _REPO_BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_BASE not in sys.path:
     sys.path.insert(0, _REPO_BASE)
-from indexserver.config import normalize_path
+from query.config import normalize_path
 
 _TEST_PORT: int = int(os.environ.get("CODESEARCH_TEST_PORT", 18108))
 _TEST_KEY:  str = "codesearch-test"

@@ -42,7 +42,7 @@ import argparse
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _root)
 
-from indexserver.config import load_config as _load_config
+from query.config import load_config as _load_config
 from indexserver.indexer import ensure_backend
 from indexserver.search import search as _backend_search
 from indexserver.search_modes import build_filter_by, resolve_query_params

@@ -57,19 +57,19 @@ _skip = unittest.skipUnless(_IMPORT_OK, f"mcp_server import failed: {_IMPORT_ERR
 class TestCollectionForRoot(unittest.TestCase):
 
     def test_default(self):
-        from indexserver.config import collection_for_root
+        from query.config import collection_for_root
         assert collection_for_root("default") == "codesearch_default"
 
     def test_uppercase_lowered(self):
-        from indexserver.config import collection_for_root
+        from query.config import collection_for_root
         assert collection_for_root("Backend") == "codesearch_backend"
 
     def test_spaces_replaced(self):
-        from indexserver.config import collection_for_root
+        from query.config import collection_for_root
         assert collection_for_root("My Project") == "codesearch_my_project"
 
     def test_special_chars_replaced(self):
-        from indexserver.config import collection_for_root
+        from query.config import collection_for_root
         assert collection_for_root("my-repo/src") == "codesearch_my_repo_src"
 
 
@@ -132,7 +132,7 @@ class TestTruncate(unittest.TestCase):
 
 def _root(name, path):
     """Build a Root instance matching what load_config produces."""
-    from indexserver.config import Root, collection_for_root, INCLUDE_EXTENSIONS
+    from query.config import Root, collection_for_root, INCLUDE_EXTENSIONS
     return Root(name=name, path=path, collection=collection_for_root(name),
                 extensions=INCLUDE_EXTENSIONS)
 

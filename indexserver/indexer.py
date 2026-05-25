@@ -21,7 +21,7 @@ if _base not in sys.path:
     sys.path.insert(0, _base)
 
 from indexserver.backend import Backend, drop as drop_index
-from indexserver.config import normalize_path
+from query.config import normalize_path
 from query.dispatch import describe_file
 
 
@@ -377,7 +377,7 @@ def ensure_backend(cfg, collection: str, resethard: bool = False, write: bool = 
     root = next((r for r in cfg.roots.values() if r.collection == collection), None)
     if root is None:
         # Test paths sometimes use a collection that isn't tied to a root.
-        from indexserver.config import index_root
+        from query.config import index_root
         index_dir = str(index_root() / collection)
     else:
         index_dir = root.index_dir
@@ -630,7 +630,7 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    from indexserver.config import load_config
+    from query.config import load_config
     _cfg = load_config()
     ap = argparse.ArgumentParser(description="Index source files into the Tantivy backend")
     ap.add_argument("--resethard", action="store_true",
