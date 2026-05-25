@@ -651,7 +651,7 @@ class TestSyncState(unittest.TestCase):
             "syncer": {"running": False, "pending": 0},
         })
         assert synced is True
-        assert "queue empty" in state and "idle" in state
+        assert "queue empty" in state
 
     def test_queue_has_pending(self):
         synced, state = _ms._sync_state({
@@ -663,22 +663,24 @@ class TestSyncState(unittest.TestCase):
         assert "queue=7" in state
 
     def test_syncer_running(self):
+        # syncer state is not tracked by _sync_state; only queue depth matters
         synced, state = _ms._sync_state({
             "typesense_ok": True,
             "queue":  {"depth": 0},
             "syncer": {"running": True, "pending": 0},
         })
-        assert synced is False
-        assert "syncer running" in state
+        assert synced is True
+        assert "queue empty" in state
 
     def test_syncer_pending_jobs(self):
+        # syncer state is not tracked by _sync_state; only queue depth matters
         synced, state = _ms._sync_state({
             "typesense_ok": True,
             "queue":  {"depth": 0},
             "syncer": {"running": False, "pending": 3},
         })
-        assert synced is False
-        assert "syncer pending=3" in state
+        assert synced is True
+        assert "queue empty" in state
 
     def test_queue_and_syncer_both_busy(self):
         synced, state = _ms._sync_state({
@@ -688,8 +690,6 @@ class TestSyncState(unittest.TestCase):
         })
         assert synced is False
         assert "queue=4" in state
-        assert "syncer running" in state
-        assert "pending=1" in state
 
     def test_missing_fields_treated_as_idle(self):
         """A status response with no queue/syncer keys is not 'unsynced' on its own."""
@@ -767,7 +767,7 @@ class TestWaitForSync(unittest.TestCase):
         result = _ms.wait_for_sync(timeout_s=2)
         assert "Timed out" in result
         assert "queue=5" in result
-        assert "verify_index" in result  # hint included
+        assert "restart the daemon" in result  # hint included
 
     def test_unreachable_indexserver(self):
         """Persistent _get failures across the deadline -> 'unreachable' message.

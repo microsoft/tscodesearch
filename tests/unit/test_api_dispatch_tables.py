@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import unittest
 
-from tsquery_server import _EXT_TO_TS_AND_AST, _run_query
+from indexserver.daemon import _EXT_TO_TS_AND_AST, _run_query
 
 
 class TestDispatchConsistency(unittest.TestCase):
