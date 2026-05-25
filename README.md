@@ -6,59 +6,6 @@ Full-text and structural code search for a large monorepo. Runs an in-process [T
 
 ## Installation
 
-### pip (recommended for most users)
-
-```
-pip install tscodesearch
-```
-
-Create a `config.json` in your working directory:
-
-```json
-{
-  "api_key": "change-me",
-  "port": 8108,
-  "roots": {
-    "default": {"path": "C:/path/to/your/source"}
-  }
-}
-```
-
-Start the daemon:
-
-```
-python -m indexserver.daemon
-```
-
-Register the MCP server with your AI tool:
-
-**Claude Code**
-```
-claude mcp add --scope user tscodesearch -- python -m mcp_server
-```
-
-**VS Code / GitHub Copilot** -- add to your user `settings.json`:
-```json
-"mcp": {
-  "servers": {
-    "tscodesearch": {
-      "type": "stdio",
-      "command": "python",
-      "args": ["-m", "mcp_server"]
-    }
-  }
-}
-```
-
-For the system-tray icon on Windows, install the optional extras:
-```
-pip install "tscodesearch[tray]"
-```
-
-### Clone + setup.cmd (full Windows setup)
-
-The clone path is recommended if you want automatic MCP registration, the VS Code extension, and the `ts` CLI for daemon management:
-
 ```
 git clone https://github.com/microsoft/tscodesearch
 cd tscodesearch
@@ -74,12 +21,12 @@ To uninstall: `setup.cmd --uninstall`
 
 - Windows 11 (or Linux/macOS for the daemon, with caveats)
 - Python 3.10+
-- Node.js 20+ (clone path only)
-- `uv` is installed automatically by `setup.mjs` if missing (clone path only)
+- Node.js 20+
+- `uv` is installed automatically by `setup.mjs` if missing
 
 There is **no Docker, WSL, or Typesense** dependency. The whole index is in-process.
 
-## One-time setup (clone path)
+## One-time setup
 
 From a Windows command prompt or PowerShell:
 
