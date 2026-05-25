@@ -12,10 +12,22 @@ Full-text and structural code search for a large monorepo. Runs an in-process [T
 pip install tscodesearch
 ```
 
-Start the daemon, pointing it at the directory you want to index:
+Create a `config.json` in your working directory:
+
+```json
+{
+  "api_key": "change-me",
+  "port": 8108,
+  "roots": {
+    "default": {"path": "C:/path/to/your/source"}
+  }
+}
+```
+
+Start the daemon:
 
 ```
-python -m indexserver.daemon --root C:\path\to\source
+python -m indexserver.daemon
 ```
 
 Register the MCP server with your AI tool:
