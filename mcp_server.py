@@ -745,24 +745,25 @@ Use this between editing files and querying the index, to make sure your
 recent edits are reflected in query_codebase results. Without it, results
 can be a second or two stale on Windows (watcher latency + queue drain).
 
-Polls the daemon's /status endpoint every 0.5 s, and returns once
-the index queue is empty AND the syncer is idle.
-A small initial delay (~1 s) is built in so events from a just-completed
-edit have time to reach the watcher before the first poll.
+Polls the daemon /status endpoint every 0.5 s until the index queue is
+empty. A warm-up delay of up to 1 s is applied first so file-system events
+from a just-completed edit have time to reach the watcher before the first
+poll. Pass timeout_s=0 to skip the warm-up and get an immediate snapshot
+of the current queue depth.
 
 Args:
   timeout_s: Maximum seconds to wait. Default 30. The indexer typically
-             catches up in well under a second when only a few files
-             changed; raise this for large rewrites or initial indexing.
+             catches up in under a second when only a few files changed;
+             raise this for large rewrites or initial indexing.
+             Pass 0 for a non-blocking status check.
   root:      Named source root (empty = default). Currently informational --
-             the indexserver tracks queue/syncer state globally, not per
-             root, so this argument is reserved for future use.
+             the daemon tracks queue state globally, not per root.
 
 Returns:
-  On success: "Index synced in {N}s" (plus a brief description of what
-  was pending when polling began, if anything).
-  On timeout: a state line describing what is still in flight.
-  On error:   a connection error message with a hint to start the daemon.
+  On success: "Index synced in {N}s" (plus "was: {state}" if work was
+  observed during polling).
+  On timeout: description of what is still in flight, with recovery hints.
+  On error:   connection error with a hint to start the daemon.
 """
     try:
         if root:
@@ -772,17 +773,18 @@ Returns:
 
     start         = time.monotonic()
     deadline      = start + max(0.0, float(timeout_s))
-    initial_delay = min(1.0, max(0.0, float(timeout_s)))
+    # Warm-up: capped at 1 s; automatically 0 when timeout_s=0 (instant check).
+    warmup        = min(1.0, max(0.0, float(timeout_s)))
     poll_interval = 0.5
-    last_state    = "unknown"
-    initial_state = None
+    first_busy:   str | None = None  # first non-empty state seen, for "was:" message
 
-    time.sleep(initial_delay)
+    # Let in-flight file-system events reach the watcher before the first poll.
+    if warmup > 0:
+        time.sleep(min(warmup, max(0.0, deadline - time.monotonic())))
 
     while True:
         try:
-            # /status touches every backend to fetch live doc counts -- under
-            # load that round-trip can spike, so use a generous timeout and
+            # /status can spike under load; use a generous per-call timeout and
             # retry transient failures rather than bailing on the first hiccup.
             status, data = _get("/status", timeout=10)
         except Exception as e:
@@ -797,18 +799,18 @@ Returns:
             return f"Status check failed: HTTP {status}"
 
         synced, state = _sync_state(data if isinstance(data, dict) else {})
-        if initial_state is None:
-            initial_state = state
-        last_state = state
+        if not synced and first_busy is None:
+            first_busy = state
+
         if synced:
             elapsed = time.monotonic() - start
-            if initial_state and initial_state != state:
-                return f"Index synced in {elapsed:.1f}s (was: {initial_state})"
+            if first_busy is not None:
+                return f"Index synced in {elapsed:.1f}s (was: {first_busy})"
             return f"Index synced in {elapsed:.1f}s"
 
         if time.monotonic() >= deadline:
             elapsed = time.monotonic() - start
-            return (f"Timed out after {elapsed:.1f}s -- still working: {last_state}.\n"
+            return (f"Timed out after {elapsed:.1f}s -- still working: {state}.\n"
                     f"Re-run wait_for_sync with a larger timeout_s, or restart the daemon if the index looks stuck.")
 
         remaining = deadline - time.monotonic()

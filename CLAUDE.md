@@ -67,7 +67,7 @@ Never use real names from the searched codebase (types, methods, namespaces) in 
 ```
 Windows side
 ----------------------------------------------------------------
-  tsquery_server.py (daemon)          mcp_server.py (MCP stdio)
+  indexserver/daemon.py (daemon)      mcp_server.py (MCP stdio)
   started by ts start                  started by Claude Code
   owns the management API port         calls HTTP API at port
         |<---------------- port ---------------------------------|
@@ -75,10 +75,11 @@ Windows side
         |--- watchdog Observer (ReadDirectoryChangesW on Windows)
         |--- IndexQueue worker (batch Tantivy writes)
         |--- Syncer (verify/index jobs)
+        |--- pystray tray icon (Windows -- magnifying glass)
         `--- Tantivy backends (one per root, on-disk in <repo>/.tantivy/)
 ```
 
-`tsquery_server.start_daemon()` tries to bind PORT; returns `False` if another instance is already running. There is no separate Typesense process: the search index lives in-process via `tantivy-py`.
+`start_daemon()` in `indexserver/daemon.py` tries to bind PORT; returns `False` if another instance is already running. There is no separate Typesense process: the search index lives in-process via `tantivy-py`. On Windows the daemon calls `FreeConsole()` at startup so no console window appears.
 
 Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `POST /verify/start`, `POST /verify/stop`, `POST /query-codebase`, `POST /file-events`, `POST /management/shutdown`.
 
@@ -99,8 +100,8 @@ Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `PO
 
 | File | Responsibility |
 |------|---------------|
-| `tsquery_server.py` | Cross-platform management daemon. HTTP + watcher + queue + syncer threads. Opens one `Backend` per root at startup. |
-| `mcp_server.py` | FastMCP server. Exposes `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `wait_for_sync`. Calls `tsquery_server.start_daemon()` at startup. `--daemon` runs as a standalone daemon. |
+| `indexserver/daemon.py` | Cross-platform management daemon. HTTP + watcher + queue + syncer threads + pystray tray icon. Opens one `Backend` per root at startup. Calls `FreeConsole()` on Windows so no console window appears. |
+| `mcp_server.py` | FastMCP server. Exposes `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `wait_for_sync`. Auto-starts the daemon on first tool call. |
 
 ### Query (AST)
 
@@ -117,7 +118,7 @@ Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `PO
 
 | File | Responsibility |
 |------|---------------|
-| `indexserver/config.py` | Reads `config.json`. Roots and extensions. |
+| `query/config.py` | Reads `config.json`. `Config`, `Root`, `load_config()`, `collection_for_root()`, `INCLUDE_EXTENSIONS`. |
 | `indexserver/indexer.py` | `run_index()`, `walk_source_files()`, `index_file_list()`, `ensure_backend()`. |
 | `indexserver/verifier.py` | `run_verify()` (two-phase diff + repair), `check_ready()` (read-only health check). |
 | `indexserver/watcher.py` | `run_watcher()`. `watchdog.observers.Observer` on Windows (real-time), `PollingObserver` on Linux/WSL. |
@@ -130,8 +131,8 @@ Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `PO
 |------|---------------|
 | `scripts/search.py` | Standalone search CLI. Opens a read-only `Backend` and calls `indexserver.search.search()`. |
 | `scripts/parse_perf.py` | Profile parsing of one file: wall-clock + cProfile breakdown of `describe_file`. Useful for diagnosing slow files in the indexer. Usage: `python -m scripts.parse_perf <file> [--top N] [--runs N]`. |
-| `ts.mjs` | Daemon CLI: `start`/`stop`/`restart`/`status`/`index`/`verify`/`log`/`root`. Just spawns `tsquery_server.py` and posts to its API. |
-| `setup.mjs` | Creates `.client-venv`, registers MCP, installs the VS Code extension. |
+| `ts.mjs` | Daemon CLI: `start`/`stop`/`restart`/`status`/`index`/`verify`/`log`/`root`. Spawns `indexserver.daemon` and posts to its API. |
+| `setup.mjs` | One-time setup: `.client-venv`, `config.json` (prompts for root dir), MCP registration (Claude Code + VS Code/GitHub Copilot), VS Code extension. |
 | `run_tests.mjs` | VS Code extension unit tests (no daemon required). |
 
 ---
@@ -163,7 +164,7 @@ There is **no longer a WSL or indexserver venv** -- Tantivy runs in-process in t
 }
 ```
 
-`port` is the daemon's HTTP API port (single port, no Typesense+1). Roots use Windows paths (`C:/...`). Root entries can be either `{"path": "..."}` objects (what `setup.mjs` and `ts root --add` write) or bare strings (`"C:/..."`); both are parsed by `_parse_roots` in `indexserver/config.py`. `collection_for_root(name)` -> `"codesearch_{sanitized_name}"` (default -> `codesearch_default`). Each collection's index lives at `<repo>/.tantivy/<collection>/`.
+`port` is the daemon's HTTP API port (single port, no Typesense+1). Roots use Windows paths (`C:/...`). Root entries can be either `{"path": "..."}` objects (what `setup.mjs` and `ts root --add` write) or bare strings (`"C:/..."`); both are parsed by `_parse_roots` in `query/config.py`. `collection_for_root(name)` -> `"codesearch_{sanitized_name}"` (default -> `codesearch_default`). Each collection's index lives at `<repo>/.tantivy/<collection>/`.
 
 ---
 
@@ -182,7 +183,7 @@ MCP tools are invoked with the full namespaced name `mcp__tscodesearch__<name>` 
 
 ## Backend schema -- search mode mapping
 
-The daemon ignores any caller-supplied `query_by`/`weights` for `/query-codebase` and resolves them server-side from the mode (see `_resolve_query_params` in `tsquery_server.py`).
+The daemon ignores any caller-supplied `query_by`/`weights` for `/query-codebase` and resolves them server-side from the mode (see `_resolve_query_params` in `indexserver/daemon.py`).
 
 | Mode | `query_by` field(s) | Notes |
 |------|---------------------|-------|
