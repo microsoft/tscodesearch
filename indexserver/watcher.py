@@ -26,6 +26,7 @@ else:
 from watchdog.events import FileSystemEventHandler
 
 from query.config import normalize_path
+from indexserver import csv_log
 
 DEBOUNCE_SECONDS = 2.0
 
@@ -62,6 +63,8 @@ class SourceChangeHandler(FileSystemEventHandler):
                 with self._lock:
                     self._pending[event.src_path] = "created"
                 self._schedule_flush()
+                if csv_log.enabled():
+                    csv_log.watcher(self._collection, event.src_path, "created")
 
     def on_modified(self, event):
         if not event.is_directory and self._is_indexed(event.src_path):
@@ -72,21 +75,29 @@ class SourceChangeHandler(FileSystemEventHandler):
                     if self._pending.get(event.src_path) != "created":
                         self._pending[event.src_path] = "modified"
                 self._schedule_flush()
+                if csv_log.enabled():
+                    csv_log.watcher(self._collection, event.src_path, "modified")
 
     def on_deleted(self, event):
         if not event.is_directory and self._is_indexed(event.src_path):
             with self._lock:
                 self._pending[event.src_path] = "deleted"
             self._schedule_flush()
+            if csv_log.enabled():
+                csv_log.watcher(self._collection, event.src_path, "deleted")
 
     def on_moved(self, event):
         if not event.is_directory:
             if self._is_indexed(event.src_path):
                 with self._lock:
                     self._pending[event.src_path] = "deleted"
+                if csv_log.enabled():
+                    csv_log.watcher(self._collection, event.src_path, "moved_from")
             if self._is_indexed(event.dest_path) and not self._is_excluded(event.dest_path):
                 with self._lock:
                     self._pending[event.dest_path] = "created"
+                if csv_log.enabled():
+                    csv_log.watcher(self._collection, event.dest_path, "moved_to")
             self._schedule_flush()
 
     def _flush(self):

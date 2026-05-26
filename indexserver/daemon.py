@@ -49,6 +49,7 @@ from indexserver.indexer import ensure_backend
 from indexserver.search_modes import build_filter_by, resolve_query_params
 from indexserver.verifier import run_verify
 from indexserver.watcher import run_watcher
+from indexserver import csv_log
 from indexserver import search as _search_mod
 
 _cfg = _load_config()
@@ -61,8 +62,14 @@ _DEFAULT_RUN_DIR = (
     if sys.platform == "win32"
     else _HOME / ".local" / "tscodesearch"
 )
-_RUN_DIR     = Path(os.environ.get("TSCODESEARCH_DATA", _DEFAULT_RUN_DIR))
-_DAEMON_PID  = _RUN_DIR / "daemon.pid"
+_RUN_DIR        = Path(os.environ.get("TSCODESEARCH_DATA", _DEFAULT_RUN_DIR))
+_DAEMON_PID     = _RUN_DIR / "daemon.pid"
+_DAEMON_LOCK    = _RUN_DIR / "daemon.lock"
+
+# File handle for the OS-level exclusive lock.  Intentionally never closed --
+# the OS releases the lock when the process truly exits (clean or crash), which
+# prevents a second daemon from starting before the first is fully gone.
+_lock_fh: object = None
 
 _QUERY_CODEBASE_MAX_LIMIT = 250
 
@@ -77,6 +84,15 @@ _index_queue = IndexQueue(max_file_bytes=_cfg.max_file_bytes)
 
 _server: HTTPServer | None = None
 _shutdown_event = threading.Event()
+
+_verify_status_lock = threading.Lock()
+_verify_status: dict = {
+    "state": "idle",
+    "active_root": "",
+    "started_at": "",
+    "last_update": "",
+    "roots": {},
+}
 
 
 # -- Tree-sitter query helper ---------------------------------------------------
@@ -201,6 +217,71 @@ def _collections_status() -> dict:
     return collections
 
 
+def _verify_status_begin() -> None:
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with _verify_status_lock:
+        _verify_status.update({
+            "state": "running",
+            "active_root": "",
+            "started_at": now,
+            "last_update": now,
+            "roots": {},
+        })
+
+
+def _verify_status_progress(root_name: str, progress: dict) -> None:
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    row = {
+        "status": progress.get("status", "running"),
+        "phase": progress.get("phase", ""),
+        "fs_files": progress.get("fs_files", 0),
+        "missing": progress.get("missing", 0),
+        "stale": progress.get("stale", 0),
+        "orphaned": progress.get("orphaned", 0),
+        "total_to_update": progress.get("total_to_update", 0),
+        "updated": progress.get("updated", 0),
+        "errors": progress.get("errors", 0),
+        "last_update": progress.get("last_update", now),
+    }
+    with _verify_status_lock:
+        _verify_status["state"] = "running"
+        _verify_status["active_root"] = root_name
+        _verify_status["last_update"] = now
+        _verify_status["roots"][root_name] = row
+
+
+def _verify_status_root_error(root_name: str, error: str) -> None:
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with _verify_status_lock:
+        _verify_status["roots"][root_name] = {
+            "status": "error",
+            "phase": "initial scan failed",
+            "error": str(error),
+            "last_update": now,
+        }
+        _verify_status["last_update"] = now
+
+
+def _verify_status_finish(cancelled: bool = False) -> None:
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with _verify_status_lock:
+        _verify_status["state"] = "cancelled" if cancelled else "complete"
+        _verify_status["active_root"] = ""
+        _verify_status["last_update"] = now
+
+
+def _verify_status_snapshot() -> dict:
+    with _verify_status_lock:
+        roots = {name: dict(info) for name, info in _verify_status.get("roots", {}).items()}
+        return {
+            "state": _verify_status.get("state", "idle"),
+            "active_root": _verify_status.get("active_root", ""),
+            "started_at": _verify_status.get("started_at", ""),
+            "last_update": _verify_status.get("last_update", ""),
+            "roots": roots,
+        }
+
+
 # -- Watcher --------------------------------------------------------------------
 
 def _start_watcher() -> None:
@@ -285,11 +366,15 @@ def _initialize_async(stop_event: threading.Event) -> None:
     _init_backends()
     _index_queue.start(lambda c: _backends.get(c))
     _start_watcher()
+    _verify_status_begin()
 
     for root in ALL_ROOTS.values():
         if _shutdown_event.is_set():
             break
         try:
+            def _on_progress(p: dict, root_name: str = root.name) -> None:
+                _verify_status_progress(root_name, p)
+
             run_verify(
                 _cfg,
                 src_root=root.path,
@@ -299,11 +384,14 @@ def _initialize_async(stop_event: threading.Event) -> None:
                 stop_event=_shutdown_event,
                 extensions=root.extensions,
                 on_complete=lambda: None,
-                on_progress=lambda _: None,
+                on_progress=_on_progress,
                 backend=_backends.get(root.collection),
             )
         except Exception as e:
+            _verify_status_root_error(root.name, str(e))
             print(f"[tsquery_server] Initial scan error ({root.collection}): {e}", flush=True)
+
+    _verify_status_finish(cancelled=_shutdown_event.is_set())
 
     print("[tsquery_server] Initialization complete.", flush=True)
 
@@ -356,6 +444,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "watcher":     _watcher_status(),
                 "queue":       _index_queue.stats(),
                 "collections": _collections_status(),
+                "scan":        _verify_status_snapshot(),
                 # Compat: clients still inspect these keys; backend is in-process
                 # so it's always "ok" once the daemon is up.
                 "typesense_ok":            True,
@@ -538,11 +627,54 @@ class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 # -- Public API -----------------------------------------------------------------
 
+def _try_acquire_lock() -> bool:
+    """Acquire an exclusive OS-level file lock on _DAEMON_LOCK.
+
+    The file handle is stored in _lock_fh and intentionally never closed.
+    The OS releases the lock automatically when the process exits (clean,
+    killed, or crashed), so a second daemon cannot start until the first
+    is truly dead -- not merely mid-shutdown.
+
+    Returns True if the lock was acquired, False if another process holds it.
+    """
+    global _lock_fh
+    _RUN_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        fh = open(_DAEMON_LOCK, "w+")
+        if sys.platform == "win32":
+            import msvcrt
+            # LK_NBLCK: non-blocking exclusive lock on 1 byte at position 0.
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh.write(str(os.getpid()))
+        fh.flush()
+        _lock_fh = fh  # keep handle alive for the process lifetime
+        return True
+    except (OSError, IOError):
+        try:
+            fh.close()
+        except Exception:
+            pass
+        return False
+
+
 def start_daemon() -> bool:
-    """Try to bind PORT and start all daemon threads."""
+    """Acquire the process lock and start all daemon threads."""
     global _server
 
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Acquire the exclusive process lock before doing anything else.
+    # This is checked before the port bind, so a second daemon that loses
+    # the lock race exits cleanly without leaving a ghost entry in session.csv.
+    if not _try_acquire_lock():
+        return False
+
+    # Only configure CSV logging (which writes the session-start row) after we
+    # own the lock -- so every session.csv entry corresponds to a real startup.
+    csv_log.configure(_RUN_DIR / "csv", _cfg.csv_debug)
 
     try:
         _server = _ThreadedHTTPServer(("127.0.0.1", _cfg.port), _Handler)
@@ -660,6 +792,7 @@ def stop_daemon() -> None:
     if _DAEMON_PID.exists():
         _DAEMON_PID.unlink()
 
+    csv_log.shutdown("stop")
     print(f"[tsquery_server] Stopped. total={_elapsed()}", flush=True)
 
 

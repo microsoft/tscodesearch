@@ -25,6 +25,7 @@ from typing import Callable
 
 from indexserver.indexer import build_document, file_id as _file_id
 from indexserver.backend import Backend
+from indexserver import csv_log
 
 # Sentinel mtime value stored in queue items for delete actions.
 MTIME_DELETE = None
@@ -154,6 +155,8 @@ class IndexQueue:
                 self._cond.notify()
             else:
                 self._n_deduped += 1
+        if csv_log.enabled():
+            csv_log.enqueue(collection, rel, action, mtime, reason, is_new)
         return is_new
 
     def enqueue_bulk(self, file_pairs, collection: str, stop_event: threading.Event | None = None) -> tuple[int, int]:
@@ -286,21 +289,25 @@ class IndexQueue:
             t0 = time.perf_counter()
             with self._busy_lock:
                 self._busy[tid] = (rel, size, t0)
+            err_msg = ""
+            doc = None
             try:
                 doc = build_document(full_path, rel)
-                t = time.perf_counter() - t0
-                if t > 1.0:
-                    print(
-                        f"[index-queue] SLOW parse: {rel} took {t:.2f}s ({size:,} bytes)",
-                        flush=True,
-                    )
-                if doc:
-                    return ("upsert", collection, doc)
-            except OSError:
-                pass
-            finally:
-                with self._busy_lock:
-                    self._busy.pop(tid, None)
+            except OSError as e:
+                err_msg = f"OSError: {e}"
+            t = time.perf_counter() - t0
+            if csv_log.enabled():
+                csv_log.parse(collection, rel, size, t * 1000.0,
+                              doc is not None, err_msg)
+            if t > 1.0:
+                print(
+                    f"[index-queue] SLOW parse: {rel} took {t:.2f}s ({size:,} bytes)",
+                    flush=True,
+                )
+            with self._busy_lock:
+                self._busy.pop(tid, None)
+            if doc:
+                return ("upsert", collection, doc)
             return None
 
         t_parse_start = time.perf_counter()
@@ -371,13 +378,21 @@ class IndexQueue:
             if backend is None or not backend.has_pending:
                 dirty.discard(coll)
                 continue
+            buffered = getattr(backend, "buffered_count", 0)
             t0 = time.perf_counter()
+            ok = True
+            err_msg = ""
             try:
                 backend.commit()
-                t_commit = time.perf_counter() - t0
-                print(f"[index-queue] committed {coll} in {t_commit:.2f}s", flush=True)
             except Exception as e:
+                ok = False
+                err_msg = f"{type(e).__name__}: {e}"
                 with self._cond:
                     self._n_errors += 1
-                print(f"[index-queue] commit error ({coll}): {type(e).__name__}: {e}", flush=True)
+                print(f"[index-queue] commit error ({coll}): {err_msg}", flush=True)
+            t_commit = time.perf_counter() - t0
+            if ok:
+                print(f"[index-queue] committed {coll} in {t_commit:.2f}s", flush=True)
+            if csv_log.enabled():
+                csv_log.commit(coll, buffered, t_commit * 1000.0, ok, err_msg)
             dirty.discard(coll)

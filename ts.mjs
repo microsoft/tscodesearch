@@ -25,6 +25,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync, spawn } from 'child_process';
 import http from 'http';
+import { isLockHeld, waitForLockReleased } from './lib/daemon_lock.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -216,10 +217,11 @@ async function waitForPortClosed(port, timeoutMs = 10_000) {
 }
 
 async function shutdownDaemon() {
-    const pidFile = path.join(
-        process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? '', 'AppData', 'Local'),
-        'tscodesearch', 'daemon.pid'
-    );
+    const runDir  = daemonRunDir();
+    const pidFile  = path.join(runDir, 'daemon.pid');
+    const lockFile = path.join(runDir, 'daemon.lock');
+    const py       = clientVenvPython();
+
     let daemonPid = null;
     try { daemonPid = fs.readFileSync(pidFile, 'utf-8').trim() || null; } catch { /* no pid file */ }
 
@@ -231,26 +233,41 @@ async function shutdownDaemon() {
         return;
     }
 
-    // The daemon's stop_daemon() does up to 5s queue stop +
-    // backend close (waits for merge threads) + 5s server shutdown -- so allow
-    // up to 30s before assuming it's stuck.
-    const closed = await waitForPortClosed(PORT, 30_000);
+    // Phase 1: wait for the HTTP port to close (daemon shuts down its server
+    // mid-teardown, so this fires before backends are fully closed).
+    await waitForPortClosed(PORT, 30_000);
 
-    if (!closed && daemonPid) {
-        log(`Daemon did not exit after 30s -- force-killing pid ${daemonPid}...`);
-        if (process.platform === 'win32') {
-            spawnSync('taskkill', ['/F', '/PID', daemonPid], { stdio: 'pipe' });
-        } else {
-            spawnSync('kill', ['-9', daemonPid], { stdio: 'pipe' });
+    // Phase 2: wait for the OS file lock to release -- this only happens when
+    // the process is truly dead (port close is not sufficient: the process is
+    // still alive closing Tantivy backends after the server socket is gone).
+    const released = await waitForLockReleased(lockFile, py, { timeoutMs: 15_000 });
+
+    if (!released) {
+        // Verify the lock is still held before resorting to force-kill -- the
+        // final poll in waitForLockReleased may have raced with process exit.
+        if (!isLockHeld(lockFile, py)) return;
+
+        if (daemonPid) {
+            log(`Daemon did not exit after 45s -- force-killing pid ${daemonPid}...`);
+            if (process.platform === 'win32') {
+                spawnSync('taskkill', ['/F', '/PID', daemonPid], { stdio: 'pipe' });
+            } else {
+                spawnSync('kill', ['-9', daemonPid], { stdio: 'pipe' });
+            }
+            // Confirm the kill took effect.
+            await waitForLockReleased(lockFile, py, { timeoutMs: 5_000 });
         }
-        await waitForPortClosed(PORT, 5_000);
     }
 }
 
-function daemonLogFile() {
+function daemonRunDir() {
     const base = process.env.LOCALAPPDATA
         ?? path.join(process.env.USERPROFILE ?? '', 'AppData', 'Local');
-    return path.join(base, 'tscodesearch', 'daemon.log');
+    return path.join(base, 'tscodesearch');
+}
+
+function daemonLogFile() {
+    return path.join(daemonRunDir(), 'daemon.log');
 }
 
 function startDaemon() {
@@ -279,6 +296,7 @@ function printStatus(apiBody) {
     const collections = apiBody?.collections ?? {};
     const watcher     = apiBody?.watcher     ?? {};
     const queue       = apiBody?.queue       ?? {};
+    const scan        = apiBody?.scan        ?? {};
 
     const qDepth    = queue.depth    ?? 0;
     const qEnqueued = queue.enqueued ?? 0;
@@ -308,6 +326,34 @@ function printStatus(apiBody) {
         const errStr   = qErrors > 0 ? `  errors=${qErrors}` : '';
         const throttle = queue.throttle_s > 0 ? `  throttle=${queue.throttle_s.toFixed(1)}s` : '';
         console.log(`  Queue   : depth=${fmtNum(qDepth)}  enqueued=${fmtNum(qEnqueued)}  upserted=${fmtNum(qUpserted)}  deduped=${fmtNum(qDeduped)}  deleted=${fmtNum(qDeleted)}${errStr}${throttle}`);
+    }
+
+    const scanState = scan.state ?? 'idle';
+    const activeRoot = scan.active_root ?? '';
+    const roots = scan.roots ?? {};
+    const rootParts = Object.entries(roots).map(([name, info]) => {
+        const status = info?.status ?? '?';
+        const phase = info?.phase ?? '';
+        const fsFiles = info?.fs_files ?? 0;
+        const missing = info?.missing ?? 0;
+        const stale = info?.stale ?? 0;
+        const err = info?.errors ?? 0;
+        const errStr = err > 0 ? ` err=${fmtNum(err)}` : '';
+        const phaseStr = phase ? ` ${phase}` : '';
+        return `${name}:${status}${phaseStr} fs=${fmtNum(fsFiles)} miss=${fmtNum(missing)} stale=${fmtNum(stale)}${errStr}`;
+    });
+    if (scanState === 'running') {
+        const active = activeRoot ? ` active=${activeRoot}` : '';
+        console.log(`  Scan   : [>>] ${scanState}${active}`);
+    } else if (scanState === 'complete') {
+        console.log(`  Scan   : [OK] ${scanState}`);
+    } else if (scanState === 'cancelled') {
+        console.log(`  Scan   : [--] ${scanState}`);
+    } else {
+        console.log(`  Scan   : [--] ${scanState}`);
+    }
+    if (rootParts.length > 0) {
+        console.log(`           ${rootParts.join('  |  ')}`);
     }
 
     const state   = watcher.state ?? (watcher.running ? 'watching' : 'stopped');

@@ -433,20 +433,34 @@ class Backend:
         idx.reload()
         return idx.searcher()
 
-    def export_id_mtime(self) -> dict[str, int]:
-        """Return {doc_id: mtime} for every document. Used by the verifier."""
+    def export_id_mtime(self, collection: str = "") -> dict[str, int]:
+        """Return {doc_id: mtime} for every document. Used by the verifier.
+
+        When CSV debug logging is enabled, each row is also written to
+        ``backend_export.csv`` so a human can see exactly what the verifier
+        saw as the "already indexed" set at scan start. ``collection`` is
+        passed through to the CSV; pass the empty string when the caller
+        doesn't know it (the CSV tag will just be blank).
+        """
+        from indexserver import csv_log
+
         searcher = self.searcher()
         n = searcher.num_docs
         if n == 0:
             return {}
         result = searcher.search(tantivy.Query.all_query(), limit=n)
         out: dict[str, int] = {}
+        log_export = csv_log.enabled()
         for _, addr in result.hits:
             doc = searcher.doc(addr).to_dict()
             doc_id = (doc.get("id") or [""])[0]
             mtime  = (doc.get("mtime") or [0])[0]
             if doc_id:
-                out[doc_id] = int(mtime)
+                mtime_int = int(mtime)
+                out[doc_id] = mtime_int
+                if log_export:
+                    rel = (doc.get("relative_path") or [""])[0]
+                    csv_log.backend_export(collection, doc_id, mtime_int, rel)
         return out
 
 

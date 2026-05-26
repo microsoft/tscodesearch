@@ -26,6 +26,7 @@ if _base not in sys.path:
     sys.path.insert(0, _base)
 
 from query.config import normalize_path
+from indexserver import csv_log
 from indexserver.indexer import (
     walk_source_files, file_id,
     ensure_backend, index_file_list,
@@ -58,7 +59,7 @@ def check_ready(cfg, src_root: str | None = None,
 
     try:
         backend = ensure_backend(cfg, coll, write=False)
-        index_map = export_index_map(backend)
+        index_map = export_index_map(backend, collection=coll)
     except Exception as e:
         return {
             "ready": False, "poll_ok": False, "index_ok": False,
@@ -162,7 +163,7 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
     progress["phase"] = "collecting: exporting index"
     if on_progress: on_progress(progress)
 
-    index_map = export_index_map(backend)
+    index_map = export_index_map(backend, collection=coll_name)
     progress["index_docs"] = len(index_map)
     print(f"[verifier]   {len(index_map):,} documents in index", flush=True)
 
@@ -179,6 +180,7 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
     n_fs = 0
     last_scan_print = time.time()
 
+    log_walk = csv_log.enabled()
     for sf in walk_source_files(src_root, cfg, extensions=extensions):
         if stop_event and stop_event.is_set():
             break
@@ -190,13 +192,19 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
             progress["missing"] += 1
             needs_update = True
             reason = "new"
+            decision = "missing"
         elif sf.mtime != idx_mtime:
             progress["stale"] += 1
             needs_update = True
             reason = "modified"
+            decision = "stale"
         else:
             needs_update = False
             reason = ""
+            decision = "matched"
+
+        if log_walk:
+            csv_log.fs_walk(coll_name, sf.rel, sf.mtime, doc_id, idx_mtime, decision)
 
         if needs_update:
             if queue is not None:
@@ -224,6 +232,9 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
     orphaned_ids = list(remaining)
     progress["fs_files"] = n_fs
     progress["orphaned"] = len(orphaned_ids)
+    if csv_log.enabled():
+        for _oid in orphaned_ids:
+            csv_log.orphan(coll_name, _oid)
     if queue is None:
         progress["total_to_update"] = len(to_update)
 

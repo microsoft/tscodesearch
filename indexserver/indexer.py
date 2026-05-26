@@ -518,9 +518,9 @@ def index_file_list(
     return total, errors
 
 
-def export_index_map(backend: Backend) -> dict[str, int]:
+def export_index_map(backend: Backend, collection: str = "") -> dict[str, int]:
     """Return {doc_id: mtime} for every document in *backend*."""
-    return backend.export_id_mtime()
+    return backend.export_id_mtime(collection=collection)
 
 
 def walk_and_enqueue(

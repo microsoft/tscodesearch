@@ -94,6 +94,11 @@ class Config:
     exclude_dirs: frozenset = field(default_factory=lambda: EXCLUDE_DIRS)
     max_file_bytes: int = 3 * 1024 * 1024
     max_content_chars: int = 30000
+    # Real-time CSV debug logging. Empty / false-y disables it. A truthy
+    # value (``true``, ``1``, ``on``) writes CSVs under the daemon run dir;
+    # any other string is treated as the directory path. See
+    # ``indexserver.csv_log`` for the file layout.
+    csv_debug: str = ""
 
     @property
     def src_root(self) -> str:
@@ -166,8 +171,15 @@ def load_config(config_file: str | None = None) -> Config:
     if "port" not in raw:
         raise RuntimeError(f"'port' is required in {path}")
 
+    csv_debug_raw = raw.get("csv_debug", "")
+    if isinstance(csv_debug_raw, bool):
+        csv_debug = "1" if csv_debug_raw else ""
+    else:
+        csv_debug = str(csv_debug_raw or "")
+
     return Config(
         port=int(raw["port"]),
         api_key=raw.get("api_key", "codesearch-local"),
         roots=_parse_roots(raw.get("roots", {})),
+        csv_debug=csv_debug,
     )
