@@ -11,6 +11,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -132,17 +133,15 @@ class _LockTestBase(unittest.TestCase):
         # Release the OS lock by closing the file handle, then reset the global.
         fh = self._mod._lock_fh
         if fh is not None:
-            try:
-                if sys.platform == 'win32':
-                    import msvcrt
-                    try:
-                        fh.seek(0)
-                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-                    except Exception:
-                        pass
+            if sys.platform == 'win32':
+                import msvcrt
+                # Best-effort teardown: unlock can fail if handle state already changed.
+                with contextlib.suppress(OSError):
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            # Best-effort teardown: close errors should not fail tests.
+            with contextlib.suppress(Exception):
                 fh.close()
-            except Exception:
-                pass
             self._mod._lock_fh = None
 
         for p in self._patches:

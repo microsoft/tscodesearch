@@ -6,6 +6,13 @@ CLAUDE.md is a placeholder that points here.
 
 Operational notes for agents working in this repo are maintained below.
 
+## GitHub workflow preference
+
+This repository is hosted on GitHub.
+When working with pull requests, comments, checks, issues, and repository metadata,
+prefer GitHub-native tooling (for example, GH CLI and available GitHub-integrated
+tools) whenever possible.
+
 ## Debugging the indexer: real-time CSV logs
 
 When something goes wrong on the indexer side (the classic symptom: files

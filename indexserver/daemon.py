@@ -100,6 +100,11 @@ _verify_status: dict = {
 }
 
 
+def _lock_held() -> bool:
+    """True when this process currently holds the daemon file lock."""
+    return _lock_fh is not None
+
+
 # -- Tree-sitter query helper ---------------------------------------------------
 
 _query_module = None
@@ -451,6 +456,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "queue":       _index_queue.stats(),
                 "collections": _collections_status(),
                 "scan":        _verify_status_snapshot(),
+                "daemon_lock_held": _lock_held(),
                 # Compat: clients still inspect these keys; backend is in-process
                 # so it's always "ok" once the daemon is up.
                 "typesense_ok":            True,

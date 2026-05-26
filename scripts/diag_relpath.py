@@ -11,7 +11,7 @@ if _base not in sys.path:
     sys.path.insert(0, _base)
 
 import tantivy
-from query.config import load_config, normalize_path
+from query.config import load_config
 from indexserver.indexer import file_id, walk_source_files, ensure_backend
 
 

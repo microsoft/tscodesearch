@@ -13,8 +13,7 @@ _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
-from query.config import load_config, normalize_path
-from indexserver.backend import Backend
+from query.config import load_config
 from indexserver.indexer import file_id, walk_source_files, ensure_backend
 
 
