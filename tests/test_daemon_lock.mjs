@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { spawnSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 import { isLockHeld, waitForLockReleased } from '../lib/daemon_lock.mjs';
 
