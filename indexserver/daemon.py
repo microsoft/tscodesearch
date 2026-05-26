@@ -29,6 +29,7 @@ HTTP endpoints:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import sys
@@ -43,13 +44,14 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from indexserver.backend import Backend
-from query.config import load_config as _load_config, normalize_path
+from query.config import index_root, load_config as _load_config, normalize_path
 from indexserver.index_queue import IndexQueue
 from indexserver.indexer import ensure_backend
+from indexserver.runtime_logger import configure as _configure_runtime_logger
 from indexserver.search_modes import build_filter_by, resolve_query_params
 from indexserver.verifier import run_verify
 from indexserver.watcher import run_watcher
-from indexserver import csv_log
+from indexserver import debug_logger
 from indexserver import search as _search_mod
 
 _cfg = _load_config()
@@ -65,6 +67,9 @@ _DEFAULT_RUN_DIR = (
 _RUN_DIR        = Path(os.environ.get("TSCODESEARCH_DATA", _DEFAULT_RUN_DIR))
 _DAEMON_PID     = _RUN_DIR / "daemon.pid"
 _DAEMON_LOCK    = _RUN_DIR / "daemon.lock"
+_CSV_DEBUG_DIR  = index_root().with_name(f"{index_root().name}_csv")
+
+_LOG = logging.getLogger("tscodesearch.daemon")
 
 # File handle for the OS-level exclusive lock.  Intentionally never closed --
 # the OS releases the lock when the process truly exits (clean or crash), which
@@ -130,7 +135,7 @@ def _run_query(mode: str, pattern: str, files: list[Path],
         try:
             src_bytes = native.read_bytes()
         except OSError as e:
-            print(f"ERROR reading {native}: {e}", file=sys.stderr)
+            _LOG.warning("ERROR reading %s: %s", native, e)
             continue
         try:
             matches = _q.query_file(src_bytes, ext, mode, pattern,
@@ -297,7 +302,7 @@ def _start_watcher() -> None:
             daemon=True,
         )
         _watcher_thread.start()
-        print("[tsquery_server] Watcher thread started.", flush=True)
+        _LOG.info("Watcher thread started.")
 
 
 # -- File-event handler ---------------------------------------------------------
@@ -352,13 +357,14 @@ def _init_backends() -> None:
                 ndocs = backend.num_documents()
             except Exception:
                 ndocs = -1
-            print(
-                f"[tsquery_server] Opened backend {root.collection} "
-                f"({ndocs:,} docs on disk) at {root.index_dir}",
-                flush=True,
+            _LOG.info(
+                "Opened backend %s (%s docs on disk) at %s",
+                root.collection,
+                f"{ndocs:,}",
+                root.index_dir,
             )
         except Exception as e:
-            print(f"[tsquery_server] WARNING: could not open backend {root.collection}: {e}", flush=True)
+            _LOG.warning("Could not open backend %s: %s", root.collection, e)
 
 
 def _initialize_async(stop_event: threading.Event) -> None:
@@ -389,11 +395,11 @@ def _initialize_async(stop_event: threading.Event) -> None:
             )
         except Exception as e:
             _verify_status_root_error(root.name, str(e))
-            print(f"[tsquery_server] Initial scan error ({root.collection}): {e}", flush=True)
+            _LOG.error("Initial scan error (%s): %s", root.collection, e)
 
     _verify_status_finish(cancelled=_shutdown_event.is_set())
 
-    print("[tsquery_server] Initialization complete.", flush=True)
+    _LOG.info("Initialization complete.")
 
 
 # -- HTTP handler ---------------------------------------------------------------
@@ -612,7 +618,7 @@ class _Handler(BaseHTTPRequestHandler):
                     _f.write(f"\n[{datetime.datetime.now().isoformat()}] {self.command} {self.path}\n{tb}\n")
             except Exception:
                 pass
-            print(f"[tsquery_server] CRASH: {tb}", flush=True)
+            _LOG.error("CRASH handling %s %s: %s", self.command, self.path, tb)
             try:
                 self._send_json(500, {"error": "internal server error",
                                       "detail": tb.splitlines()[-1]})
@@ -639,6 +645,7 @@ def _try_acquire_lock() -> bool:
     """
     global _lock_fh
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
+    fh = None
     try:
         fh = open(_DAEMON_LOCK, "w+")
         if sys.platform == "win32":
@@ -653,10 +660,11 @@ def _try_acquire_lock() -> bool:
         _lock_fh = fh  # keep handle alive for the process lifetime
         return True
     except (OSError, IOError):
-        try:
-            fh.close()
-        except Exception:
-            pass
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
         return False
 
 
@@ -674,7 +682,7 @@ def start_daemon() -> bool:
 
     # Only configure CSV logging (which writes the session-start row) after we
     # own the lock -- so every session.csv entry corresponds to a real startup.
-    csv_log.configure(_RUN_DIR / "csv", _cfg.csv_debug)
+    debug_logger.configure(_CSV_DEBUG_DIR, _cfg.csv_debug)
 
     try:
         _server = _ThreadedHTTPServer(("127.0.0.1", _cfg.port), _Handler)
@@ -682,11 +690,11 @@ def start_daemon() -> bool:
         return False
 
     _DAEMON_PID.write_text(str(os.getpid()))
-    print(f"[tsquery_server] === STARTED pid={os.getpid()} port={_cfg.port} ===", flush=True)
+    _LOG.info("=== STARTED pid=%s port=%s ===", os.getpid(), _cfg.port)
 
     srv_thread = threading.Thread(target=_server.serve_forever, name="http", daemon=True)
     srv_thread.start()
-    print(f"[tsquery_server] Listening on http://127.0.0.1:{_cfg.port}", flush=True)
+    _LOG.info("Listening on http://127.0.0.1:%s", _cfg.port)
 
     _init_stop = threading.Event()
     _init_thread = threading.Thread(
@@ -712,17 +720,14 @@ def _status_printer(interval: float = 60.0) -> None:
             w_state  = ("watching" if w.get("running") else
                         "paused"   if w.get("paused")  else "stopped")
             q_str = f"  queue={q_depth}" if q_depth else ""
-            print(
-                f"[tsquery_server] status: {docs_parts}  watcher={w_state}{q_str}",
-                flush=True,
-            )
+            _LOG.info("status: %s  watcher=%s%s", docs_parts, w_state, q_str)
         except Exception as e:
-            print(f"[tsquery_server] status-printer error: {e}", flush=True)
+            _LOG.warning("status-printer error: %s", e)
 
 
 def run_until_shutdown() -> None:
     def _on_signal(sig, frame):
-        print(f"[tsquery_server] Signal {sig} -- shutting down...", flush=True)
+        _LOG.info("Signal %s -- shutting down...", sig)
         _shutdown_event.set()
 
     signal.signal(signal.SIGTERM, _on_signal)
@@ -760,40 +765,37 @@ def stop_daemon() -> None:
     def _elapsed() -> str:
         return f"{time.monotonic() - t0:.1f}s"
 
-    print(f"[tsquery_server] Draining index queue... ({_elapsed()})", flush=True)
+    _LOG.info("Draining index queue... (%s)", _elapsed())
     # Queue worker stops pulling new items, runs one final commit to flush
     # already-buffered work, then exits. The hard-exit timer in
     # run_until_shutdown() is the backstop if anything blocks longer.
     _index_queue.stop(timeout=5)
-    print(f"[tsquery_server] Queue drained ({_elapsed()})", flush=True)
+    _LOG.info("Queue drained (%s)", _elapsed())
 
     for collection, backend in _backends.items():
-        print(f"[tsquery_server] Closing backend {collection}... ({_elapsed()})", flush=True)
+        _LOG.info("Closing backend %s... (%s)", collection, _elapsed())
         try:
             # quick=True: skip merge-thread wait and uncommitted-work commit.
             # Any buffered work is dropped; the verifier re-indexes on next startup.
             backend.close(quick=True)
-            print(
-                f"[tsquery_server] Closed backend {collection} ({_elapsed()})",
-                flush=True,
-            )
+            _LOG.info("Closed backend %s (%s)", collection, _elapsed())
         except Exception as e:
-            print(f"[tsquery_server] backend.close error ({collection}): {e} ({_elapsed()})", flush=True)
+            _LOG.warning("backend.close error (%s): %s (%s)", collection, e, _elapsed())
     _backends.clear()
 
     if _server is not None:
-        print(f"[tsquery_server] Shutting down HTTP server... ({_elapsed()})", flush=True)
+        _LOG.info("Shutting down HTTP server... (%s)", _elapsed())
         _srv_stop = threading.Thread(target=_server.shutdown, daemon=True)
         _srv_stop.start()
         _srv_stop.join(timeout=5)
         _server = None
-        print(f"[tsquery_server] HTTP server down ({_elapsed()})", flush=True)
+        _LOG.info("HTTP server down (%s)", _elapsed())
 
     if _DAEMON_PID.exists():
         _DAEMON_PID.unlink()
 
-    csv_log.shutdown("stop")
-    print(f"[tsquery_server] Stopped. total={_elapsed()}", flush=True)
+    debug_logger.shutdown("stop")
+    _LOG.info("Stopped. total=%s", _elapsed())
 
 
 # -- System-tray icon ----------------------------------------------------------
@@ -844,7 +846,7 @@ def _run_tray() -> None:
         try:
             icon.run()
         except Exception as e:
-            print(f"[tsquery_server] tray icon error: {e}", flush=True)
+            _LOG.warning("tray icon error: %s", e)
 
     t = threading.Thread(target=_tray_thread, name="tray", daemon=True)
     t.start()
@@ -852,58 +854,10 @@ def _run_tray() -> None:
 
 # -- Logging setup -------------------------------------------------------------
 
-class _Tee:
-    """Write to multiple streams; swallow errors on individual streams."""
-    def __init__(self, *streams):
-        self._streams = [s for s in streams if s is not None]
-
-    def write(self, data: str) -> None:
-        for s in self._streams:
-            try:
-                s.write(data)
-            except Exception:
-                pass
-
-    def flush(self) -> None:
-        for s in self._streams:
-            try:
-                s.flush()
-            except Exception:
-                pass
-
-    @property
-    def encoding(self) -> str:
-        for s in self._streams:
-            enc = getattr(s, "encoding", None)
-            if enc:
-                return enc
-        return "ascii"
-
-    @property
-    def errors(self) -> str:
-        return "replace"
-
-
 def _setup_logging() -> None:
-    """Open the daemon log file and tee stdout/stderr into it.
-
-    Called at the very start of __main__ so all subsequent prints go to the
-    log file regardless of how the process was spawned.  When the process has
-    a real console (launched via 'start'), output also appears in that window.
-    """
+    """Configure runtime logging to file and optional attached console."""
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = _RUN_DIR / "daemon.log"
-    log_fh = open(log_path, "a", encoding="ascii", errors="replace", buffering=1)  # noqa: SIM115
-    orig_out = sys.__stdout__
-    orig_err = sys.__stderr__
-    # isatty() is True when launched in a real console (e.g. via Windows 'start').
-    has_console = orig_out is not None and getattr(orig_out, "isatty", lambda: False)()
-    if has_console:
-        sys.stdout = _Tee(orig_out, log_fh)
-        sys.stderr = _Tee(orig_err, log_fh)
-    else:
-        sys.stdout = log_fh
-        sys.stderr = log_fh
+    _configure_runtime_logger(_RUN_DIR / "daemon.log")
 
 
 # -- Daemon entry point ---------------------------------------------------------
@@ -924,15 +878,12 @@ if __name__ == "__main__":
     _setup_logging()
 
     roots_info = "  ".join(f"{n}={r.path}" for n, r in ALL_ROOTS.items())
-    print(
-        f"[tsquery_server] ================================================\n"
-        f"[tsquery_server]  Codesearch Daemon  port={_cfg.port}\n"
-        f"[tsquery_server]  roots: {roots_info}\n"
-        f"[tsquery_server] ================================================",
-        flush=True,
-    )
+    _LOG.info("================================================")
+    _LOG.info(" Codesearch Daemon  port=%s", _cfg.port)
+    _LOG.info(" roots: %s", roots_info)
+    _LOG.info("================================================")
 
     if not start_daemon():
-        print("[tsquery_server] Another instance is already running on the port.", flush=True)
+        _LOG.info("Another instance is already running on the port.")
         sys.exit(0)
     run_until_shutdown()

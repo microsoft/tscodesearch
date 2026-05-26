@@ -5,7 +5,7 @@ Tests cover:
   TryAcquireLock   -- basic acquire / lock-file content / idempotency guard
   LockExclusivity  -- a subprocess cannot steal the lock while the parent holds it
   LockRelease      -- lock is released when the holding process exits
-  GhostSessions    -- csv_log.configure() is only called AFTER the lock is held
+    GhostSessions    -- debug_logger.configure() is only called AFTER the lock is held
                       (i.e. no session.csv row is written for a failed start)
 """
 
@@ -303,13 +303,13 @@ class TestLockRelease(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# GhostSessions -- csv_log.configure only runs after the lock is acquired
+# GhostSessions -- debug_logger.configure only runs after the lock is acquired
 # ---------------------------------------------------------------------------
 
 class TestGhostSessions(_LockTestBase):
 
-    def test_csv_log_not_configured_when_lock_fails(self):
-        """When _try_acquire_lock fails, csv_log.configure must not be called.
+    def test_debug_logger_not_configured_when_lock_fails(self):
+        """When _try_acquire_lock fails, debug_logger.configure must not be called.
 
         This is the ghost-session fix: session.csv must never receive a start
         row for a process that failed to get the lock.
@@ -319,32 +319,32 @@ class TestGhostSessions(_LockTestBase):
         try:
             _wait_ready(holder)
 
-            with patch.object(self._mod.csv_log, 'configure') as mock_cfg, \
-                 patch.object(self._mod, 'csv_log', self._mod.csv_log):
+            with patch.object(self._mod.debug_logger, 'configure') as mock_cfg, \
+                 patch.object(self._mod, 'debug_logger', self._mod.debug_logger):
                 # Simulate the start_daemon() preamble: acquire lock first.
                 result = self._mod._try_acquire_lock()
                 self.assertFalse(result)
-                # csv_log.configure must NOT have been called -- it is only
+                # debug_logger.configure must NOT have been called -- it is only
                 # called inside start_daemon() after _try_acquire_lock succeeds.
                 mock_cfg.assert_not_called()
         finally:
             holder.kill()
             holder.wait()
 
-    def test_csv_log_configured_when_lock_succeeds(self):
-        """When the lock is free, start_daemon() must configure csv_log."""
+    def test_debug_logger_configured_when_lock_succeeds(self):
+        """When the lock is free, start_daemon() must configure debug_logger."""
         import indexserver.daemon as _daemon
         # We cannot call start_daemon() in tests (it binds a port), so we
-        # validate the ordering by inspecting the source: csv_log.configure
+        # validate the ordering by inspecting the source: debug_logger.configure
         # must appear AFTER the _try_acquire_lock() call in start_daemon().
         import inspect
         src = inspect.getsource(_daemon.start_daemon)
         lock_pos  = src.find('_try_acquire_lock()')
-        csv_pos   = src.find('csv_log.configure')
+        logger_pos = src.find('debug_logger.configure')
         self.assertGreater(lock_pos, -1,  'start_daemon must call _try_acquire_lock()')
-        self.assertGreater(csv_pos,  -1,  'start_daemon must call csv_log.configure')
-        self.assertGreater(csv_pos, lock_pos,
-            'csv_log.configure must appear AFTER _try_acquire_lock() in start_daemon()')
+        self.assertGreater(logger_pos,  -1,  'start_daemon must call debug_logger.configure')
+        self.assertGreater(logger_pos, lock_pos,
+            'debug_logger.configure must appear AFTER _try_acquire_lock() in start_daemon()')
 
 
 if __name__ == '__main__':

@@ -95,9 +95,9 @@ class Config:
     max_file_bytes: int = 3 * 1024 * 1024
     max_content_chars: int = 30000
     # Real-time CSV debug logging. Empty / false-y disables it. A truthy
-    # value (``true``, ``1``, ``on``) writes CSVs under the daemon run dir;
+    # value (``true``, ``1``, ``on``) writes CSVs under <repo>/.tantivy_csv/;
     # any other string is treated as the directory path. See
-    # ``indexserver.csv_log`` for the file layout.
+    # ``indexserver.debug_logger`` for the file layout.
     csv_debug: str = ""
 
     @property

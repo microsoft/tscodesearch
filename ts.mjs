@@ -440,8 +440,36 @@ function cmdLog(args) {
         return;
     }
     const lines = fs.readFileSync(logPath, 'utf-8').split('\n');
-    console.log(`=== daemon log (${logPath}) ===`);
+    console.log(`=== daemon runtime log (${logPath}) ===`);
     console.log(lines.slice(-n).join('\n'));
+
+    if (!args.follow) return;
+
+    let pos = fs.statSync(logPath).size;
+    console.log('[ts] Following log output. Press Ctrl+C to stop.');
+    const timer = setInterval(() => {
+        try {
+            const st = fs.statSync(logPath);
+            if (st.size < pos) {
+                pos = 0;
+            }
+            if (st.size === pos) {
+                return;
+            }
+            const fd = fs.openSync(logPath, 'r');
+            try {
+                const buf = Buffer.alloc(st.size - pos);
+                fs.readSync(fd, buf, 0, buf.length, pos);
+                pos = st.size;
+                process.stdout.write(buf.toString('utf-8'));
+            } finally {
+                fs.closeSync(fd);
+            }
+        } catch (e) {
+            clearInterval(timer);
+            die(`Failed while following log: ${e.message ?? String(e)}`);
+        }
+    }, 1000);
 }
 
 function cmdRoot(args) {
@@ -509,6 +537,7 @@ Commands:
     --root NAME          Root to recreate (default: first configured root)
   log                    Show daemon log
     -n N                 Number of lines (default: 40)
+        -f, --follow         Follow new log output
   root                   List configured roots
   root --add NAME PATH   Add (or update) a root in config.json
     --extensions EXTS  Comma-separated extensions to index (e.g. .cs,.py,.ts)

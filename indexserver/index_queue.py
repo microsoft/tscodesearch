@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import time
+import logging
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -25,10 +26,11 @@ from typing import Callable
 
 from indexserver.indexer import build_document, file_id as _file_id
 from indexserver.backend import Backend
-from indexserver import csv_log
 
 # Sentinel mtime value stored in queue items for delete actions.
 MTIME_DELETE = None
+_CSV_LOGGER = logging.getLogger("tscodesearch.debugcsv")
+_LOG = logging.getLogger("tscodesearch.index_queue")
 
 
 class _Fence:
@@ -115,16 +117,15 @@ class IndexQueue:
                     f"{rel} ({size:,}B, {now - t0:.1f}s)"
                     for _tid, (rel, size, t0) in snapshot
                 )
-                print(
-                    f"[index-queue] worker still alive (items_left={len(self._items)}); "
-                    f"parsing: {files}",
-                    flush=True,
+                _LOG.warning(
+                    "worker still alive (items_left=%s); parsing: %s",
+                    len(self._items),
+                    files,
                 )
             else:
-                print(
-                    f"[index-queue] worker still alive (items_left={len(self._items)}); "
-                    f"no parse workers busy",
-                    flush=True,
+                _LOG.warning(
+                    "worker still alive (items_left=%s); no parse workers busy",
+                    len(self._items),
                 )
 
     # -- public interface ------------------------------------------------------
@@ -155,8 +156,11 @@ class IndexQueue:
                 self._cond.notify()
             else:
                 self._n_deduped += 1
-        if csv_log.enabled():
-            csv_log.enqueue(collection, rel, action, mtime, reason, is_new)
+        self._log_csv(
+            "enqueue",
+            ("ts", "pid", "collection", "rel", "action", "mtime", "reason", "is_new"),
+            (collection, rel, action, "" if mtime is None else mtime, reason, "1" if is_new else "0"),
+        )
         return is_new
 
     def enqueue_bulk(self, file_pairs, collection: str, stop_event: threading.Event | None = None) -> tuple[int, int]:
@@ -296,14 +300,13 @@ class IndexQueue:
             except OSError as e:
                 err_msg = f"OSError: {e}"
             t = time.perf_counter() - t0
-            if csv_log.enabled():
-                csv_log.parse(collection, rel, size, t * 1000.0,
-                              doc is not None, err_msg)
+            self._log_csv(
+                "parse",
+                ("ts", "pid", "collection", "rel", "size", "parse_ms", "ok", "error"),
+                (collection, rel, size, f"{(t * 1000.0):.1f}", "1" if doc is not None else "0", err_msg),
+            )
             if t > 1.0:
-                print(
-                    f"[index-queue] SLOW parse: {rel} took {t:.2f}s ({size:,} bytes)",
-                    flush=True,
-                )
+                _LOG.warning("SLOW parse: %s took %.2fs (%s bytes)", rel, t, f"{size:,}")
             with self._busy_lock:
                 self._busy.pop(tid, None)
             if doc:
@@ -342,7 +345,7 @@ class IndexQueue:
                     n_deleted += 1
                 dirty.add(coll)
             except Exception as e:
-                print(f"[index-queue] add/delete error ({coll}): {type(e).__name__}: {e}", flush=True)
+                _LOG.warning("add/delete error (%s): %s: %s", coll, type(e).__name__, e)
         t_add = time.perf_counter() - t_add_start
 
         with self._cond:
@@ -356,10 +359,12 @@ class IndexQueue:
             self._n_deleted  += n_deleted
 
         if n_added or n_deleted:
-            print(
-                f"[index-queue] streamed +{n_added}/-{n_deleted} "
-                f"parse={t_parse:.2f}s add={t_add:.2f}s",
-                flush=True,
+            _LOG.info(
+                "streamed +%s/-%s parse=%.2fs add=%.2fs",
+                n_added,
+                n_deleted,
+                t_parse,
+                t_add,
             )
 
         # Fences: commit buffered work, then fire callbacks in queue order.
@@ -368,7 +373,7 @@ class IndexQueue:
             try:
                 fence.callback()
             except Exception as e:
-                print(f"[index-queue] fence callback error: {e}", flush=True)
+                _LOG.warning("fence callback error: %s", e)
 
     def _commit_all(self, dirty: set[str]) -> None:
         if self._resolve is None or not dirty:
@@ -389,10 +394,25 @@ class IndexQueue:
                 err_msg = f"{type(e).__name__}: {e}"
                 with self._cond:
                     self._n_errors += 1
-                print(f"[index-queue] commit error ({coll}): {err_msg}", flush=True)
+                _LOG.warning("commit error (%s): %s", coll, err_msg)
             t_commit = time.perf_counter() - t0
             if ok:
-                print(f"[index-queue] committed {coll} in {t_commit:.2f}s", flush=True)
-            if csv_log.enabled():
-                csv_log.commit(coll, buffered, t_commit * 1000.0, ok, err_msg)
+                _LOG.info("committed %s in %.2fs", coll, t_commit)
+            self._log_csv(
+                "commit",
+                ("ts", "pid", "collection", "n_buffered", "duration_ms", "success", "error"),
+                (coll, buffered, f"{(t_commit * 1000.0):.1f}", "1" if ok else "0", err_msg),
+            )
             dirty.discard(coll)
+
+    def _log_csv(self, event: str, header: tuple[str, ...], row: tuple) -> None:
+        if not _CSV_LOGGER.isEnabledFor(logging.DEBUG):
+            return
+        _CSV_LOGGER.debug(
+            "csv",
+            extra={
+                "csv_event": event,
+                "csv_header": header,
+                "csv_row": row,
+            },
+        )

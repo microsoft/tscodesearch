@@ -1,5 +1,5 @@
 """
-Scan the CSV debug logs produced by ``indexserver.csv_log`` and surface
+Scan the CSV debug logs produced by ``indexserver.debug_logger`` and surface
 what the daemon decided. Built for the "stop / restart doesn't dedup"
 class of bug: per-session breakdowns of how many files matched, how many
 were re-indexed, what commits failed, and which files keep bouncing
@@ -19,7 +19,7 @@ Usage:
     python -m scripts.scan_csv --session N           # filter to one session
                                                      # (1 = oldest)
 
-Defaults to ``%LOCALAPPDATA%/tscodesearch/csv`` on Windows. Override with
+Defaults to ``<repo>/.tantivy_csv``. Override with
 ``--csv-dir`` or env ``TSCODESEARCH_CSV_DIR``.
 """
 from __future__ import annotations
@@ -40,11 +40,8 @@ def _default_csv_dir() -> Path:
     explicit = os.environ.get("TSCODESEARCH_CSV_DIR", "").strip()
     if explicit:
         return Path(explicit)
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    else:
-        base = str(Path.home() / ".local")
-    return Path(base) / "tscodesearch" / "csv"
+    repo_root = Path(__file__).resolve().parent.parent
+    return repo_root / ".tantivy_csv"
 
 
 # -- session model -------------------------------------------------------------
@@ -402,7 +399,7 @@ def cmd_flapping(sessions: list[Session], top: int = 30) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--csv-dir", default=None, help="CSV log dir (default: %LOCALAPPDATA%/tscodesearch/csv)")
+    ap.add_argument("--csv-dir", default=None, help="CSV log dir (default: <repo>/.tantivy_csv)")
     ap.add_argument("--mode", default="summary",
                     choices=["summary", "sessions", "stales", "missing",
                              "orphans", "errors", "index-diff", "flapping"])
