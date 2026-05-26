@@ -51,8 +51,8 @@ class CsvDebugHandler(logging.Handler):
                 try:
                     f.flush()
                     f.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _RUNTIME_LOG.warning("failed to close CSV file handle: %s", e)
             self._files.clear()
         super().close()
 
@@ -66,11 +66,18 @@ class CsvDebugHandler(logging.Handler):
                 return f
             path = self._dir / f"{event}.csv"
             new_file = not path.exists() or path.stat().st_size == 0
-            f = open(path, "a", encoding="ascii", errors="replace", buffering=1, newline="")
-            if new_file:
-                f.write(",".join(header) + "\n")
-            self._files[event] = f
-            return f
+            opened = open(path, "a", encoding="ascii", errors="replace", buffering=1, newline="")
+            try:
+                if new_file:
+                    opened.write(",".join(header) + "\n")
+                self._files[event] = opened
+                return opened
+            except Exception:
+                try:
+                    opened.close()
+                except Exception as close_err:
+                    _RUNTIME_LOG.debug("failed closing partially initialized CSV file %s: %s", path, close_err)
+                raise
 
     @staticmethod
     def _escape(value: Any) -> str:
@@ -138,12 +145,12 @@ def configure(default_dir: Path, setting: str = "") -> None:
         if _HANDLER is not None:
             try:
                 _LOGGER.removeHandler(_HANDLER)
-            except Exception:
-                pass
+            except Exception as e:
+                _RUNTIME_LOG.debug("failed to remove previous CSV debug handler: %s", e)
             try:
                 _HANDLER.close()
-            except Exception:
-                pass
+            except Exception as e:
+                _RUNTIME_LOG.debug("failed to close previous CSV debug handler: %s", e)
             _HANDLER = None
 
         if target is None:
@@ -176,12 +183,12 @@ def shutdown(reason: str = "stop") -> None:
         if _HANDLER is not None:
             try:
                 _LOGGER.removeHandler(_HANDLER)
-            except Exception:
-                pass
+            except Exception as e:
+                _RUNTIME_LOG.debug("failed to remove CSV debug handler during shutdown: %s", e)
             try:
                 _HANDLER.close()
-            except Exception:
-                pass
+            except Exception as e:
+                _RUNTIME_LOG.debug("failed to close CSV debug handler during shutdown: %s", e)
             _HANDLER = None
 
 

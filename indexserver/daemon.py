@@ -664,6 +664,7 @@ def _try_acquire_lock() -> bool:
             try:
                 fh.close()
             except Exception:
+                # Cleanup-only best effort: we're already returning False.
                 pass
         return False
 

@@ -11,7 +11,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import importlib
 import os
 import subprocess
 import sys
@@ -20,7 +19,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # Helpers
