@@ -12,6 +12,7 @@ Usage:
 import os
 import sys
 import time
+import logging
 import threading
 import argparse
 
@@ -26,6 +27,9 @@ else:
 from watchdog.events import FileSystemEventHandler
 
 from query.config import normalize_path
+
+_CSV_LOGGER = logging.getLogger("tscodesearch.debugcsv")
+_LOG = logging.getLogger("tscodesearch.watcher")
 
 DEBOUNCE_SECONDS = 2.0
 
@@ -62,6 +66,7 @@ class SourceChangeHandler(FileSystemEventHandler):
                 with self._lock:
                     self._pending[event.src_path] = "created"
                 self._schedule_flush()
+                self._log_watcher(event.src_path, "created")
 
     def on_modified(self, event):
         if not event.is_directory and self._is_indexed(event.src_path):
@@ -72,22 +77,40 @@ class SourceChangeHandler(FileSystemEventHandler):
                     if self._pending.get(event.src_path) != "created":
                         self._pending[event.src_path] = "modified"
                 self._schedule_flush()
+                self._log_watcher(event.src_path, "modified")
 
     def on_deleted(self, event):
         if not event.is_directory and self._is_indexed(event.src_path):
             with self._lock:
                 self._pending[event.src_path] = "deleted"
             self._schedule_flush()
+            self._log_watcher(event.src_path, "deleted")
 
     def on_moved(self, event):
         if not event.is_directory:
             if self._is_indexed(event.src_path):
                 with self._lock:
                     self._pending[event.src_path] = "deleted"
+                self._log_watcher(event.src_path, "moved_from")
             if self._is_indexed(event.dest_path) and not self._is_excluded(event.dest_path):
                 with self._lock:
                     self._pending[event.dest_path] = "created"
+                self._log_watcher(event.dest_path, "moved_to")
             self._schedule_flush()
+
+    def _log_watcher(self, src_path: bytes | str, action: str) -> None:
+        if not _CSV_LOGGER.isEnabledFor(logging.DEBUG):
+            return
+        if isinstance(src_path, bytes):
+            src_path = src_path.decode("ascii", "replace")
+        _CSV_LOGGER.debug(
+            "csv",
+            extra={
+                "csv_event": "watcher",
+                "csv_header": ("ts", "pid", "collection", "src_path", "action"),
+                "csv_row": (self._collection, src_path, action),
+            },
+        )
 
     def _flush(self):
         with self._lock:
@@ -105,7 +128,7 @@ class SourceChangeHandler(FileSystemEventHandler):
 
         if n_new or n_dedup:
             dedup_note = f"  ({n_dedup} deduped)" if n_dedup else ""
-            print(f"[watcher] queued {n_new} file(s){dedup_note}", flush=True)
+            _LOG.info("queued %s file(s)%s", n_new, dedup_note)
 
 
 def run_watcher(cfg, src_root=None, collection=None, stop_event=None, queue=None):
@@ -133,7 +156,7 @@ def run_watcher(cfg, src_root=None, collection=None, stop_event=None, queue=None
         obs.schedule(handler, src_native, recursive=True)
         obs.start()
         observers.append(obs)
-        print(f"[watcher] Watching {src_native} -> {coll_name}")
+        _LOG.info("Watching %s -> %s", src_native, coll_name)
 
     try:
         while not (stop_event and stop_event.is_set()):
@@ -144,7 +167,7 @@ def run_watcher(cfg, src_root=None, collection=None, stop_event=None, queue=None
         obs.stop()
     for obs in observers:
         obs.join()
-    print("[watcher] Stopped.", flush=True)
+    _LOG.info("Stopped")
 
 
 if __name__ == "__main__":

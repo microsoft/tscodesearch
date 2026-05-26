@@ -18,6 +18,7 @@ can construct it against a temp directory without loading the real config.
 from __future__ import annotations
 
 import gc
+import logging
 import os
 import re
 import shutil
@@ -27,6 +28,22 @@ import time
 from pathlib import Path
 
 import tantivy
+
+_CSV_LOGGER = logging.getLogger("tscodesearch.debugcsv")
+_LOG = logging.getLogger("tscodesearch.backend")
+
+
+def _log_csv(event: str, header: tuple[str, ...], row: tuple) -> None:
+    if not _CSV_LOGGER.isEnabledFor(logging.DEBUG):
+        return
+    _CSV_LOGGER.debug(
+        "csv",
+        extra={
+            "csv_event": event,
+            "csv_header": header,
+            "csv_row": row,
+        },
+    )
 
 
 # -- Transient Windows IO retry ------------------------------------------------
@@ -313,7 +330,7 @@ class Backend:
                     f"[backend] commit failed in {self.path}: "
                     f"{type(commit_err).__name__}: {commit_err}"
                 )
-                print(msg, flush=True)
+                _LOG.error(msg)
                 try:
                     self._writer.rollback()
                 except Exception:
@@ -325,9 +342,9 @@ class Backend:
                 self._buffered = 0
                 try:
                     self._reopen_writer()
-                    print(f"[backend] reopened writer in {self.path}", flush=True)
+                    _LOG.warning("reopened writer in %s", self.path)
                 except Exception as reopen_err:
-                    print(f"[backend] CRITICAL: writer reopen failed in {self.path}: {reopen_err}", flush=True)
+                    _LOG.critical("writer reopen failed in %s: %s", self.path, reopen_err)
                 raise
 
     def _reopen_writer(self) -> None:
@@ -377,7 +394,7 @@ class Backend:
                     n_added += 1
                 except Exception as e:
                     rel = d.get("relative_path", d.get("id", "?"))
-                    print(f"[backend] add failed for {rel}: {type(e).__name__}: {e}", flush=True)
+                    _LOG.warning("add failed for %s: %s: %s", rel, type(e).__name__, e)
             try:
                 self.commit()
                 return n_added, len(docs) - n_added
@@ -387,11 +404,12 @@ class Backend:
                         or not _is_transient_windows_io_error(commit_err)):
                     break
                 delay = _COMMIT_RETRY_BASE_DELAY * (2 ** attempt)
-                print(
-                    f"[backend] commit attempt {attempt + 1}/{_COMMIT_RETRY_ATTEMPTS} "
-                    f"hit a transient Windows IO error in {self.path}; "
-                    f"retrying after {delay:.2f}s",
-                    flush=True,
+                _LOG.warning(
+                    "commit attempt %s/%s hit a transient Windows IO error in %s; retrying after %.2fs",
+                    attempt + 1,
+                    _COMMIT_RETRY_ATTEMPTS,
+                    self.path,
+                    delay,
                 )
                 # commit()'s error handler already rolled back and reopened
                 # the writer, so we just need to settle and retry.
@@ -399,10 +417,12 @@ class Backend:
                 time.sleep(delay)
         # Out of retries or non-transient error: caller treats as full failure.
         if last_err is not None:
-            print(
-                f"[backend] upsert_many giving up on {len(docs)} docs in "
-                f"{self.path}: {type(last_err).__name__}: {last_err}",
-                flush=True,
+            _LOG.error(
+                "upsert_many giving up on %s docs in %s: %s: %s",
+                len(docs),
+                self.path,
+                type(last_err).__name__,
+                last_err,
             )
         return 0, len(docs)
 
@@ -433,8 +453,15 @@ class Backend:
         idx.reload()
         return idx.searcher()
 
-    def export_id_mtime(self) -> dict[str, int]:
-        """Return {doc_id: mtime} for every document. Used by the verifier."""
+    def export_id_mtime(self, collection: str = "") -> dict[str, int]:
+        """Return {doc_id: mtime} for every document. Used by the verifier.
+
+        When CSV debug logging is enabled, each row is also written to
+        ``backend_export.csv`` so a human can see exactly what the verifier
+        saw as the "already indexed" set at scan start. ``collection`` is
+        passed through to the CSV; pass the empty string when the caller
+        doesn't know it (the CSV tag will just be blank).
+        """
         searcher = self.searcher()
         n = searcher.num_docs
         if n == 0:
@@ -446,7 +473,14 @@ class Backend:
             doc_id = (doc.get("id") or [""])[0]
             mtime  = (doc.get("mtime") or [0])[0]
             if doc_id:
-                out[doc_id] = int(mtime)
+                mtime_int = int(mtime)
+                out[doc_id] = mtime_int
+                rel = (doc.get("relative_path") or [""])[0]
+                _log_csv(
+                    "backend_export",
+                    ("ts", "pid", "collection", "doc_id", "mtime", "relative_path"),
+                    (collection, doc_id, mtime_int, rel),
+                )
         return out
 
 

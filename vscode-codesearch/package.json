@@ -166,5 +166,9 @@
     "tsx": "^4.0.0",
     "typescript": "^5.3.0"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "overrides": {
+    "fast-uri": "^3.1.2",
+    "qs": "^6.15.2"
+  }
 }

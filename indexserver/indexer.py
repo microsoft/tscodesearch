@@ -13,6 +13,7 @@ import sys
 import time
 import hashlib
 import argparse
+import logging
 from dataclasses import dataclass
 
 # Allow running as a standalone script.
@@ -23,6 +24,8 @@ if _base not in sys.path:
 from indexserver.backend import Backend, drop as drop_index
 from query.config import normalize_path
 from query.dispatch import describe_file
+
+_LOG = logging.getLogger("tscodesearch.indexer")
 
 
 # ---------------------------------------------------------------------------
@@ -383,10 +386,10 @@ def ensure_backend(cfg, collection: str, resethard: bool = False, write: bool = 
         index_dir = root.index_dir
 
     if resethard:
-        print(f"Wiping existing index '{collection}' at {index_dir}...", flush=True)
+        _LOG.info("Wiping existing index '%s' at %s...", collection, index_dir)
         drop_index(index_dir)
 
-    print(f"Opening index '{collection}' at {index_dir}", flush=True)
+    _LOG.info("Opening index '%s' at %s", collection, index_dir)
     return Backend(index_dir, write=write)
 
 
@@ -472,7 +475,7 @@ def _flush(backend: Backend, docs: list, verbose: bool) -> tuple[int, int]:
         return 0, 0
     n_ok, n_failed = backend.upsert_many(docs)
     if verbose and n_failed:
-        print(f"  WARN: {n_failed} of {len(docs)} failed", flush=True)
+        _LOG.warning("%s of %s failed", n_failed, len(docs))
     return n_ok, n_failed
 
 
@@ -518,9 +521,9 @@ def index_file_list(
     return total, errors
 
 
-def export_index_map(backend: Backend) -> dict[str, int]:
+def export_index_map(backend: Backend, collection: str = "") -> dict[str, int]:
     """Return {doc_id: mtime} for every document in *backend*."""
-    return backend.export_id_mtime()
+    return backend.export_id_mtime(collection=collection)
 
 
 def walk_and_enqueue(
@@ -579,9 +582,8 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
     total_indexed = 0
     total_errors  = 0
 
-    print(f"Indexing source files under: {src_root}")
-    print(f"Extensions: {', '.join(sorted(exts))}")
-    print()
+    _LOG.info("Indexing source files under: %s", src_root)
+    _LOG.info("Extensions: %s", ", ".join(sorted(exts)))
 
     def _tracked_files():
         nonlocal current_sub
@@ -591,8 +593,7 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
             if top != current_sub:
                 current_sub = top
                 elapsed = time.time() - t0
-                print(f"  [{_fmt_time(elapsed)}] folder: {top}  "
-                      f"(total so far: {total_indexed})")
+                _LOG.info("  [%s] folder: %s  (total so far: %s)", _fmt_time(elapsed), top, total_indexed)
             yield sf.full_path, sf.rel
 
     def _rate_report(n: int, errs: int) -> None:
@@ -605,8 +606,13 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
             delta_n  = n - last_report_n
             delta_t  = now - last_report_t
             rate     = delta_n / delta_t if delta_t > 0 else 0
-            print(f"  [{_fmt_time(elapsed)}] {n:,} files indexed  "
-                  f"({rate:.0f} files/s)  errors={errs}")
+            _LOG.info(
+                "  [%s] %s files indexed  (%.0f files/s)  errors=%s",
+                _fmt_time(elapsed),
+                f"{n:,}",
+                rate,
+                errs,
+            )
             last_report_t = now
             last_report_n = n
 
@@ -619,10 +625,13 @@ def run_index(cfg, src_root=None, resethard=False, batch_size=50, verbose=False,
 
     elapsed = time.time() - t0
     rate = total_indexed / elapsed if elapsed > 0 else 0
-    print()
-    print(f"Done in {_fmt_time(elapsed)}. "
-          f"Indexed {total_indexed:,} files  ({rate:.0f} files/s)  "
-          f"errors={total_errors}")
+    _LOG.info(
+        "Done in %s. Indexed %s files  (%.0f files/s)  errors=%s",
+        _fmt_time(elapsed),
+        f"{total_indexed:,}",
+        rate,
+        total_errors,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -644,10 +653,13 @@ if __name__ == "__main__":
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
+    if not logging.getLogger("tscodesearch").handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     coll = args.collection or _cfg.collection
     if args.status:
         backend = ensure_backend(_cfg, coll, resethard=False, write=False)
-        print(f"Collection '{coll}': {backend.num_documents():,} documents indexed")
+        _LOG.info("Collection '%s': %s documents indexed", coll, f"{backend.num_documents():,}")
     else:
         run_index(_cfg, src_root=args.src, resethard=args.resethard, verbose=args.verbose,
                   collection=coll)

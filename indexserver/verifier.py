@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import logging
 import os
 import sys
 import time
@@ -33,6 +34,21 @@ from indexserver.indexer import (
 )
 
 BATCH_SIZE = 50
+_CSV_LOGGER = logging.getLogger("tscodesearch.debugcsv")
+_LOG = logging.getLogger("tscodesearch.verifier")
+
+
+def _log_csv(event: str, header: tuple[str, ...], row: tuple) -> None:
+    if not _CSV_LOGGER.isEnabledFor(logging.DEBUG):
+        return
+    _CSV_LOGGER.debug(
+        "csv",
+        extra={
+            "csv_event": event,
+            "csv_header": header,
+            "csv_row": row,
+        },
+    )
 
 
 def _fmt_time(seconds: float) -> str:
@@ -58,7 +74,7 @@ def check_ready(cfg, src_root: str | None = None,
 
     try:
         backend = ensure_backend(cfg, coll, write=False)
-        index_map = export_index_map(backend)
+        index_map = export_index_map(backend, collection=coll)
     except Exception as e:
         return {
             "ready": False, "poll_ok": False, "index_ok": False,
@@ -150,30 +166,29 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
         "deleted":         0,
         "errors":          0,
     }
-    if on_progress: on_progress(progress)
+    if on_progress:
+        on_progress(progress)
 
-    print(f"[verifier] collection : {coll_name}", flush=True)
-    print(f"[verifier] source root: {src_root}", flush=True)
+    _LOG.info("collection : %s", coll_name)
+    _LOG.info("source root: %s", src_root)
     t0 = time.time()
 
-    # -- Phase 1: collect ------------------------------------------------------
-    print("[verifier] Phase 1/2: collecting changes...", flush=True)
-    print("[verifier]   exporting current index...", flush=True)
+    _LOG.info("Phase 1/2: collecting changes...")
+    _LOG.info("  exporting current index...")
     progress["phase"] = "collecting: exporting index"
-    if on_progress: on_progress(progress)
+    if on_progress:
+        on_progress(progress)
 
-    index_map = export_index_map(backend)
+    index_map = export_index_map(backend, collection=coll_name)
     progress["index_docs"] = len(index_map)
-    print(f"[verifier]   {len(index_map):,} documents in index", flush=True)
+    _LOG.info("  %s documents in index", f"{len(index_map):,}")
 
-    print("[verifier]   scanning file system...", flush=True)
+    _LOG.info("  scanning file system...")
     progress["phase"] = "collecting: scanning filesystem"
-    if on_progress: on_progress(progress)
+    if on_progress:
+        on_progress(progress)
 
     remaining: set[str] = set(index_map)
-    # to_update collects pairs only when no queue was passed in; when ``queue``
-    # is supplied the caller wants enqueue-on-the-fly, but we still keep the
-    # list around for the post-walk totals -- just leave it empty.
     to_update: list[tuple[str, str]] = []
     n_enqueued = 0
     n_fs = 0
@@ -190,13 +205,22 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
             progress["missing"] += 1
             needs_update = True
             reason = "new"
+            decision = "missing"
         elif sf.mtime != idx_mtime:
             progress["stale"] += 1
             needs_update = True
             reason = "modified"
+            decision = "stale"
         else:
             needs_update = False
             reason = ""
+            decision = "matched"
+
+        _log_csv(
+            "fs_walk",
+            ("ts", "pid", "collection", "rel", "mtime", "doc_id", "idx_mtime", "decision"),
+            (coll_name, sf.rel, sf.mtime, doc_id, "" if idx_mtime is None else idx_mtime, decision),
+        )
 
         if needs_update:
             if queue is not None:
@@ -213,142 +237,160 @@ def _verify_with_backend(cfg, src_root, coll_name, queue, on_progress,
                 progress["phase"] = f"scanning filesystem ({n_fs:,} files, {n_enqueued:,} queued)"
             else:
                 progress["phase"] = f"collecting: scanning filesystem ({n_fs:,} files)"
-            if on_progress: on_progress(progress)
-            print(
-                f"[verifier]   [{_fmt_time(now - t0)}] scanned {n_fs:,} files  "
-                f"missing={progress['missing']}  stale={progress['stale']}",
-                flush=True,
+            if on_progress:
+                on_progress(progress)
+            _LOG.info(
+                "  [%s] scanned %s files  missing=%s  stale=%s",
+                _fmt_time(now - t0),
+                f"{n_fs:,}",
+                progress["missing"],
+                progress["stale"],
             )
             last_scan_print = now
 
     orphaned_ids = list(remaining)
     progress["fs_files"] = n_fs
     progress["orphaned"] = len(orphaned_ids)
+    for orphan_id in orphaned_ids:
+        _log_csv(
+            "orphan",
+            ("ts", "pid", "collection", "doc_id"),
+            (coll_name, orphan_id),
+        )
     if queue is None:
         progress["total_to_update"] = len(to_update)
 
-    print(f"[verifier]   {n_fs:,} files on disk", flush=True)
-    print(
-        f"[verifier]   missing={progress['missing']}  "
-        f"stale={progress['stale']}  orphaned={len(orphaned_ids)}",
-        flush=True,
+    _LOG.info("  %s files on disk", f"{n_fs:,}")
+    _LOG.info(
+        "  missing=%s  stale=%s  orphaned=%s",
+        progress["missing"],
+        progress["stale"],
+        len(orphaned_ids),
     )
 
     if stop_event and stop_event.is_set():
-        progress["status"]      = "cancelled"
-        progress["phase"]       = "cancelled"
+        progress["status"] = "cancelled"
+        progress["phase"] = "cancelled"
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        if on_progress: on_progress(progress)
-        print("[verifier] Cancelled.", flush=True)
+        if on_progress:
+            on_progress(progress)
+        _LOG.info("Cancelled.")
         return
 
     total_to_update = n_enqueued if queue is not None else len(to_update)
-
     if total_to_update == 0 and not orphaned_ids:
-        progress["status"]  = "complete"
-        progress["phase"]   = "done (index already up to date)"
+        progress["status"] = "complete"
+        progress["phase"] = "done (index already up to date)"
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        if on_progress: on_progress(progress)
-        print("[verifier] Index is already up to date.", flush=True)
+        if on_progress:
+            on_progress(progress)
+        _LOG.info("Index is already up to date.")
         return
 
     if queue is not None:
         if delete_orphans and orphaned_ids:
-            print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries...", flush=True)
+            _LOG.info("  removing %s orphaned entries...", len(orphaned_ids))
             progress["phase"] = "removing orphans"
-            if on_progress: on_progress(progress)
+            if on_progress:
+                on_progress(progress)
             try:
                 backend.delete_many(orphaned_ids)
                 progress["deleted"] = len(orphaned_ids)
             except Exception as e:
-                print(f"[verifier] orphan delete error: {e}", flush=True)
+                _LOG.warning("orphan delete error: %s", e)
 
-        progress["status"]      = "queued"
-        progress["phase"]       = f"queued ({n_enqueued:,} files in index queue)"
+        progress["status"] = "queued"
+        progress["phase"] = f"queued ({n_enqueued:,} files in index queue)"
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        if on_progress: on_progress(progress)
-        print(
-            f"[verifier] Enqueued {n_enqueued:,} files. "
-            f"deleted={progress['deleted']}  "
-            f"(completion fires when queue drains)",
-            flush=True,
+        if on_progress:
+            on_progress(progress)
+        _LOG.info(
+            "Enqueued %s files. deleted=%s (completion fires when queue drains)",
+            f"{n_enqueued:,}",
+            progress["deleted"],
         )
 
         if on_complete:
             def _fence_cb(prog=progress, t=t0, n=n_enqueued, d=progress["deleted"]):
-                prog["status"]      = "complete"
-                prog["phase"]       = "done"
+                prog["status"] = "complete"
+                prog["phase"] = "done"
                 prog["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                if on_progress: on_progress(prog)
-                print(
-                    f"[verifier] Done in {_fmt_time(time.time() - t)}. "
-                    f"enqueued={n}  deleted={d}",
-                    flush=True,
-                )
+                if on_progress:
+                    on_progress(prog)
+                _LOG.info("Done in %s. enqueued=%s  deleted=%s", _fmt_time(time.time() - t), n, d)
                 on_complete()
+
             queue.fence(_fence_cb)
+        return
 
-    else:
-        last_print = time.time()
-        total_to_update = len(to_update)
+    last_print = time.time()
+    total_to_update = len(to_update)
 
-        def _on_progress(n_indexed: int, n_errors: int) -> None:
-            progress["updated"]     = n_indexed
-            progress["errors"]      = n_errors
-            progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-            if on_progress: on_progress(progress)
-            nonlocal last_print
-            now = time.time()
-            if now - last_print >= 15:
-                pct = n_indexed * 100 // total_to_update if total_to_update else 100
-                print(
-                    f"[verifier]   [{_fmt_time(now - t0)}] "
-                    f"{n_indexed:,}/{total_to_update:,} ({pct}%)  "
-                    f"errors={n_errors}",
-                    flush=True,
-                )
-                last_print = now
-
-        total_indexed, total_errors = index_file_list(
-            backend, to_update,
-            batch_size=BATCH_SIZE,
-            on_progress=_on_progress,
-            stop_event=stop_event,
-        )
-        progress["updated"] = total_indexed
-        progress["errors"]  = total_errors
-
-        if stop_event and stop_event.is_set():
-            progress["status"]      = "cancelled"
-            progress["phase"]       = "cancelled"
-            progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-            if on_progress: on_progress(progress)
-            print("[verifier] Cancelled during upsert.", flush=True)
-            return
-
-        if delete_orphans and orphaned_ids:
-            print(f"[verifier]   removing {len(orphaned_ids)} orphaned entries...", flush=True)
-            progress["phase"] = "removing orphans"
-            if on_progress: on_progress(progress)
-            try:
-                backend.delete_many(orphaned_ids)
-                progress["deleted"] = len(orphaned_ids)
-            except Exception as e:
-                print(f"[verifier] orphan delete error: {e}", flush=True)
-
-        elapsed = _fmt_time(time.time() - t0)
-        progress["status"]      = "complete"
-        progress["phase"]       = "done"
+    def _on_progress_index(n_indexed: int, n_errors: int) -> None:
+        nonlocal last_print
+        progress["updated"] = n_indexed
+        progress["errors"] = n_errors
         progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        if on_progress: on_progress(progress)
-        print(
-            f"[verifier] Done in {elapsed}. "
-            f"updated={total_indexed}  deleted={progress['deleted']}  "
-            f"errors={total_errors}",
-            flush=True,
-        )
-        if on_complete:
-            on_complete()
+        if on_progress:
+            on_progress(progress)
+        now = time.time()
+        if now - last_print >= 15:
+            pct = n_indexed * 100 // total_to_update if total_to_update else 100
+            _LOG.info(
+                "  [%s] %s/%s (%s%%)  errors=%s",
+                _fmt_time(now - t0),
+                f"{n_indexed:,}",
+                f"{total_to_update:,}",
+                pct,
+                n_errors,
+            )
+            last_print = now
+
+    total_indexed, total_errors = index_file_list(
+        backend,
+        to_update,
+        batch_size=BATCH_SIZE,
+        on_progress=_on_progress_index,
+        stop_event=stop_event,
+    )
+    progress["updated"] = total_indexed
+    progress["errors"] = total_errors
+
+    if stop_event and stop_event.is_set():
+        progress["status"] = "cancelled"
+        progress["phase"] = "cancelled"
+        progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        if on_progress:
+            on_progress(progress)
+        _LOG.info("Cancelled during upsert.")
+        return
+
+    if delete_orphans and orphaned_ids:
+        _LOG.info("  removing %s orphaned entries...", len(orphaned_ids))
+        progress["phase"] = "removing orphans"
+        if on_progress:
+            on_progress(progress)
+        try:
+            backend.delete_many(orphaned_ids)
+            progress["deleted"] = len(orphaned_ids)
+        except Exception as e:
+            _LOG.warning("orphan delete error: %s", e)
+
+    elapsed = _fmt_time(time.time() - t0)
+    progress["status"] = "complete"
+    progress["phase"] = "done"
+    progress["last_update"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    if on_progress:
+        on_progress(progress)
+    _LOG.info(
+        "Done in %s. updated=%s  deleted=%s  errors=%s",
+        elapsed,
+        total_indexed,
+        progress["deleted"],
+        total_errors,
+    )
+    if on_complete:
+        on_complete()
 
 
 # -- entry point ----------------------------------------------------------------
