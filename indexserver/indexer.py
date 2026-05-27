@@ -29,6 +29,47 @@ _LOG = logging.getLogger("tscodesearch.indexer")
 
 
 # ---------------------------------------------------------------------------
+# Shared-delete file open (Windows)
+# ---------------------------------------------------------------------------
+
+if sys.platform == "win32":
+    import ctypes as _ctypes
+    import msvcrt as _msvcrt
+    _kernel32 = _ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateFileW.restype = _ctypes.c_void_p
+    _kernel32.CreateFileW.argtypes = [
+        _ctypes.c_wchar_p,  # lpFileName
+        _ctypes.c_uint32,   # dwDesiredAccess
+        _ctypes.c_uint32,   # dwShareMode
+        _ctypes.c_void_p,   # lpSecurityAttributes
+        _ctypes.c_uint32,   # dwCreationDisposition
+        _ctypes.c_uint32,   # dwFlagsAndAttributes
+        _ctypes.c_void_p,   # hTemplateFile
+    ]
+    _GENERIC_READ   = 0x80000000
+    _FILE_SHARE_ALL = 0x00000007  # READ | WRITE | DELETE
+    _OPEN_EXISTING  = 3
+    _FILE_ATTR_NORMAL = 0x00000080
+    _INVALID_HANDLE = _ctypes.c_void_p(-1).value
+
+    def _open_shared(path: str, mode: str = "rb", **kwargs):
+        """Open a file allowing concurrent deletion on Windows (FILE_SHARE_DELETE)."""
+        h = _kernel32.CreateFileW(
+            path, _GENERIC_READ, _FILE_SHARE_ALL,
+            None, _OPEN_EXISTING, _FILE_ATTR_NORMAL, None,
+        )
+        if h == _INVALID_HANDLE:
+            err = _ctypes.get_last_error()
+            raise OSError(err, _ctypes.FormatError(err), path)
+        fd = _msvcrt.open_osfhandle(h, os.O_RDONLY)
+        return open(fd, mode, closefd=True, **kwargs)
+else:
+    def _open_shared(path: str, mode: str = "rb", **kwargs):  # type: ignore[misc]
+        """Open a file (non-Windows: plain open)."""
+        return open(path, mode, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # Walk result
 # ---------------------------------------------------------------------------
 
@@ -323,7 +364,7 @@ def build_document(full_path: str, relative_path: str) -> dict | None:
     Callers must check for None."""
     try:
         stat = os.stat(full_path)
-        with open(full_path, "rb") as _f:
+        with _open_shared(full_path, "rb") as _f:
             src_bytes = _f.read()
     except OSError:
         return None
@@ -413,7 +454,7 @@ def walk_source_files(src_root: str, cfg, extensions=None):
             if e.name == ".gitignore":
                 try:
                     if e.is_file(follow_symlinks=False):
-                        with open(e.path, "r", encoding="utf-8", errors="replace") as f:
+                        with _open_shared(e.path, "r", encoding="utf-8", errors="replace") as f:
                             spec = pathspec.PathSpec.from_lines("gitwildmatch", f)
                         result = inherited + [(dirpath, spec)]
                         _dir_specs[dirpath] = result
