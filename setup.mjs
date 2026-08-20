@@ -90,14 +90,25 @@ if (uninstall) {
     console.log('WARNING: claude mcp remove failed (may not have been registered).');
   else
     console.log('  Removed from Claude Code.');
-  // Remove from VS Code / GitHub Copilot settings
+  // Remove from the dedicated VS Code / GitHub Copilot MCP configuration.
+  const _mcpPath = join(process.env.APPDATA ?? '', 'Code', 'User', 'mcp.json');
+  try {
+    const _mcp = JSON.parse(readFileSync(_mcpPath, 'utf8'));
+    if (_mcp?.servers?.tscodesearch) {
+      delete _mcp.servers.tscodesearch;
+      writeFileSync(_mcpPath, JSON.stringify(_mcp, null, 2) + '\n', 'utf8');
+      console.log('  Removed from VS Code MCP configuration.');
+    }
+  } catch { /* mcp.json missing or unreadable -- nothing to remove */ }
+  // Clean up registrations created by older setup versions.
   const _vsPath = join(process.env.APPDATA ?? '', 'Code', 'User', 'settings.json');
   try {
     const _s = JSON.parse(readFileSync(_vsPath, 'utf8'));
     if (_s?.mcp?.servers?.tscodesearch) {
       delete _s.mcp.servers.tscodesearch;
+      if (Object.keys(_s.mcp.servers).length === 0) delete _s.mcp.servers;
+      if (Object.keys(_s.mcp).length === 0) delete _s.mcp;
       writeFileSync(_vsPath, JSON.stringify(_s, null, 2) + '\n', 'utf8');
-      console.log('  Removed from VS Code MCP settings.');
     }
   } catch { /* settings.json missing or unreadable -- nothing to remove */ }
   console.log('Done. Reload VS Code / Claude Code for the change to take effect.');
@@ -117,30 +128,41 @@ if (run('claude', [
 else
   console.log('  WARNING: claude mcp add failed -- Claude Code may not be installed.');
 
-// Register with VS Code (GitHub Copilot) and set tscodesearch.repoPath
+// Set the VS Code extension's repository path and remove legacy MCP settings.
 const vscodeSettingsPath = join(process.env.APPDATA ?? '', 'Code', 'User', 'settings.json');
 try {
   let settings = {};
   if (existsSync(vscodeSettingsPath)) {
-    try { settings = JSON.parse(readFileSync(vscodeSettingsPath, 'utf8')); } catch {}
+    settings = JSON.parse(readFileSync(vscodeSettingsPath, 'utf8'));
   }
   settings['tscodesearch.repoPath'] = REPO;
-  if (!settings.mcp) settings.mcp = {};
-  if (!settings.mcp.servers) settings.mcp.servers = {};
-  settings.mcp.servers.tscodesearch = {
-    type: 'stdio',
-    command: join(REPO, '.client-venv', 'Scripts', 'python.exe'),
-    args: [join(REPO, 'mcp_server.py')],
-  };
+  if (settings?.mcp?.servers?.tscodesearch) {
+    delete settings.mcp.servers.tscodesearch;
+    if (Object.keys(settings.mcp.servers).length === 0) delete settings.mcp.servers;
+    if (Object.keys(settings.mcp).length === 0) delete settings.mcp;
+  }
   writeFileSync(vscodeSettingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  console.log('  Registered with VS Code (GitHub Copilot).');
   console.log(`  Set tscodesearch.repoPath to ${REPO}.`);
 } catch (e) {
   console.log(`  WARNING: Could not update VS Code settings: ${e.message}`);
-  console.log('  Add manually to VS Code settings.json:');
-  console.log(`    "mcp": { "servers": { "tscodesearch": { "type": "stdio",`);
-  console.log(`      "command": "${join(REPO, '.client-venv', 'Scripts', 'python.exe')}",`);
-  console.log(`      "args": ["${join(REPO, 'mcp_server.py')}"] } } }`);
+}
+
+// Register with VS Code (GitHub Copilot) through its dedicated MCP configuration.
+const vscodeMcpPath = join(process.env.APPDATA ?? '', 'Code', 'User', 'mcp.json');
+if (commandExists('code')) {
+  const mcpDefinition = JSON.stringify({
+    name: 'tscodesearch',
+    type: 'stdio',
+    command: join(REPO, '.client-venv', 'Scripts', 'python.exe'),
+    args: [join(REPO, 'mcp_server.py')],
+  });
+  if (run('code', ['--add-mcp', mcpDefinition]) === 0)
+    console.log('  Registered with VS Code (GitHub Copilot).');
+  else
+    console.log('  WARNING: Could not update VS Code MCP configuration.');
+} else {
+  console.log("  WARNING: 'code' not found in PATH -- could not register with VS Code.");
+  console.log(`  Add the tscodesearch server manually to ${vscodeMcpPath}.`);
 }
 
 // [2] Client venv (managed Python via uv)
