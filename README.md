@@ -35,7 +35,7 @@ setup.cmd
 ```
 
 `setup.cmd` checks for Node.js then calls `node setup.mjs`, which:
-1. Registers the MCP server with Claude Code and VS Code (GitHub Copilot `mcp.servers`)
+1. Registers the MCP server with Claude Code and VS Code (GitHub Copilot `mcp.json`)
 2. Creates `.client-venv` and installs Python dependencies
 3. Creates `config.json` -- prompts for a source directory to index (can be added later)
 4. Installs the VS Code extension
