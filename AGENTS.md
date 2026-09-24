@@ -1,8 +1,8 @@
 # Agent notes
 
 This is the canonical instructions file for repository guidance.
-Put all long-form agent instructions in AGENTS.md.
-CLAUDE.md is a placeholder that points here.
+Put all repository-wide agent instructions in AGENTS.md.
+Projects may provide their own AGENTS.md for scoped guidance.
 
 Operational notes for agents working in this repo are maintained below.
 
@@ -125,9 +125,9 @@ around for offline analysis; delete the `csv/` directory when done.
 
 ---
 
-## Migrated Reference (from CLAUDE.md)
+## Repository reference
 
-# codesearch -- developer notes for Claude
+# codesearch -- developer notes
 
 ## CRITICAL: ASCII only -- no Unicode in source files
 

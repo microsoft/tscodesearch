@@ -1,6 +1,6 @@
 # codesearch
 
-Full-text and structural code search for a large monorepo. Runs an in-process [Tantivy](https://github.com/quickwit-oss/tantivy) index (via [tantivy-py](https://github.com/quickwit-oss/tantivy-py)) and exposes results as MCP tools so Claude can query the codebase directly without copy-pasting.
+Full-text and structural code search for a large monorepo. Runs an in-process [Tantivy](https://github.com/quickwit-oss/tantivy) index (via [tantivy-py](https://github.com/quickwit-oss/tantivy-py)) and exposes results as MCP tools so coding agents, including GitHub Copilot in VS Code, can query the codebase directly without copy-pasting.
 
 > **Early alpha.** Expect rough edges.
 
@@ -17,10 +17,29 @@ ts start
 
 To uninstall: `setup.cmd --uninstall`
 
+## GitHub Copilot and VS Code Chat
+
+The repository includes:
+
+- `AGENTS.md` files for repository-wide and project-scoped agent guidance
+- `.github/copilot-instructions.md` for Copilot instruction discovery
+- `.github/instructions/` for file-scoped Copilot guidance
+- `.mcp.json` for portable workspace MCP discovery
+- `vscode-codesearch/.vscode/mcp.json` when the extension folder is opened as
+  a standalone workspace
+
+The workspace MCP configurations use repository-relative paths and become
+available after `setup.cmd` creates `.client-venv`. Setup also registers the
+same stdio MCP server in the VS Code user profile so its tools remain available
+when you work in a separately indexed repository.
+
+VS Code asks you to trust local MCP servers before starting them. Review the
+configuration and approve it only for a trusted checkout.
+
 ## Prerequisites
 
 - Windows 11 (or Linux/macOS for the daemon, with caveats)
-- Python 3.10+
+- Python 3.12+
 - Node.js 22+
 - `uv` is installed automatically by `setup.mjs` if missing
 
@@ -36,7 +55,7 @@ setup.cmd
 
 `setup.cmd` checks for Node.js then calls `node setup.mjs`, which:
 1. Registers the MCP server with Claude Code and VS Code (GitHub Copilot `mcp.json`)
-2. Creates `.client-venv` and installs Python dependencies from the Microsoft package feed
+2. Creates `.client-venv` and synchronizes the locked Python dependencies from `pyproject.toml`
 3. Creates `config.json` -- prompts for a source directory to index (can be added later)
 4. Installs the VS Code extension
 
@@ -99,7 +118,7 @@ ts log [-n N]                      tail the daemon log (default: last 40 lines)
 
 The watcher picks up changes automatically within a couple of seconds (~1 s `ReadDirectoryChangesW` latency + 2 s debounce). For large repos, or after bulk operations like a git pull or branch switch, use the MCP tools or `ts verify` to confirm everything is in sync.
 
-### From Claude (MCP tools)
+### From MCP clients
 
 ```
 ready()                              # quick daemon/index/watcher snapshot

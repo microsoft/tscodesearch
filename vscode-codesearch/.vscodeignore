@@ -6,5 +6,5 @@ node_modules/**
 **/*.ts
 .gitignore
 tsconfig.json
-CLAUDE.md
+AGENTS.md
 setup-vscode-ext.cmd

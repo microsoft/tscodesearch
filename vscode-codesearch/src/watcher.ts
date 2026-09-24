@@ -1,7 +1,7 @@
 /**
  * HTTP helper class for the codesearch management API.
  *
- * The Windows filesystem watcher has been moved to tsquery_server.py (the
+ * The Windows filesystem watcher has been moved to indexserver/daemon.py (the
  * management server daemon), which uses watchdog's ReadDirectoryChangesW
  * observer directly.  This class now only provides the apiPost/apiGet
  * helpers used by StatusBarManager and the reindex command.

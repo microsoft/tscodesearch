@@ -48,14 +48,14 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m venv .client-venv
-          .client-venv/bin/pip install -q --index-url https://packagefeedproxy.microsoft.io/pypi/simple -r requirements-dev.txt
+          python -m pip install uv==0.11.11
+          uv sync --locked
 
       - name: Write config.json
         run: echo '{"api_key":"ci-test-key","port":8108,"roots":{}}' > config.json
 
       - name: Run Python tests
-        run: .client-venv/bin/pytest tests/ query/tests/ -v
+        run: uv run --locked pytest tests/ query/tests/ -v
 
       - name: Run VS Code extension tests
         run: node run_tests.mjs

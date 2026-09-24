@@ -46,7 +46,7 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
     private _defaultRoot = 'default';
 
     constructor(
-        private readonly _docker: ServerManager,
+        private readonly _server: ServerManager,
         private readonly _out:   vscode.OutputChannel,
     ) {}
 
@@ -186,10 +186,10 @@ class CodesearchViewProvider implements vscode.WebviewViewProvider {
 
     private _reloadConfig(): boolean {
         try {
-            const found = findConfigPath(this._docker.repoPath);
+            const found = findConfigPath(this._server.repoPath);
             if (!found) {
-                const configPath = this._docker.repoPath
-                    ? `${this._docker.repoPath}\\config.json`
+                const configPath = this._server.repoPath
+                    ? path.join(this._server.repoPath, 'config.json')
                     : 'config.json';
                 const message = [
                     `${configPath} not found.`,
@@ -223,11 +223,11 @@ export function activate(context: vscode.ExtensionContext): void {
     const out          = vscode.window.createOutputChannel('TsCodeSearch');
     context.subscriptions.push(out);
 
-    const docker       = new ServerManager(context, out);
-    const treeProvider = new RootsTreeProvider(docker);
+    const server       = new ServerManager(context, out);
+    const treeProvider = new RootsTreeProvider(server);
 
     // ── Webview search panel ─────────────────────────────────────────────────
-    const provider = new CodesearchViewProvider(docker, out);
+    const provider = new CodesearchViewProvider(server, out);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(CodesearchViewProvider.viewType, provider, {
             webviewOptions: { retainContextWhenHidden: true },
@@ -240,7 +240,6 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     // ── File watcher + status bar ────────────────────────────────────────────
-    // In Docker mode use the Docker config; fall back to legacy WSL config.json.
     let watcher: FileWatcher | null = null;
 
     function _startWatcherAndStatus(config: CodesearchConfig): void {
@@ -255,14 +254,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // config.json always lives at <repoPath>/config.json for both modes.
     try {
-        const found = findConfigPath(docker.repoPath);
+        const found = findConfigPath(server.repoPath);
         if (found) {
-            docker.setDiskConfig(loadConfig(found));
-            _startWatcherAndStatus(docker.getClientConfig());
+            server.setDiskConfig(loadConfig(found));
+            _startWatcherAndStatus(server.getClientConfig());
             // Auto-start the indexserver in the background (start is idempotent).
-            if (docker.repoPath) {
+            if (server.repoPath) {
                 out.appendLine('[activate] Auto-starting indexserver...');
-                docker.start(line => out.appendLine(line)).catch(e => {
+                server.start(line => out.appendLine(line)).catch(e => {
                     out.appendLine(`[activate] Indexserver auto-start failed: ${e}`);
                 });
             }
@@ -287,9 +286,9 @@ export function activate(context: vscode.ExtensionContext): void {
                 { location: vscode.ProgressLocation.Notification, title: 'TsCodeSearch Setup', cancellable: false },
                 async (progress) => {
                     try {
-                        await docker.setup(progress);
+                        await server.setup(progress);
                         // Start watcher/status now that the server is up
-                        if (!watcher) { _startWatcherAndStatus(docker.getClientConfig()); }
+                        if (!watcher) { _startWatcherAndStatus(server.getClientConfig()); }
                         treeProvider.refresh();
                         void vscode.window.showInformationMessage('TsCodeSearch: Setup complete!');
                     } catch (e: unknown) {
@@ -316,7 +315,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 openLabel: 'Select source root folder',
             });
             if (!picks || picks.length === 0) { return; }
-            docker.addRoot(name.trim(), picks[0].fsPath);
+            server.addRoot(name.trim(), picks[0].fsPath);
             treeProvider.refresh();
             const choice = await vscode.window.showInformationMessage(
                 `TsCodeSearch: Added root "${name.trim()}". Restart the server to apply.`,
@@ -338,7 +337,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 { modal: true }, 'Remove',
             );
             if (confirm !== 'Remove') { return; }
-            docker.removeRoot(name);
+            server.removeRoot(name);
             treeProvider.refresh();
         }),
     );
@@ -352,7 +351,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 async (progress) => {
                     try {
                         out.appendLine('[server] Restarting…');
-                        await docker.restart((line) => progress.report({ message: line }));
+                        await server.restart((line) => progress.report({ message: line }));
                         treeProvider.refresh();
                         void vscode.window.showInformationMessage('TsCodeSearch: Restarted.');
                     } catch (e: unknown) {
@@ -368,7 +367,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Stop the server
     context.subscriptions.push(
         vscode.commands.registerCommand('tscodesearch.stopDaemon', () => {
-            void docker.stop()
+            void server.stop()
                 .then(() => {
                     treeProvider.refresh();
                     void vscode.window.showInformationMessage('TsCodeSearch: Stopped.');
@@ -386,7 +385,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('tscodesearch.reindex', (item?: CodesearchTreeItem) => {
             const name = item?.rootName;
             if (!name) { return; }
-            void (watcher ?? new FileWatcher(docker.getClientConfig(), out))
+            void (watcher ?? new FileWatcher(server.getClientConfig(), out))
                 .apiPost('/verify/start', { root: name, delete_orphans: true })
                 .then((r) => {
                     if (r) {
