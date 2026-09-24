@@ -29,7 +29,7 @@ from pathlib import Path
 _REPO = Path(__file__).parent
 sys.path.insert(0, str(_REPO))
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from query.dispatch import query_file
 from query.config import Root, load_config, normalize_path
 
@@ -276,7 +276,7 @@ def _truncate(output: str) -> tuple[str, bool]:
 
 # -- MCP server ----------------------------------------------------------------
 
-mcp = FastMCP("tscodesearch")
+mcp = MCPServer("tscodesearch")
 
 # -- query_codebase ------------------------------------------------------------
 
