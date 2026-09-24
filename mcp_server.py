@@ -12,9 +12,13 @@ Tools:
 """
 
 import json
+import atexit
+import faulthandler
+import functools
+import logging
+import logging.handlers
 import os
 import re
-import signal
 import sys
 import threading
 import time
@@ -46,6 +50,101 @@ _DETAIL_FILES_THRESHOLD = 20
 # Files with more than this many AST hits get a query_single_file suggestion.
 _PER_FILE_DETAIL_LINES  = 10
 
+_LOG = logging.getLogger("tscodesearch.mcp")
+_MCP_CRASH_FILE = None
+_DAEMON_START_LOCK = threading.Lock()
+_DAEMON_START_REQUESTED_AT = 0.0
+_DAEMON_START_COOLDOWN_SECS = 5.0
+
+
+def _logged_tool(fn):
+    """Log tool duration and turn ordinary failures into explicit responses."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        started = time.monotonic()
+        _LOG.info("tool start: %s", fn.__name__)
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as e:
+            _LOG.exception(
+                "tool failed: %s after %.3fs",
+                fn.__name__,
+                time.monotonic() - started,
+            )
+            return (
+                f"TSCODESEARCH MCP ERROR in {fn.__name__}: "
+                f"{type(e).__name__}: {e}\n"
+                "The server remains available. See mcp_server.log for the traceback."
+            )
+        _LOG.info(
+            "tool complete: %s in %.3fs",
+            fn.__name__,
+            time.monotonic() - started,
+        )
+        return result
+    return wrapper
+
+
+def _configure_mcp_diagnostics() -> None:
+    """Persist MCP lifecycle, tool failures, and fatal Python diagnostics."""
+    global _MCP_CRASH_FILE
+
+    run_dir = _run_dir()
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if not _LOG.handlers:
+            handler = logging.handlers.RotatingFileHandler(
+                run_dir / "mcp_server.log",
+                maxBytes=1_000_000,
+                backupCount=2,
+                encoding="ascii",
+                errors="replace",
+            )
+            handler.setFormatter(logging.Formatter(
+                "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            ))
+            _LOG.addHandler(handler)
+        _LOG.setLevel(logging.INFO)
+        _LOG.propagate = False
+    except OSError as e:
+        print(f"[mcp_server] WARNING: file logging unavailable: {e}", file=sys.stderr, flush=True)
+
+    try:
+        _MCP_CRASH_FILE = open(
+            run_dir / "mcp_crash.log",
+            "a",
+            encoding="ascii",
+            errors="replace",
+        )
+        faulthandler.enable(file=_MCP_CRASH_FILE, all_threads=True)
+    except OSError as e:
+        _LOG.warning("faulthandler log unavailable: %s", e)
+
+    previous_excepthook = sys.excepthook
+
+    def _log_uncaught(exc_type, exc_value, exc_traceback):
+        _LOG.critical(
+            "uncaught exception",
+            exc_info=(exc_type, exc_value, exc_traceback),
+        )
+        previous_excepthook(exc_type, exc_value, exc_traceback)
+
+    sys.excepthook = _log_uncaught
+    atexit.register(lambda: _LOG.info("MCP server stopped"))
+    _LOG.info("MCP server diagnostics configured (pid=%s)", os.getpid())
+
+
+def _run_dir() -> Path:
+    """Return the shared daemon/MCP runtime-data directory."""
+    home = Path.home()
+    default_run_dir = (
+        Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local")) / "tscodesearch"
+        if sys.platform == "win32"
+        else home / ".local" / "tscodesearch"
+    )
+    return Path(os.environ.get("TSCODESEARCH_DATA", default_run_dir))
+
 # -- HTTP helpers --------------------------------------------------------------
 
 def _http(method: str, path: str, body=None, timeout: int = 120):
@@ -65,11 +164,36 @@ def _http(method: str, path: str, body=None, timeout: int = 120):
         except Exception:
             return e.code, {}
 
+
+def _is_connection_failure(error: BaseException) -> bool:
+    """Return True for failures that indicate no usable daemon connection."""
+    if isinstance(error, urllib.error.URLError):
+        error = error.reason
+    return (
+        isinstance(error, (ConnectionRefusedError, ConnectionResetError, BrokenPipeError))
+        or getattr(error, "winerror", None) in (10054, 10061)
+    )
+
+
+def _request_with_recovery(method: str, path: str, body=None, timeout: int = 120):
+    """Retry one idempotent daemon request after starting a missing daemon."""
+    try:
+        return _http(method, path, body=body, timeout=timeout)
+    except Exception as e:
+        if not _is_connection_failure(e):
+            raise
+        _LOG.warning("daemon connection failed for %s %s: %s", method, path, e)
+        _ensure_daemon()
+        if not _wait_for_daemon(timeout_s=min(5.0, float(timeout))):
+            raise
+        return _http(method, path, body=body, timeout=timeout)
+
+
 def _get(path: str, timeout: int = 10):
-    return _http("GET", path, timeout=timeout)
+    return _request_with_recovery("GET", path, timeout=timeout)
 
 def _post(path: str, body: dict, timeout: int = 120):
-    return _http("POST", path, body=body, timeout=timeout)
+    return _request_with_recovery("POST", path, body=body, timeout=timeout)
 
 # -- Config helpers ------------------------------------------------------------
 
@@ -157,6 +281,7 @@ mcp = FastMCP("tscodesearch")
 # -- query_codebase ------------------------------------------------------------
 
 @mcp.tool()
+@_logged_tool
 def query_codebase(
     mode: str,
     pattern: str,
@@ -496,6 +621,7 @@ Examples:
 # -- query_single_file ---------------------------------------------------------
 
 @mcp.tool()
+@_logged_tool
 def query_single_file(
     mode: str,
     pattern: str = "",
@@ -583,8 +709,8 @@ Args:
   mode:         One of the modes above.
   pattern:      Identifier (most modes), "LINE:COL" (`at` mode), or omitted
                 (listing modes).
-  file:         Absolute path. Windows paths (C:/...) or $SRC_ROOT-prefixed
-                paths. Relative paths are NOT supported.
+  file:         Absolute path, a path relative to the selected root, or a
+                $SRC_ROOT-prefixed path. Windows separators are accepted.
   root:         Named source root (empty = default).
   include_body: For `declarations` -- include full body. Default false. (Use
                 the `body` mode instead for one-shot member-source retrieval.)
@@ -697,6 +823,7 @@ prefix is still accepted for back-compat but no longer required):
 # -- ready ---------------------------------------------------------------------
 
 @mcp.tool()
+@_logged_tool
 def ready(root: str = "") -> str:
     """Check whether the code search index is fully up to date with the file system.
 
@@ -738,6 +865,7 @@ Args:
 # -- wait_for_sync -------------------------------------------------------------
 
 @mcp.tool()
+@_logged_tool
 def wait_for_sync(timeout_s: float = 30.0, root: str = "") -> str:
     """Block until the index has caught up to all pending file events.
 
@@ -819,6 +947,7 @@ Returns:
 # -- service_status ------------------------------------------------------------
 
 @mcp.tool()
+@_logged_tool
 def service_status(root: str = "") -> str:
     """Check whether the code search daemon is running.
 Returns daemon health, document count per root, and watcher state.
@@ -855,16 +984,27 @@ Args:
 
 # -- Entry point ---------------------------------------------------------------
 
-def _ensure_daemon() -> None:
-    """Spawn the daemon and wait for it to be healthy.
+def _daemon_is_healthy(timeout: float = 1.0) -> bool:
+    """Return True only when the authenticated daemon status endpoint responds."""
+    try:
+        status, data = _http("GET", "/status", timeout=timeout)
+        return status == 200 and isinstance(data, dict) and "collections" in data
+    except Exception:
+        return False
 
-    Spawns unconditionally -- the daemon exits immediately if the port is
-    already bound (another instance won the race).  The port binding inside
-    start_daemon() is the mutual-exclusion primitive.
 
-    The daemon is headless (pystray tray icon only) and is launched detached
-    so it survives after the MCP server exits.
-    """
+def _wait_for_daemon(timeout_s: float) -> bool:
+    """Wait briefly for a newly spawned daemon without blocking MCP startup."""
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while time.monotonic() < deadline:
+        if _daemon_is_healthy(timeout=min(1.0, max(0.1, deadline - time.monotonic()))):
+            return True
+        time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+    return _daemon_is_healthy(timeout=0.1)
+
+
+def _start_daemon_process() -> int | None:
+    """Start one detached daemon candidate and return its process ID."""
     import subprocess
 
     # Always use the venv Python so indexserver + tantivy are importable,
@@ -898,45 +1038,48 @@ def _ensure_daemon() -> None:
             _pybin = _REPO / ".client-venv" / "bin" / "python"
             py = str(_pybin) if _pybin.exists() else sys.executable
 
-    kwargs: dict = dict(
-        cwd=str(_REPO),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env={**os.environ, "PYTHONIOENCODING": "utf-8", **extra_env},
-    )
-    if sys.platform != "win32":
-        kwargs["start_new_session"] = True
-
-    subprocess.Popen([py, "-m", "indexserver.daemon"], **kwargs)
-
-    # Wait for the daemon (ours or the winner of a concurrent race) to be healthy.
-    # Use an event so SIGTERM/SIGINT aborts the wait immediately. Signal handlers
-    # are restored before returning so FastMCP's own handlers are unaffected.
-    exit_event = threading.Event()
-    def _on_exit(sig, frame): exit_event.set()
-    old_sigterm = signal.signal(signal.SIGTERM, _on_exit)
     try:
-        old_sigint = signal.signal(signal.SIGINT, _on_exit)
-    except (OSError, ValueError):
-        old_sigint = None
+        run_dir = _run_dir()
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with open(run_dir / "daemon_startup.log", "ab", buffering=0) as startup_log:
+            kwargs: dict = dict(
+                cwd=str(_REPO),
+                stdin=subprocess.DEVNULL,
+                stdout=startup_log,
+                stderr=startup_log,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8", **extra_env},
+            )
+            if sys.platform != "win32":
+                kwargs["start_new_session"] = True
+            proc = subprocess.Popen([py, "-m", "indexserver.daemon"], **kwargs)
+        return proc.pid
+    except (OSError, subprocess.SubprocessError):
+        _LOG.exception("could not start daemon")
+        return None
 
-    try:
-        deadline = time.monotonic() + 20.0
-        while time.monotonic() < deadline and not exit_event.is_set():
-            try:
-                _get("/health", timeout=2)
-                return
-            except Exception:
-                exit_event.wait(timeout=0.5)
-        if not exit_event.is_set():
-            print("[mcp_server] WARNING: daemon did not become healthy within 20s", flush=True)
-    finally:
-        signal.signal(signal.SIGTERM, old_sigterm)
-        if old_sigint is not None:
-            signal.signal(signal.SIGINT, old_sigint)
+
+def _ensure_daemon() -> None:
+    """Start the detached daemon if needed without delaying MCP initialization."""
+    global _DAEMON_START_REQUESTED_AT
+
+    with _DAEMON_START_LOCK:
+        if _daemon_is_healthy():
+            _DAEMON_START_REQUESTED_AT = 0.0
+            _LOG.info("daemon already healthy")
+            return
+
+        now = time.monotonic()
+        if now - _DAEMON_START_REQUESTED_AT < _DAEMON_START_COOLDOWN_SECS:
+            _LOG.info("daemon start already requested")
+            return
+
+        pid = _start_daemon_process()
+        if pid is not None:
+            _DAEMON_START_REQUESTED_AT = now
+            _LOG.info("daemon start requested (pid=%s)", pid)
 
 
 if __name__ == "__main__":
+    _configure_mcp_diagnostics()
     _ensure_daemon()
     mcp.run()

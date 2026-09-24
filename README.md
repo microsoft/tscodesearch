@@ -102,16 +102,21 @@ The watcher picks up changes automatically within a couple of seconds (~1 s `Rea
 ### From Claude (MCP tools)
 
 ```
-ready()                              # check index readiness (calls /check-ready)
-verify_index(action="start")         # launch background sync/repair scan
-verify_index(action="status")        # monitor sync progress (reads from GET /status)
-verify_index(action="stop")          # cancel a running scan
+ready()                              # quick daemon/index/watcher snapshot
+service_status()                     # document count for each configured root
 wait_for_sync(timeout_s=30)          # poll until queue drained; pass 0 for instant status
 ```
 
-`ready()` returns a summary with `poll_ok` (FS walk completed), `index_ok` (zero missing/stale/orphaned), and timing. If not ready, `verify_index(action="start")` triggers the syncer to repair the index without resetting it.
+`ready()` returns the document count, watcher state, and pending queue depth without walking
+the filesystem. Use `ts verify` when a branch switch, bulk rewrite, or watcher outage requires
+a full filesystem-to-index repair.
 
 `wait_for_sync` sleeps up to 1 s (watcher warm-up) then polls `/status` every 0.5 s until the queue is empty. Reports `"Index synced in {N}s"` with a `"was: queue={N}"` note if work was observed, or a timeout message with recovery hints.
+
+The MCP server starts immediately and requests daemon startup in the background when needed.
+If the daemon disconnects during a tool call, the MCP server attempts one restart and retry.
+Runtime diagnostics are written to `%LOCALAPPDATA%\tscodesearch\mcp_server.log`; fatal Python
+diagnostics go to `mcp_crash.log`, and daemon bootstrap output goes to `daemon_startup.log`.
 
 ### From the command line
 
@@ -227,7 +232,7 @@ There is no longer a separate Typesense / Docker / WSL service -- the index live
 
 | File | Purpose |
 |------|---------|
-| `mcp_server.py` | Python MCP server (FastMCP). Tools: `query_codebase`, `query_single_file`, `ready`, `verify_index`, `service_status`, `wait_for_sync`. |
+| `mcp_server.py` | Python MCP server (FastMCP). Tools: `query_codebase`, `query_single_file`, `ready`, `service_status`, `wait_for_sync`. |
 | `indexserver/daemon.py` | Management daemon. Owns the HTTP API, watcher, IndexQueue, syncer, system-tray icon, and one Tantivy `Backend` per configured root. |
 | `mcp.cmd` | Windows launcher: `.client-venv\Scripts\python.exe mcp_server.py` |
 | `ts.cmd` / `ts.mjs` | Daemon CLI: start/stop/restart/status/index/verify/log/root |

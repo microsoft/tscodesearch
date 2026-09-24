@@ -7,8 +7,11 @@ under any Python with tree-sitter installed.
 from __future__ import annotations
 
 import sys
+import tempfile
+import time
 import unittest
 from typing import Any
+from unittest.mock import patch
 
 from tests import REPO_ROOT
 
@@ -49,6 +52,85 @@ except Exception as e:
     _IMPORT_ERR = str(e)
 
 _skip = unittest.skipUnless(_IMPORT_OK, f"mcp_server import failed: {_IMPORT_ERR}")
+
+
+@_skip
+class TestLoggedTool(unittest.TestCase):
+
+    def test_returns_wrapped_result(self):
+        def sample(value):
+            return value + 1
+
+        with patch.object(_ms, "_LOG") as logger:
+            wrapped = _ms._logged_tool(sample)
+            assert wrapped(2) == 3
+            assert logger.info.call_count == 2
+
+    def test_logs_and_surfaces_exception_without_raising(self):
+        def sample():
+            raise RuntimeError("boom")
+
+        with patch.object(_ms, "_LOG") as logger:
+            wrapped = _ms._logged_tool(sample)
+            result = wrapped()
+            assert "TSCODESEARCH MCP ERROR in sample: RuntimeError: boom" in result
+            assert "mcp_server.log" in result
+            logger.exception.assert_called_once()
+
+
+@_skip
+class TestDaemonRecovery(unittest.TestCase):
+
+    def test_ensure_daemon_does_not_spawn_when_healthy(self):
+        with patch.object(_ms, "_daemon_is_healthy", return_value=True):
+            with patch("subprocess.Popen") as popen:
+                _ms._ensure_daemon()
+        popen.assert_not_called()
+
+    def test_ensure_daemon_spawns_without_waiting(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.dict("os.environ", {"TSCODESEARCH_DATA": temp_dir}):
+                with patch.object(_ms, "_daemon_is_healthy", return_value=False):
+                    with patch("subprocess.Popen") as popen:
+                        popen.return_value.pid = 123
+                        with patch.object(_ms, "_DAEMON_START_REQUESTED_AT", 0.0):
+                            started = time.monotonic()
+                            _ms._ensure_daemon()
+                            elapsed = time.monotonic() - started
+        popen.assert_called_once()
+        assert elapsed < 1.0
+
+    def test_ensure_daemon_coalesces_recent_start_requests(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.dict("os.environ", {"TSCODESEARCH_DATA": temp_dir}):
+                with patch.object(_ms, "_daemon_is_healthy", return_value=False):
+                    with patch("subprocess.Popen") as popen:
+                        popen.return_value.pid = 123
+                        with patch.object(_ms, "_DAEMON_START_REQUESTED_AT", 0.0):
+                            _ms._ensure_daemon()
+                            _ms._ensure_daemon()
+        popen.assert_called_once()
+
+    def test_request_recovers_once_after_disconnect(self):
+        with patch.object(
+            _ms,
+            "_http",
+            side_effect=[ConnectionRefusedError("offline"), (200, {"ok": True})],
+        ) as http:
+            with patch.object(_ms, "_ensure_daemon") as ensure:
+                with patch.object(_ms, "_wait_for_daemon", return_value=True) as wait:
+                    result = _ms._request_with_recovery("GET", "/status", timeout=3)
+        assert result == (200, {"ok": True})
+        assert http.call_count == 2
+        ensure.assert_called_once()
+        wait.assert_called_once_with(timeout_s=3.0)
+
+    def test_request_does_not_retry_non_connection_failure(self):
+        with patch.object(_ms, "_http", side_effect=TimeoutError("slow")):
+            with patch.object(_ms, "_ensure_daemon") as ensure:
+                with self.assertRaisesRegex(TimeoutError, "slow"):
+                    _ms._request_with_recovery("GET", "/status", timeout=3)
+        ensure.assert_not_called()
 
 
 # -- collection_for_root (indexserver.config) ---------------------------------
