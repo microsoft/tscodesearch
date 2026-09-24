@@ -1,8 +1,10 @@
-# MCP server + query/ + indexserver/ + tsquery_server.py — client venv (.client-venv)
+# MCP server + query/ + indexserver/ + tsquery_server.py -- client venv (.client-venv)
 # Installed by setup.mjs step [2]. Used by mcp_server.py and the management daemon.
 --index-url https://packagefeedproxy.microsoft.io/pypi/simple
 
-mcp<2
+mcp==2.2.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
 tree-sitter
 tree-sitter-c-sharp
 tree-sitter-python

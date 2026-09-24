@@ -22,6 +22,7 @@ import { fileURLToPath }                               from 'node:url';
 import { randomBytes }                                 from 'node:crypto';
 
 const REPO = dirname(fileURLToPath(import.meta.url));
+const PYPI_INDEX_URL = 'https://packagefeedproxy.microsoft.io/pypi/simple';
 
 // -- Helpers -------------------------------------------------------------------
 
@@ -195,7 +196,8 @@ step(2, 'Creating client venv (.client-venv)');
   }
 
   console.log(needsCreate ? '  Installing packages...' : '  Updating packages...');
-  runOrDie('uv', ['pip', 'install', '--quiet', '--upgrade', '-r', reqs],
+  runOrDie('uv', ['pip', 'install', '--quiet', '--upgrade',
+                  '--index-url', PYPI_INDEX_URL, '-r', reqs],
     'uv pip install', { env: { ...process.env, VIRTUAL_ENV: clientVenv } });
   console.log('  Done.');
 
