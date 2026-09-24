@@ -16,7 +16,7 @@
 import { spawnSync }                                    from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync,
          unlinkSync, linkSync, copyFileSync,
-         readSync }                                     from 'node:fs';
+         readSync, readdirSync, rmSync }                 from 'node:fs';
 import { join, dirname }                               from 'node:path';
 import { fileURLToPath }                               from 'node:url';
 import { randomBytes }                                 from 'node:crypto';
@@ -57,6 +57,17 @@ function step(n, label) { console.log(`\n[${n}] ${label}...`); }
 function commandExists(cmd) {
   const checker = process.platform === 'win32' ? 'where' : 'which';
   return capture(checker, [cmd]) !== null;
+}
+
+function removeIncompletePackageMetadata(sitePackages) {
+  if (!existsSync(sitePackages)) return;
+  for (const entry of readdirSync(sitePackages, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.endsWith('.dist-info')) continue;
+    const metadataDir = join(sitePackages, entry.name);
+    if (existsSync(join(metadataDir, 'RECORD'))) continue;
+    console.log(`  Removing incomplete package metadata: ${entry.name}`);
+    rmSync(metadataDir, { recursive: true, force: true });
+  }
 }
 
 function prompt(question) {
@@ -115,6 +126,14 @@ if (uninstall) {
 }
 
 // -- Main setup ----------------------------------------------------------------
+
+// Stop the daemon before changing its Python environment. The stop command
+// waits for the process lock to be released, not just for the HTTP port to close.
+step(0, 'Stopping running daemon');
+if (existsSync(join(REPO, 'config.json')))
+  runOrDie('node', [join(REPO, 'ts.mjs'), 'stop'], 'ts stop');
+else
+  console.log('  No config.json yet; nothing to stop.');
 
 // [1] Register MCP
 step(1, 'Registering MCP server (Claude Code + GitHub Copilot)');
@@ -181,9 +200,12 @@ step(2, 'Creating client venv (.client-venv)');
 
   runOrDie('uv', ['python', 'install', PYTHON_VER], `uv python install ${PYTHON_VER}`);
 
+  removeIncompletePackageMetadata(join(clientVenv, 'Lib', 'site-packages'));
+
   const needsCreate = !existsSync(pyExe);
   console.log(needsCreate ? '  Installing packages...' : '  Synchronizing packages...');
-  runOrDie('uv', ['sync', '--locked', '--no-dev', '--python', PYTHON_VER, '--project', REPO],
+  runOrDie('uv', ['sync', '--locked', '--no-dev', '--link-mode', 'copy',
+                  '--python', PYTHON_VER, '--project', REPO],
     'uv sync', {
       env: {
         ...process.env,
