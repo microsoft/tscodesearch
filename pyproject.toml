@@ -1,3 +1,38 @@
+[project]
+name = "tscodesearch"
+version = "0.2.0"
+description = "Full-text and structural code search exposed through MCP"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp",
+    "pathspec",
+    "pillow; sys_platform == 'win32'",
+    "pystray; sys_platform == 'win32'",
+    "tantivy",
+    "tree-sitter",
+    "tree-sitter-c-sharp",
+    "tree-sitter-cpp",
+    "tree-sitter-javascript",
+    "tree-sitter-python",
+    "tree-sitter-rust",
+    "tree-sitter-sql",
+    "tree-sitter-typescript",
+    "watchdog",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "microsoft"
+url = "https://packagefeedproxy.microsoft.io/pypi/simple"
+default = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests", "query/tests"]
 python_files = ["test_*.py"]

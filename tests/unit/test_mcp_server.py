@@ -7,6 +7,8 @@ under any Python with tree-sitter installed.
 from __future__ import annotations
 
 import sys
+import importlib.util
+import subprocess
 import tempfile
 import time
 import unittest
@@ -21,22 +23,22 @@ _PY_FILE = str(REPO_ROOT / "sample" / "root1" / "pipeline.py")
 
 # -- Stub mcp if not installed (indexserver venv lacks it) --------------------
 
-if "mcp" not in sys.modules:
+if importlib.util.find_spec("mcp") is None:
     import types
     from unittest.mock import MagicMock
 
-    class _FakeFastMCP:
+    class _FakeMCPServer:
         def __init__(self, *_a, **_kw): pass
         def tool(self):
             def deco(fn): return fn
             return deco
         def run(self): pass
 
-    _fastmcp_mod = types.ModuleType("mcp.server.fastmcp")
-    setattr(_fastmcp_mod, "FastMCP", _FakeFastMCP)
+    _mcpserver_mod = types.ModuleType("mcp.server.mcpserver")
+    setattr(_mcpserver_mod, "MCPServer", _FakeMCPServer)
     sys.modules.setdefault("mcp",              MagicMock())
     sys.modules.setdefault("mcp.server",       MagicMock())
-    sys.modules["mcp.server.fastmcp"]        = _fastmcp_mod
+    sys.modules["mcp.server.mcpserver"]       = _mcpserver_mod
 
 # -- Import mcp_server, skip all tests if config.json is absent ---------------
 
@@ -52,6 +54,21 @@ except Exception as e:
     _IMPORT_ERR = str(e)
 
 _skip = unittest.skipUnless(_IMPORT_OK, f"mcp_server import failed: {_IMPORT_ERR}")
+
+
+class TestMCPServerRuntime(unittest.TestCase):
+
+    @unittest.skipIf(importlib.util.find_spec("mcp") is None, "mcp package is not installed")
+    def test_real_server_starts_and_handles_eof(self):
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "mcp_server.py")],
+            input="",
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 @_skip

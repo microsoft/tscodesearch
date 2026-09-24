@@ -22,8 +22,6 @@ import { fileURLToPath }                               from 'node:url';
 import { randomBytes }                                 from 'node:crypto';
 
 const REPO = dirname(fileURLToPath(import.meta.url));
-const PYPI_INDEX_URL = 'https://packagefeedproxy.microsoft.io/pypi/simple';
-
 // -- Helpers -------------------------------------------------------------------
 
 const WIN_SCRIPTS = new Set(['npm', 'npx', 'claude', 'code', 'vsce']);
@@ -171,7 +169,6 @@ step(2, 'Creating client venv (.client-venv)');
 {
   const clientVenv = join(REPO, '.client-venv');
   const pyExe      = join(clientVenv, 'Scripts', 'python.exe');
-  const reqs       = join(REPO, 'requirements-client.txt');
   const PYTHON_VER = '3.12';
 
   if (!commandExists('uv')) {
@@ -184,21 +181,15 @@ step(2, 'Creating client venv (.client-venv)');
 
   runOrDie('uv', ['python', 'install', PYTHON_VER], `uv python install ${PYTHON_VER}`);
 
-  const needsCreate = !existsSync(pyExe) || (() => {
-    const v = capture(pyExe, ['--version']);
-    const m = v?.match(/^Python 3\.(\d+)/);
-    return !m || parseInt(m[1], 10) < 10;
-  })();
-
-  if (needsCreate) {
-    if (existsSync(pyExe)) console.log('  Python version too old -- recreating venv...');
-    runOrDie('uv', ['venv', '--python', PYTHON_VER, clientVenv], 'uv venv');
-  }
-
-  console.log(needsCreate ? '  Installing packages...' : '  Updating packages...');
-  runOrDie('uv', ['pip', 'install', '--quiet', '--upgrade',
-                  '--index-url', PYPI_INDEX_URL, '-r', reqs],
-    'uv pip install', { env: { ...process.env, VIRTUAL_ENV: clientVenv } });
+  const needsCreate = !existsSync(pyExe);
+  console.log(needsCreate ? '  Installing packages...' : '  Synchronizing packages...');
+  runOrDie('uv', ['sync', '--locked', '--no-dev', '--python', PYTHON_VER, '--project', REPO],
+    'uv sync', {
+      env: {
+        ...process.env,
+        UV_PROJECT_ENVIRONMENT: clientVenv,
+      },
+    });
   console.log('  Done.');
 
   // Create tscodesearch.exe as a hard link to python.exe so the daemon
@@ -250,7 +241,7 @@ if (!existsSync(join(vscodeDir, 'package.json'))) {
   console.log("  SKIPPED: 'code' not found in PATH.");
   console.log(`  Install manually: VS Code > F1 > Developer: Install Extension from Location > ${vscodeDir}`);
 } else {
-  runOrDie('npm', ['install', '--no-fund', '--no-audit'], 'npm install (vscode)', { cwd: vscodeDir });
+  runOrDie('npm', ['ci', '--no-fund', '--no-audit'], 'npm ci (vscode)', { cwd: vscodeDir });
   runOrDie('npm', ['run', 'compile'], 'compile', { cwd: vscodeDir });
   runOrDie('npm', ['run', 'package', '--', '-o', 'codesearch.vsix'], 'package', { cwd: vscodeDir });
   const vsix = join(vscodeDir, 'codesearch.vsix');

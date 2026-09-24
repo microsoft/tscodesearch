@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "tscodesearch": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/../.client-venv/Scripts/python.exe",
+      "args": [
+        "${workspaceFolder}/../mcp_server.py"
+      ],
+      "cwd": "${workspaceFolder}/.."
+    }
+  }
+}

@@ -4,10 +4,10 @@
  * Owns root management (config.json) and daemon lifecycle. All heavy lifting
  * is delegated to ts.mjs:
  *
- *   node.exe <repoPath>/ts.mjs <cmd>
+ *   node <repoPath>/ts.mjs <cmd>
  *
- * The daemon (tsquery_server.py) listens on config.json's `port` and is
- * a single in-process Tantivy-backed indexer — there is no Docker or WSL
+ * The daemon (indexserver/daemon.py) listens on config.json's `port` and is
+ * a single in-process Tantivy-backed indexer -- there is no Docker or WSL
  * lifecycle to manage anymore.
  */
 
@@ -78,8 +78,7 @@ export class ServerManager {
 
     // ── Settings ─────────────────────────────────────────────────────────────
 
-    get mcpPort(): number { return cfg('mcpPort', 3000); }
-    get port():    number { return this._diskConfig?.port ?? cfg('port', 8108); }
+    get port():    number { return this._diskConfig?.port ?? 8108; }
     /** Back-compat alias used by the tree view. */
     get apiPort(): number { return this.port; }
     /** Explicit setting takes precedence; falls back to workspace folder auto-detection. */
@@ -143,7 +142,7 @@ export class ServerManager {
         }
         const tsMjs = path.join(this.repoPath, 'ts.mjs');
         const log   = (l: string) => { this._out.appendLine(l); onLine?.(l); };
-        await spawnLines('node.exe', [tsMjs, cmd], log);
+        await spawnLines('node', [tsMjs, cmd], log);
     }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────

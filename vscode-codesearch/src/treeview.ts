@@ -136,8 +136,7 @@ export class RootsTreeProvider implements vscode.TreeDataProvider<CodesearchTree
         node.iconPath    = new vscode.ThemeIcon(icon);
 
         if (running) {
-            const portInfo = `MCP :${this._server.mcpPort}  API :${this._server.port}`;
-            node.tooltip = `${name}\nPorts: ${portInfo}`;
+            node.tooltip = `${name}\nAPI port: ${this._server.port}`;
         } else {
             node.tooltip = `${name} is not running.\nRun "TsCodeSearch: Set Up" or "TsCodeSearch: Restart".`;
         }

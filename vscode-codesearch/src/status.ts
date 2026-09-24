@@ -129,8 +129,8 @@ export class StatusBarManager {
             this._item.text    = `$(warning) TsCodeSearch: ${label}`;
             this._item.tooltip = new vscode.MarkdownString(
                 isAuth
-                    ? '**TsCodeSearch** — API key mismatch\n\nThe extension API key does not match the running server.\n\nCheck `tscodesearch.configPath` or `tscodesearch.roots` settings.'
-                    : '**TsCodeSearch** — server unreachable\n\nUse the Roots panel to set up or restart the server.',
+                    ? '**TsCodeSearch** -- API key mismatch\n\nThe extension API key does not match the running server.\n\nCheck the `config.json` in `tscodesearch.repoPath`.'
+                    : '**TsCodeSearch** -- server unreachable\n\nUse the Roots panel to set up or restart the server.',
             );
             this._treeProvider?.updateFromStatus(false, {}, {
                 watcherState: label, queueDepth: 0,

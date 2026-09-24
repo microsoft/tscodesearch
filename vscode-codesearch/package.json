@@ -2,16 +2,43 @@
   "name": "codesearch",
   "publisher": "local",
   "displayName": "TsCodeSearch",
-  "description": "Real-time Typesense code search panel for C# monorepos",
+  "description": "Full-text and structural code search backed by a local Tantivy index",
   "version": "0.1.0",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/microsoft/tscodesearch.git",
+    "directory": "vscode-codesearch"
+  },
+  "homepage": "https://github.com/microsoft/tscodesearch#readme",
+  "bugs": {
+    "url": "https://github.com/microsoft/tscodesearch/issues"
+  },
   "engines": {
     "vscode": "^1.138.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "TsCodeSearch starts local repository scripts and reads local configuration."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "TsCodeSearch requires local filesystem paths and a local daemon."
+    }
   },
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "keywords": [
+    "code search",
+    "mcp",
+    "tantivy",
+    "tree-sitter"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -86,17 +113,8 @@
           "tscodesearch.repoPath": {
             "type": "string",
             "default": "",
-            "description": "Path to the tscodesearch repository root. Optional — auto-detected from workspace folders."
-          },
-          "tscodesearch.mcpPort": {
-            "type": "number",
-            "default": 3000,
-            "description": "Port for the MCP SSE endpoint."
-          },
-          "tscodesearch.port": {
-            "type": "number",
-            "default": 8108,
-            "description": "Port for the codesearch daemon HTTP API."
+            "scope": "machine",
+            "description": "Path to the tscodesearch repository root. Optional -- auto-detected from workspace folders."
           }
         }
       }
@@ -171,7 +189,7 @@
     "watch": "tsc -watch -p ./",
     "test": "node --require tsx/cjs --test src/test/client.test.ts src/test/webview.test.ts src/test/pipeline.test.ts",
     "test:pipeline": "node --require tsx/cjs --test src/test/pipeline.test.ts",
-    "package": "vsce package --no-dependencies --allow-missing-repository"
+    "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^26.6.1",
