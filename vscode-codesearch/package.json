@@ -182,8 +182,9 @@
     }
   },
   "scripts": {
+    "clean": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\"",
     "prebuild": "node -e \"var d=new Date();require('fs').writeFileSync('src/buildInfo.ts','export const BUILD_DATE = \\\"'+d.toISOString().slice(0,16).replace('T',' ')+' UTC\\\";\\n')\"",
-    "precompile": "npm run prebuild",
+    "precompile": "npm run clean && npm run prebuild",
     "prewatch": "npm run prebuild",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
