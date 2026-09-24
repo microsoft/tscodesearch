@@ -21,7 +21,7 @@ To uninstall: `setup.cmd --uninstall`
 
 - Windows 11 (or Linux/macOS for the daemon, with caveats)
 - Python 3.10+
-- Node.js 20+
+- Node.js 22+
 - `uv` is installed automatically by `setup.mjs` if missing
 
 There is **no Docker, WSL, or Typesense** dependency. The whole index is in-process.
@@ -36,7 +36,7 @@ setup.cmd
 
 `setup.cmd` checks for Node.js then calls `node setup.mjs`, which:
 1. Registers the MCP server with Claude Code and VS Code (GitHub Copilot `mcp.json`)
-2. Creates `.client-venv` and installs Python dependencies
+2. Creates `.client-venv` and installs Python dependencies from the Microsoft package feed
 3. Creates `config.json` -- prompts for a source directory to index (can be added later)
 4. Installs the VS Code extension
 
