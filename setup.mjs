@@ -4,24 +4,33 @@
  *
  * 1. Registers the MCP server with Claude Code
  * 2. Sets the VS Code tscodesearch.repoPath setting
- * 3. Creates a .client-venv with all Python deps (incl. tantivy)
+ * 3. Synchronizes the root .venv with all Python deps (incl. tantivy)
  * 4. Creates config.json if absent
  * 5. Builds and installs the VS Code extension
  *
  * Usage:
  *   node setup.mjs
+ *   node setup.mjs --priority
  *   node setup.mjs --uninstall
  */
 
 import { spawnSync }                                    from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync,
-         unlinkSync, linkSync, copyFileSync,
-         readSync, readdirSync, rmSync }                 from 'node:fs';
+         unlinkSync,
+         readSync, readdirSync, rmSync, mkdirSync }      from 'node:fs';
 import { join, dirname }                               from 'node:path';
 import { fileURLToPath }                               from 'node:url';
 import { randomBytes }                                 from 'node:crypto';
+import { homedir }                                     from 'node:os';
+import { uvInvocation }                                from './lib/uv.mjs';
+import { updateCopilotMcp }                             from './lib/copilot_mcp.mjs';
+import { createDaemonExecutable }                      from './scripts/create_daemon_exe.mjs';
 
 const REPO = dirname(fileURLToPath(import.meta.url));
+const PRIORITY_START = '<!-- tscodesearch-priority:start -->';
+const PRIORITY_END = '<!-- tscodesearch-priority:end -->';
+const COPILOT_INSTRUCTIONS_PATH = join(homedir(), '.copilot', 'copilot-instructions.md');
+const COPILOT_MCP_PATH = join(process.env.COPILOT_HOME || join(homedir(), '.copilot'), 'mcp-config.json');
 // -- Helpers -------------------------------------------------------------------
 
 const WIN_SCRIPTS = new Set(['npm', 'npx', 'claude', 'code', 'vsce']);
@@ -85,10 +94,85 @@ function prompt(question) {
   return input.trim();
 }
 
+function priorityInstruction(eol) {
+  return [
+    PRIORITY_START,
+    '## CRITICAL: Prefer tscodesearch for local code',
+    '',
+    'When searching or reading source files available in the current local working tree or a configured tscodesearch root, use tscodesearch first and prefer it over Bluebird. Use Bluebird only when a query explicitly targets checked-in repository state or code in another source tree that is not available through tscodesearch.',
+    PRIORITY_END,
+  ].join(eol);
+}
+
+function addPriorityInstruction() {
+  const existing = existsSync(COPILOT_INSTRUCTIONS_PATH)
+    ? readFileSync(COPILOT_INSTRUCTIONS_PATH, 'utf8')
+    : '';
+  const eol = existing.includes('\r\n') ? '\r\n' : '\n';
+  const start = existing.indexOf(PRIORITY_START);
+  const end = existing.indexOf(PRIORITY_END);
+  const duplicateStart = start !== -1 &&
+    existing.indexOf(PRIORITY_START, start + PRIORITY_START.length) !== -1;
+  const duplicateEnd = end !== -1 &&
+    existing.indexOf(PRIORITY_END, end + PRIORITY_END.length) !== -1;
+  if ((start === -1) !== (end === -1) || (start !== -1 && end < start) ||
+      duplicateStart || duplicateEnd)
+    throw new Error(`Malformed tscodesearch priority block in ${COPILOT_INSTRUCTIONS_PATH}.`);
+
+  const instruction = priorityInstruction(eol);
+  let updated;
+  if (start !== -1) {
+    updated = existing.slice(0, start) + instruction +
+      existing.slice(end + PRIORITY_END.length);
+  } else {
+    const separator = existing.length === 0 ? '' : existing.endsWith(eol) ? eol : eol + eol;
+    updated = existing + separator + instruction + eol;
+  }
+
+  mkdirSync(dirname(COPILOT_INSTRUCTIONS_PATH), { recursive: true });
+  if (updated !== existing)
+    writeFileSync(COPILOT_INSTRUCTIONS_PATH, updated, 'utf8');
+  console.log(`  Added critical tscodesearch priority instruction to ${COPILOT_INSTRUCTIONS_PATH}.`);
+}
+
+function removePriorityInstruction() {
+  if (!existsSync(COPILOT_INSTRUCTIONS_PATH)) return;
+  const existing = readFileSync(COPILOT_INSTRUCTIONS_PATH, 'utf8');
+  const start = existing.indexOf(PRIORITY_START);
+  const end = existing.indexOf(PRIORITY_END);
+  if (start === -1 && end === -1) return;
+  const duplicateStart = start !== -1 &&
+    existing.indexOf(PRIORITY_START, start + PRIORITY_START.length) !== -1;
+  const duplicateEnd = end !== -1 &&
+    existing.indexOf(PRIORITY_END, end + PRIORITY_END.length) !== -1;
+  if (start === -1 || end < start || duplicateStart || duplicateEnd)
+    throw new Error(`Malformed tscodesearch priority block in ${COPILOT_INSTRUCTIONS_PATH}.`);
+
+  let blockStart = start;
+  if (existing.slice(Math.max(0, start - 2), start) === '\r\n')
+    blockStart -= 2;
+  else if (existing[start - 1] === '\n')
+    blockStart -= 1;
+
+  let blockEnd = end + PRIORITY_END.length;
+  if (existing.slice(blockEnd, blockEnd + 2) === '\r\n')
+    blockEnd += 2;
+  else if (existing[blockEnd] === '\n')
+    blockEnd += 1;
+
+  const updated = existing.slice(0, blockStart) + existing.slice(blockEnd);
+  if (updated.trim() === '')
+    unlinkSync(COPILOT_INSTRUCTIONS_PATH);
+  else
+    writeFileSync(COPILOT_INSTRUCTIONS_PATH, updated, 'utf8');
+  console.log(`  Removed tscodesearch priority instruction from ${COPILOT_INSTRUCTIONS_PATH}.`);
+}
+
 // -- Argument parsing ----------------------------------------------------------
 
 const argv      = process.argv.slice(2);
 const uninstall = argv.includes('--uninstall');
+const priority  = argv.includes('--priority');
 
 // -- Uninstall -----------------------------------------------------------------
 
@@ -100,6 +184,11 @@ if (uninstall) {
     console.log('WARNING: claude mcp remove failed (may not have been registered).');
   else
     console.log('  Removed from Claude Code.');
+  try {
+    updateCopilotMcp(COPILOT_MCP_PATH);
+  } catch (e) {
+    die(`Could not remove Copilot MCP registration: ${e.message}`);
+  }
   // Remove from the dedicated VS Code / GitHub Copilot MCP configuration.
   const _mcpPath = join(process.env.APPDATA ?? '', 'Code', 'User', 'mcp.json');
   try {
@@ -121,11 +210,25 @@ if (uninstall) {
       writeFileSync(_vsPath, JSON.stringify(_s, null, 2) + '\n', 'utf8');
     }
   } catch { /* settings.json missing or unreadable -- nothing to remove */ }
+  try {
+    removePriorityInstruction();
+  } catch (e) {
+    console.log(`WARNING: Could not remove Copilot priority instruction: ${e.message}`);
+  }
   console.log('Done. Reload VS Code / Claude Code for the change to take effect.');
   process.exit(0);
 }
 
 // -- Main setup ----------------------------------------------------------------
+
+step(0, 'Checking uv');
+if (!commandExists('uv')) {
+  console.log('  uv not found -- installing via winget...');
+  runOrDie('winget', ['install', '--id', 'astral-sh.uv', '-e', '--silent',
+    '--accept-source-agreements', '--accept-package-agreements'], 'uv install');
+  if (!commandExists('uv'))
+    die('uv installed but not yet in PATH -- open a new terminal and re-run setup.');
+}
 
 // Stop the daemon before changing its Python environment. The stop command
 // waits for the process lock to be released, not just for the HTTP port to close.
@@ -135,12 +238,36 @@ if (existsSync(join(REPO, 'config.json')))
 else
   console.log('  No config.json yet; nothing to stop.');
 
+step(1, 'Synchronizing managed Python environment (.venv)');
+const pythonVersion = readFileSync(join(REPO, '.python-version'), 'utf8').trim();
+runOrDie('uv', ['python', 'install', pythonVersion], 'uv python install');
+removeIncompletePackageMetadata(join(REPO, '.venv', 'Lib', 'site-packages'));
+runOrDie('uv', ['sync', '--locked', '--no-dev', '--link-mode', 'copy',
+  '--managed-python', '--python', pythonVersion, '--project', REPO],
+  'uv sync', { env: uvInvocation([]).env });
+try {
+  createDaemonExecutable();
+} catch (e) {
+  die(`Could not create named daemon executable: ${e.message}`);
+}
+
 // [1] Register MCP
-step(1, 'Registering MCP server (Claude Code + GitHub Copilot)');
+step(2, 'Registering MCP server (Claude Code + GitHub Copilot)');
+try {
+  updateCopilotMcp(COPILOT_MCP_PATH, {
+    command: 'uv',
+    args: uvInvocation([join(REPO, 'mcp_server.py')]).args,
+    env: { UV_PROJECT_ENVIRONMENT: join(REPO, '.venv') },
+  });
+  console.log(`  Registered with Copilot in ${COPILOT_MCP_PATH}.`);
+} catch (e) {
+  die(`Could not register Copilot MCP server: ${e.message}`);
+}
 run('claude', ['mcp', 'remove', '--scope', 'user', 'tscodesearch'], { stdio: 'pipe' });
 if (run('claude', [
   'mcp', 'add', '--scope', 'user', 'tscodesearch',
-  '--', join(REPO, '.client-venv', 'Scripts', 'python.exe'), join(REPO, 'mcp_server.py'),
+  '--env', `UV_PROJECT_ENVIRONMENT=${join(REPO, '.venv')}`,
+  '--', 'uv', ...uvInvocation([join(REPO, 'mcp_server.py')]).args,
 ]) === 0)
   console.log('  Registered with Claude Code.');
 else
@@ -165,14 +292,15 @@ try {
   console.log(`  WARNING: Could not update VS Code settings: ${e.message}`);
 }
 
-// Register with VS Code (GitHub Copilot) through its dedicated MCP configuration.
+// Keep the VS Code Local harness registration for compatibility.
 const vscodeMcpPath = join(process.env.APPDATA ?? '', 'Code', 'User', 'mcp.json');
 if (commandExists('code')) {
   const mcpDefinition = JSON.stringify({
     name: 'tscodesearch',
     type: 'stdio',
-    command: join(REPO, '.client-venv', 'Scripts', 'python.exe'),
-    args: [join(REPO, 'mcp_server.py')],
+    command: 'uv',
+    args: uvInvocation([join(REPO, 'mcp_server.py')]).args,
+    env: { UV_PROJECT_ENVIRONMENT: join(REPO, '.venv') },
   });
   if (run('code', ['--add-mcp', mcpDefinition]) === 0)
     console.log('  Registered with VS Code (GitHub Copilot).');
@@ -183,49 +311,11 @@ if (commandExists('code')) {
   console.log(`  Add the tscodesearch server manually to ${vscodeMcpPath}.`);
 }
 
-// [2] Client venv (managed Python via uv)
-step(2, 'Creating client venv (.client-venv)');
-{
-  const clientVenv = join(REPO, '.client-venv');
-  const pyExe      = join(clientVenv, 'Scripts', 'python.exe');
-  const PYTHON_VER = '3.12';
-
-  if (!commandExists('uv')) {
-    console.log('  uv not found -- installing via winget...');
-    if (run('winget', ['install', '--id', 'astral-sh.uv', '-e', '--silent']) !== 0)
-      die('uv install failed. Install uv manually (https://docs.astral.sh/uv/) then re-run setup.');
-    if (!commandExists('uv'))
-      die('uv installed but not yet in PATH -- open a new terminal and re-run setup.');
-  }
-
-  runOrDie('uv', ['python', 'install', PYTHON_VER], `uv python install ${PYTHON_VER}`);
-
-  removeIncompletePackageMetadata(join(clientVenv, 'Lib', 'site-packages'));
-
-  const needsCreate = !existsSync(pyExe);
-  console.log(needsCreate ? '  Installing packages...' : '  Synchronizing packages...');
-  runOrDie('uv', ['sync', '--locked', '--no-dev', '--link-mode', 'copy',
-                  '--python', PYTHON_VER, '--project', REPO],
-    'uv sync', {
-      env: {
-        ...process.env,
-        UV_PROJECT_ENVIRONMENT: clientVenv,
-      },
-    });
-  console.log('  Done.');
-
-  // Create tscodesearch.exe as a hard link to python.exe so the daemon
-  // shows a descriptive process name in Task Manager instead of "python.exe".
-  const tsExe = join(clientVenv, 'Scripts', 'tscodesearch.exe');
-  if (needsCreate || !existsSync(tsExe)) {
-    if (existsSync(tsExe)) unlinkSync(tsExe);
-    try {
-      linkSync(pyExe, tsExe);
-      console.log('  Created tscodesearch.exe (hard link for daemon process name).');
-    } catch {
-      copyFileSync(pyExe, tsExe);
-      console.log('  Copied tscodesearch.exe (daemon process name alias).');
-    }
+if (priority) {
+  try {
+    addPriorityInstruction();
+  } catch (e) {
+    die(`Could not add Copilot priority instruction: ${e.message}`);
   }
 }
 

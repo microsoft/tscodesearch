@@ -38,9 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          python-version: "3.12"
+          enable-cache: true
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -48,14 +48,17 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python -m pip install uv==0.11.11
-          uv sync --locked
+          uv python install
+          uv sync --locked --managed-python
 
       - name: Write config.json
         run: echo '{"api_key":"ci-test-key","port":8108,"roots":{}}' > config.json
 
       - name: Run Python tests
-        run: uv run --locked pytest tests/ query/tests/ -v
+        run: uv run --no-sync python -m pytest tests/ query/tests/ -v
+
+      - name: Run Python invocation and MCP registration tests
+        run: node --test tests/*.mjs
 
       - name: Run VS Code extension tests
         run: node run_tests.mjs

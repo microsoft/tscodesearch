@@ -17,7 +17,7 @@ import sys
 import unicodedata
 
 SKIP_DIRS = {
-    ".tantivy", ".git", "node_modules", "sample", ".client-venv",
+    ".tantivy", ".git", "node_modules", "sample", ".venv", ".client-venv",
     "__pycache__", ".pytest_cache", "vscode-codesearch",
 }
 HOT_PREFIXES = (

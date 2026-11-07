@@ -13,7 +13,7 @@ import os
 import sys
 
 SKIP_DIRS = {
-    ".tantivy", ".git", "node_modules", "sample", ".client-venv",
+    ".tantivy", ".git", "node_modules", "sample", ".venv", ".client-venv",
     "__pycache__", ".pytest_cache", "vscode-codesearch",
 }
 

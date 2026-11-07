@@ -150,4 +150,10 @@ Pipeline tests need the daemon running (`ts start`); they skip with a clear mess
 
 **`repoPath` must point to the repository root.** The extension resolves `config.json`, `ts.mjs`, and the local daemon from that directory.
 
+**Python uses uv directly and the root `.venv`.** Follow `../AGENTS.md` for
+Python commands. Do not create an extension-local venv or invoke a Python
+executable or Node Python wrapper. The extension's `node ts.mjs` lifecycle
+entry point launches uv directly for the daemon (using the root `.venv`'s
+named `tscodesearch.exe` on Windows, as described in `../AGENTS.md`).
+
 **Webview HTML is a TypeScript template literal.** The entire HTML including inline JS is built as a backtick string in `buildWebviewHtml()`. The inline JS must use regular quote strings (`'...'`, `"..."`), not template literals, to avoid ambiguity with TypeScript's own `${}` interpolation. The `nonce` and initial data (`MODES`, `ROOTS`, `DEFAULT_ROOT`) are the only TypeScript interpolations.

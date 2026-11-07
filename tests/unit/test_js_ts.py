@@ -5,7 +5,7 @@ No daemon needed -- all tests run against sample/root1/query_fixture.js and
 sample/root1/query_fixture.ts.
 
 Run:
-    .client-venv/Scripts/python.exe -m pytest tests/unit/test_js_ts.py -v
+    uv run --no-sync python -m pytest tests/unit/test_js_ts.py -v
 """
 
 import os

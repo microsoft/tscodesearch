@@ -2,12 +2,12 @@
 AST query CLI for a single file. Output is always JSON.
 
 CLI mode:
-    python -m query --mode methods --file C:/repos/myproject/src/Widget.cs
-    python -m query --mode calls --pattern SaveChanges --file C:/repos/myproject/src/Widget.cs
-    python -m query --mode uses --pattern IRepository --uses-kind param --file C:/repos/myproject/src/Widget.cs
+    uv run --no-sync python -m query --mode methods --file C:/repos/myproject/src/Widget.cs
+    uv run --no-sync python -m query --mode calls --pattern SaveChanges --file C:/repos/myproject/src/Widget.cs
+    uv run --no-sync python -m query --mode uses --pattern IRepository --uses-kind param --file C:/repos/myproject/src/Widget.cs
 
 JSON stdin mode:
-    echo {"mode":"methods","file":"C:/repos/myproject/src/Widget.cs"} | python -m query --json
+    echo {"mode":"methods","file":"C:/repos/myproject/src/Widget.cs"} | uv run --no-sync python -m query --json
 
 Output: {"matches": [{"line": N, "text": "..."}, ...]}
         {"error": "..."}  on failure

@@ -4,8 +4,8 @@ identifier-like but produce no qualified form -- so we can spot patterns the
 var-type map should learn to handle.
 
 Usage:
-    python -m scripts.probe_resolved <file.cs> [<file2.cs> ...]
-    python -m scripts.probe_resolved --dir <root> [--limit N]
+    uv run --no-sync python -m scripts.probe_resolved <file.cs> [<file2.cs> ...]
+    uv run --no-sync python -m scripts.probe_resolved --dir <root> [--limit N]
 """
 from __future__ import annotations
 

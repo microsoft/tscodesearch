@@ -98,6 +98,46 @@ class TestLoggedTool(unittest.TestCase):
 @_skip
 class TestDaemonRecovery(unittest.TestCase):
 
+    def test_daemon_launch_uses_uv_without_sync(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.dict("os.environ", {"TSCODESEARCH_DATA": temp_dir}):
+                with patch("subprocess.Popen") as popen:
+                    popen.return_value.pid = 123
+                    assert _ms._start_daemon_process() == 123
+        command = popen.call_args.args[0]
+        assert command == [
+            "uv", "run", "--no-sync", "--project", str(_ms._REPO),
+            "--directory", str(_ms._REPO),
+            str(_ms._REPO / ".venv" / "Scripts" / "tscodesearch.exe")
+            if _ms.sys.platform == "win32" else "python",
+            "-m", "indexserver.daemon",
+        ]
+        options = popen.call_args.kwargs
+        assert options["cwd"] == str(_ms._REPO)
+        assert options["env"]["UV_PROJECT_ENVIRONMENT"] == str(_ms._REPO / ".venv")
+        assert options["env"]["PYTHONIOENCODING"] == "utf-8"
+
+    def test_daemon_launch_hides_windows_console(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.dict("os.environ", {"TSCODESEARCH_DATA": temp_dir}):
+                with patch.object(_ms.sys, "platform", "win32"):
+                    with patch("subprocess.CREATE_NO_WINDOW", 0x08000000, create=True):
+                        with patch("subprocess.Popen") as popen:
+                            _ms._start_daemon_process()
+        assert popen.call_args.kwargs["creationflags"] == 0x08000000
+        assert popen.call_args.args[0][7] == str(_ms._REPO / ".venv" / "Scripts" / "tscodesearch.exe")
+        assert "start_new_session" not in popen.call_args.kwargs
+
+    def test_daemon_launch_detaches_on_unix(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.dict("os.environ", {"TSCODESEARCH_DATA": temp_dir}):
+                with patch.object(_ms.sys, "platform", "linux"):
+                    with patch("subprocess.Popen") as popen:
+                        _ms._start_daemon_process()
+        assert popen.call_args.kwargs["start_new_session"] is True
+        assert "creationflags" not in popen.call_args.kwargs
+        assert popen.call_args.args[0][7] == "python"
+
     def test_ensure_daemon_does_not_spawn_when_healthy(self):
         with patch.object(_ms, "_daemon_is_healthy", return_value=True):
             with patch("subprocess.Popen") as popen:

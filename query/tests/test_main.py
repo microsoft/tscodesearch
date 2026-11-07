@@ -19,7 +19,7 @@ _PIPELINE  = os.path.join(_SAMPLE, "pipeline.py")
 
 
 def _cli(*args) -> subprocess.CompletedProcess:
-    """Run  python -m query <args>  and return the completed process."""
+    """Run  uv run --no-sync python -m query <args>  and return the completed process."""
     return subprocess.run(
         [sys.executable, "-m", "query", *args],
         capture_output=True, text=True, cwd=_REPO,
@@ -27,7 +27,7 @@ def _cli(*args) -> subprocess.CompletedProcess:
 
 
 def _json_mode(payload: dict) -> subprocess.CompletedProcess:
-    """Run  python -m query --json  with payload as stdin."""
+    """Run  uv run --no-sync python -m query --json  with payload as stdin."""
     return subprocess.run(
         [sys.executable, "-m", "query", "--json"],
         input=json.dumps(payload), capture_output=True, text=True, cwd=_REPO,

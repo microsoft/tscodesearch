@@ -4,6 +4,6 @@
 :: Usage:
 ::   run_tests.cmd
 ::
-:: Python tests are run directly with pytest from the client venv:
-::   .client-venv\Scripts\python.exe -m pytest tests/ query/tests/ -v
+:: Python tests use uv directly with the root .venv:
+::   uv run --no-sync python -m pytest tests/ query/tests/ -v
 node "%~dp0run_tests.mjs" %*

@@ -1,7 +1,7 @@
 """
 Python MCP server for tscodesearch.
 
-Runs on Windows via .client-venv/Scripts/python.exe (stdio transport).
+Runs directly via uv in the root .venv (stdio transport).
 
 Tools:
   query_codebase     - Tantivy pre-filter + tree-sitter AST (via daemon /query-codebase)
@@ -1007,37 +1007,6 @@ def _start_daemon_process() -> int | None:
     """Start one detached daemon candidate and return its process ID."""
     import subprocess
 
-    # Always use the venv Python so indexserver + tantivy are importable,
-    # regardless of which Python is running the MCP server.
-    # On Windows, read pyvenv.cfg to find the base Python's real pythonw.exe
-    # (GUI subsystem -- never creates a console).  The venv shim pythonw.exe is
-    # a uv launcher that internally re-spawns python.exe (console subsystem).
-    _scripts = _REPO / ".client-venv" / "Scripts"
-    _pyvenv  = _REPO / ".client-venv" / "pyvenv.cfg"
-    py = None
-    extra_env: dict = {}
-    if sys.platform == "win32" and _pyvenv.exists():
-        for line in _pyvenv.read_text("utf-8").splitlines():
-            if line.lower().startswith("home"):
-                _, _, home = line.partition("=")
-                _base_pythonw = Path(home.strip()) / "pythonw.exe"
-                if _base_pythonw.exists():
-                    py = str(_base_pythonw)
-                    _venv = _REPO / ".client-venv"
-                    extra_env = {
-                        "VIRTUAL_ENV": str(_venv),
-                        "PYTHONPATH":  str(_venv / "Lib" / "site-packages"),
-                        "PATH": str(_scripts) + os.pathsep + os.environ.get("PATH", ""),
-                    }
-                break
-    if py is None:
-        if sys.platform == "win32":
-            _pythonw = _scripts / "pythonw.exe"
-            py = str(_pythonw) if _pythonw.exists() else str(_scripts / "python.exe")
-        else:
-            _pybin = _REPO / ".client-venv" / "bin" / "python"
-            py = str(_pybin) if _pybin.exists() else sys.executable
-
     try:
         run_dir = _run_dir()
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1047,11 +1016,24 @@ def _start_daemon_process() -> int | None:
                 stdin=subprocess.DEVNULL,
                 stdout=startup_log,
                 stderr=startup_log,
-                env={**os.environ, "PYTHONIOENCODING": "utf-8", **extra_env},
+                env={
+                    **os.environ,
+                    "PYTHONIOENCODING": "utf-8",
+                    "UV_PROJECT_ENVIRONMENT": str(_REPO / ".venv"),
+                },
             )
-            if sys.platform != "win32":
+            if sys.platform == "win32":
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            else:
                 kwargs["start_new_session"] = True
-            proc = subprocess.Popen([py, "-m", "indexserver.daemon"], **kwargs)
+            proc = subprocess.Popen(
+                ["uv", "run", "--no-sync", "--project", str(_REPO),
+                 "--directory", str(_REPO),
+                 str(_REPO / ".venv" / "Scripts" / "tscodesearch.exe")
+                 if sys.platform == "win32" else "python",
+                 "-m", "indexserver.daemon"],
+                **kwargs,
+            )
         return proc.pid
     except (OSError, subprocess.SubprocessError):
         _LOG.exception("could not start daemon")

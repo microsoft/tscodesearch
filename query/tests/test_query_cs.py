@@ -4,7 +4,7 @@ Tests for query/cs.py -- C# AST structural query functions.
 No daemon required; calls query functions directly.
 
 Run:
-    .client-venv/Scripts/python.exe -m pytest query/tests/test_query_cs.py -v
+    uv run --no-sync python -m pytest query/tests/test_query_cs.py -v
 """
 
 import os
