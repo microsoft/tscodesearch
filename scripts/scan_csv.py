@@ -6,17 +6,17 @@ were re-indexed, what commits failed, and which files keep bouncing
 between matched and stale across restarts.
 
 Usage:
-    python -m scripts.scan_csv                       # default summary
-    python -m scripts.scan_csv --mode sessions       # list sessions only
-    python -m scripts.scan_csv --mode stales         # per-stale-file detail
-    python -m scripts.scan_csv --mode missing        # per-missing-file detail
-    python -m scripts.scan_csv --mode orphans        # orphan id list
-    python -m scripts.scan_csv --mode errors         # commit/parse errors
-    python -m scripts.scan_csv --mode index-diff     # what changed between
+    uv run --no-sync python -m scripts.scan_csv                       # default summary
+    uv run --no-sync python -m scripts.scan_csv --mode sessions       # list sessions only
+    uv run --no-sync python -m scripts.scan_csv --mode stales         # per-stale-file detail
+    uv run --no-sync python -m scripts.scan_csv --mode missing        # per-missing-file detail
+    uv run --no-sync python -m scripts.scan_csv --mode orphans        # orphan id list
+    uv run --no-sync python -m scripts.scan_csv --mode errors         # commit/parse errors
+    uv run --no-sync python -m scripts.scan_csv --mode index-diff     # what changed between
                                                      # the last two index exports
-    python -m scripts.scan_csv --mode flapping       # files that flipped state
+    uv run --no-sync python -m scripts.scan_csv --mode flapping       # files that flipped state
                                                      # across sessions
-    python -m scripts.scan_csv --session N           # filter to one session
+    uv run --no-sync python -m scripts.scan_csv --session N           # filter to one session
                                                      # (1 = oldest)
 
 Defaults to ``<repo>/.tantivy_csv``. Override with

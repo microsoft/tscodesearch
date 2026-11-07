@@ -1,12 +1,16 @@
 {
   "mcpServers": {
     "tscodesearch": {
-      "type": "stdio",
-      "command": "${workspaceFolder}/.client-venv/Scripts/python.exe",
+      "command": "uv",
       "args": [
-        "${workspaceFolder}/mcp_server.py"
+        "run",
+        "--no-sync",
+        "python",
+        "mcp_server.py"
       ],
-      "cwd": "${workspaceFolder}"
+      "env": {
+        "UV_PROJECT_ENVIRONMENT": ".venv"
+      }
     }
   }
 }

@@ -15,6 +15,13 @@ ts start
 
 `setup.cmd` creates a Python venv (via [uv](https://docs.astral.sh/uv/)), registers the MCP server with Claude Code and VS Code (GitHub Copilot), prompts for a source directory to index, creates `config.json`, and installs the VS Code extension.
 
+To add a local, user-level Copilot instruction that critically prioritizes
+tscodesearch for files in the local working tree or configured roots, run
+`setup.cmd --priority`. The instruction limits Bluebird usage to queries that
+target checked-in repository state or code in another source tree. Setup writes
+the instruction to `~/.copilot/copilot-instructions.md`; it is not added to the
+indexed repository.
+
 To uninstall: `setup.cmd --uninstall`
 
 ## GitHub Copilot and VS Code Chat
@@ -29,9 +36,12 @@ The repository includes:
   a standalone workspace
 
 The workspace MCP configurations use repository-relative paths and become
-available after `setup.cmd` creates `.client-venv`. Setup also registers the
-same stdio MCP server in the VS Code user profile so its tools remain available
-when you work in a separately indexed repository.
+available after `setup.cmd` creates `.venv`. Setup also registers the
+same uv-backed stdio MCP server in `$COPILOT_HOME/mcp-config.json` (default:
+`~/.copilot/mcp-config.json`) using the current portable `mcpServers` format.
+It also keeps a VS Code user-profile `mcp.json` registration for Local harness
+compatibility. Tools remain available when working in separately indexed
+repositories. Uninstall removes both registrations.
 
 VS Code asks you to trust local MCP servers before starting them. Review the
 configuration and approve it only for a trusted checkout.
@@ -39,7 +49,7 @@ configuration and approve it only for a trusted checkout.
 ## Prerequisites
 
 - Windows 11 (or Linux/macOS for the daemon, with caveats)
-- Python 3.12+
+- Python 3.12, installed and managed automatically by uv
 - Node.js 22+
 - `uv` is installed automatically by `setup.mjs` if missing
 
@@ -54,10 +64,16 @@ setup.cmd
 ```
 
 `setup.cmd` checks for Node.js then calls `node setup.mjs`, which:
-1. Registers the MCP server with Claude Code and VS Code (GitHub Copilot `mcp.json`)
-2. Creates `.client-venv` and synchronizes the locked Python dependencies from `pyproject.toml`
+1. Ensures uv is installed (using winget on Windows), installs the managed Python version from `.python-version`, and synchronizes `.venv` from the lockfile
+2. Registers the uv-backed MCP server with Claude Code, Copilot (`mcp-config.json`), and VS Code Local (`mcp.json`)
 3. Creates `config.json` -- prompts for a source directory to index (can be added later)
 4. Installs the VS Code extension
+
+Pass `--priority` to also install the local Copilot search-priority instruction:
+
+```
+setup.cmd --priority
+```
 
 After setup, start the daemon:
 
@@ -147,12 +163,47 @@ ts verify --root other               # verify a specific named root
 
 ## Running tests
 
+All Python management and invocation uses uv directly with a single `.venv`
+at the repository root. Run `uv run --no-sync python ...` from the root;
+from another directory, use `uv run --no-sync --project <repo> --directory <repo> python ...`.
+There is no Node Python wrapper or separate client environment.
+Runtime commands do not install or update packages while a daemon is running.
+To synchronize development dependencies first (stop the daemon before syncing):
+
+```powershell
+ts stop
+uv sync --locked --managed-python
 ```
-.client-venv\Scripts\python.exe -m pytest tests/ query/tests/ -v   # full Python suite
+
+```
+uv run --no-sync python -m pytest tests/ query/tests/ -v                    # full Python suite
+node --test tests/*.mjs                                            # uv / MCP / daemon lock tests
 node run_tests.mjs                                                 # VS Code extension tests
 ```
 
 The integration tests open a fresh Tantivy index in `<repo>/.tantivy/test_*` for each class and clean up afterwards. No external service needs to be running.
+
+### Named Windows daemon
+
+Setup creates `.venv\Scripts\tscodesearch.exe` from uv-managed Python's native
+`pythonw.exe` and stages its runtime DLLs alongside it. This is the actual
+daemon process image, not a launcher that spawns `python.exe`, so Task Manager's
+Details tab shows `tscodesearch.exe`. It uses the same root `.venv` and is
+launched through `uv run --no-sync`. Other Python commands and MCP servers
+continue to use `uv run --no-sync python`.
+
+Setup refreshes the executable after syncing Python. To create or refresh it
+without the rest of setup, stop the daemon first, then run:
+
+```powershell
+ts stop
+node scripts\create_daemon_exe.mjs
+ts start
+```
+
+The executable retains Python's embedded icon and version metadata; the
+daemon's custom system-tray icon is unchanged. Linux/macOS continue to use
+`uv run --no-sync python` for the daemon.
 
 | File / dir | What it tests |
 |------------|---------------|
@@ -170,7 +221,7 @@ API_KEY=$(node -e "const c=require('./config.json'); process.stdout.write(c.api_
 API_PORT=$(node -e "const c=require('./config.json'); process.stdout.write(String(c.port??8108))")
 curl -s -X POST http://localhost:$API_PORT/query-codebase \
   -H "Content-Type: application/json" -H "X-API-KEY: $API_KEY" \
-  -d '{"mode":"declarations","pattern":"SaveChanges","root":""}' | python -m json.tool
+  -d '{"mode":"declarations","pattern":"SaveChanges","root":""}' | uv run --no-sync python -m json.tool
 ```
 
 The daemon authenticates every request by matching the `X-API-KEY` header against `config.json`'s `api_key`. The HTTP server binds `localhost` only, but the key still matters: any process on the same machine -- a browser background page, another dev tool, a malicious dependency -- can reach `localhost:PORT`. Requiring a shared secret means a random local process can't query or mutate the index without first reading `config.json`.
@@ -178,17 +229,17 @@ The daemon authenticates every request by matching the `X-API-KEY` header agains
 ### Standalone search CLI (`scripts/search.py`)
 
 ```bash
-.client-venv\Scripts\python.exe scripts\search.py "BlobStore" --ext cs --limit 5
-.client-venv\Scripts\python.exe scripts\search.py "IRepository" --implements
+uv run --no-sync python scripts\search.py "Widget" --ext cs --limit 5
+uv run --no-sync python scripts\search.py "IRepository" --implements
 ```
 
 This opens the on-disk Tantivy index in read-only mode, so it works whether or not the daemon is running.
 
-### AST queries without a daemon (`python -m query`)
+### AST queries without a daemon (`uv run --no-sync python -m query`)
 
 ```bash
-.client-venv\Scripts\python.exe -m query --mode methods --file C:/myproject/src/Widget.cs
-.client-venv\Scripts\python.exe -m query --mode calls   --file C:/myproject/src/Widget.cs --pattern SaveChanges
+uv run --no-sync python -m query --mode methods --file C:/myproject/src/Widget.cs
+uv run --no-sync python -m query --mode calls   --file C:/myproject/src/Widget.cs --pattern SaveChanges
 ```
 
 ## AST query modes
@@ -230,12 +281,12 @@ Typical flow: Tantivy narrows the haystack to ~50 candidate files -> tree-sitter
 ```
 ,----------------------------------------------------------------,
 |  MCP CLIENT  (Claude <-> tools)                                |
-|  mcp_server.py  (.client-venv -- runs on Windows)             |
-|  Claude Code -> mcp.cmd -> .client-venv\python.exe             |
+|  mcp_server.py  (.venv -- runs on Windows)             |
+|  Claude Code -> mcp.cmd -> uv run -> root .venv                |
 `------------------------------T-----------------------------------'
                              |  HTTP  localhost:PORT
 ,-----------------------------v----------------------------------,
-|  DAEMON  indexserver/daemon.py  (.client-venv)                 |
+|  DAEMON  indexserver/daemon.py  (.venv)                 |
 |    * HTTP server   (management API on PORT)                  |
 |    * watcher       (ReadDirectoryChangesW)                   |
 |    * IndexQueue    (batch Tantivy writes)                    |
@@ -253,9 +304,10 @@ There is no longer a separate Typesense / Docker / WSL service -- the index live
 |------|---------|
 | `mcp_server.py` | Python MCP server (FastMCP). Tools: `query_codebase`, `query_single_file`, `ready`, `service_status`, `wait_for_sync`. |
 | `indexserver/daemon.py` | Management daemon. Owns the HTTP API, watcher, IndexQueue, syncer, system-tray icon, and one Tantivy `Backend` per configured root. |
-| `mcp.cmd` | Windows launcher: `.client-venv\Scripts\python.exe mcp_server.py` |
+| `mcp.cmd` | Windows launcher: `uv run --no-sync python mcp_server.py` (via uv) |
+| `lib/uv.mjs` | Shared uv command arguments for Node orchestration; spawns uv directly |
 | `ts.cmd` / `ts.mjs` | Daemon CLI: start/stop/restart/status/index/verify/log/root |
-| `setup.cmd` / `setup.mjs` | One-time setup: `.client-venv`, `config.json`, MCP registration (Claude Code + VS Code), VS Code extension |
+| `setup.cmd` / `setup.mjs` | One-time setup: `.venv`, `config.json`, MCP registration (Claude Code + VS Code), VS Code extension |
 | `run_tests.cmd` / `run_tests.mjs` | VS Code extension test runner |
 
 **AST query layer (`query/`)**
@@ -265,7 +317,7 @@ There is no longer a separate Typesense / Docker / WSL service -- the index live
 | `query/cs.py`, `py.py`, `js.py`, `rust.py`, `cpp.py`, `sql.py` | Per-language tree-sitter AST functions |
 | `query/_util.py` | Shared dataclasses + `TreeIndex` (single-pass AST walker shared by every language) |
 | `query/dispatch.py` | Pure query dispatcher. `query_file(src_bytes, ext, mode, pattern, ...)`. No backend dependency. |
-| `query/__main__.py` | CLI: `python -m query --mode methods --file Widget.cs` |
+| `query/__main__.py` | CLI: `uv run --no-sync python -m query --mode methods --file Widget.cs` |
 
 `TreeIndex` walks the AST once with tree-sitter's `TreeCursor`, buckets nodes by type, and (optionally) collects literal-aware identifier refs in the same pass. `describe_*_file` covers the union of types every extractor needs in one walk; per-query wrappers (`q_classes`, `q_methods`, ...) pass a narrow type set so they pay the cost of a single targeted walk.
 
@@ -280,7 +332,7 @@ There is no longer a separate Typesense / Docker / WSL service -- the index live
 | `watcher.py` | `run_watcher()`. `Observer` on Windows, `PollingObserver` on Linux/WSL. |
 | `index_queue.py` | Deduplicated batch queue. Writes go through a `BackendResolver`. |
 | `daemon.py` | Management daemon: HTTP server, watcher thread, IndexQueue worker, syncer, tray icon. |
-| `query_util.py` | Structural query CLI (`python -m indexserver.query_util ...`). |
+| `query_util.py` | Structural query CLI (`uv run --no-sync python -m indexserver.query_util ...`). |
 
 **Config**
 

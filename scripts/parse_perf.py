@@ -1,10 +1,10 @@
 """Profile parsing of a single file.
 
 Usage:
-    python -m scripts.parse_perf <file>           # cProfile, top 30 by cumtime
-    python -m scripts.parse_perf <file> --top 50  # show more rows
-    python -m scripts.parse_perf <file> --raw     # dump pstats to stdout
-    python -m scripts.parse_perf <file> --runs 3  # average over N runs
+    uv run --no-sync python -m scripts.parse_perf <file>           # cProfile, top 30 by cumtime
+    uv run --no-sync python -m scripts.parse_perf <file> --top 50  # show more rows
+    uv run --no-sync python -m scripts.parse_perf <file> --raw     # dump pstats to stdout
+    uv run --no-sync python -m scripts.parse_perf <file> --runs 3  # average over N runs
 
 Reports overall build_document time plus a profiler breakdown so you can see
 which AST helper is dominating (e.g. _find_all, _collect_all_refs).

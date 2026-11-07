@@ -5,7 +5,7 @@ Extends query/dispatch.py with Tantivy-backed file discovery (--search), filesys
 glob expansion, and display helpers (expand_files, print_file_matches).
 
 Usage:
-    python -m indexserver.query_util MODE [OPTIONS] FILE [FILE ...] [GLOB_PATTERN ...]
+    uv run --no-sync python -m indexserver.query_util MODE [OPTIONS] FILE [FILE ...] [GLOB_PATTERN ...]
 
 Modes (C#):
     --classes              List all type declarations with their base types

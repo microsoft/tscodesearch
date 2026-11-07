@@ -1,5 +1,6 @@
 #!/bin/bash
-# Self-locating MCP server launcher — no hardcoded paths.
-# Registered via setup_mcp.cmd; works wherever the repo is cloned.
+# Self-locating uv-backed MCP server launcher.
+# Registered via setup.cmd; works wherever the repo is cloned.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec node "$DIR/mcp_server.js"
+export UV_PROJECT_ENVIRONMENT="$DIR/.venv"
+exec uv run --no-sync --project "$DIR" --directory "$DIR" python "$DIR/mcp_server.py"

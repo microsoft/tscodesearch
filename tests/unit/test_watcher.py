@@ -6,7 +6,7 @@ TestSourceChangeHandlerUnit -- no daemon needed; uses a lightweight mock queue.
 Integration tests (live Tantivy index) are in tests/integration/test_watcher.py.
 
 Run:
-    .client-venv/Scripts/python.exe -m pytest tests/unit/test_watcher.py -v
+    uv run --no-sync python -m pytest tests/unit/test_watcher.py -v
 """
 
 import os

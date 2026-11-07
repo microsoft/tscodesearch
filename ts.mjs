@@ -2,7 +2,7 @@
 /**
  * ts.mjs -- codesearch management CLI
  *
- * The daemon is a single Python process (.client-venv) that owns the local
+ * The daemon is a single Python process (.venv) that owns the local
  * Tantivy index. There is no longer a Typesense server, WSL bridge, or
  * Docker container to manage -- start/stop manage the daemon itself.
  *
@@ -26,6 +26,7 @@ import { fileURLToPath } from 'url';
 import { spawnSync, spawn } from 'child_process';
 import http from 'http';
 import { isLockHeld, waitForLockReleased } from './lib/daemon_lock.mjs';
+import { uvInvocation, daemonUvInvocation } from './lib/uv.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -102,57 +103,6 @@ function apiPost(urlPath, body, timeoutMs = 10000) {
     });
 }
 
-function clientVenvPython() {
-    return path.join(__dirname, '.client-venv', 'Scripts', 'python.exe');
-}
-
-/** On Windows, return the base Python's real pythonw.exe (GUI subsystem, never
- *  creates a console) by reading pyvenv.cfg, plus env-var overrides that activate
- *  the venv's site-packages.  Returns null if pyvenv.cfg is missing/unreadable.
- *  The venv shim (.client-venv/Scripts/pythonw.exe) is a uv launcher that
- *  internally re-spawns python.exe (console subsystem), creating an unwanted window.
- *  The base pythonw.exe bypasses the shim entirely. */
-function daemonPythonWFromBase() {
-    if (process.platform !== 'win32') return null;
-    const pyvenvCfg = path.join(__dirname, '.client-venv', 'pyvenv.cfg');
-    if (!fs.existsSync(pyvenvCfg)) return null;
-    const cfg = fs.readFileSync(pyvenvCfg, 'utf8');
-    const m = cfg.match(/^home\s*=\s*(.+)$/im);
-    if (!m) return null;
-    const pythonw = path.join(m[1].trim(), 'pythonw.exe');
-    return fs.existsSync(pythonw) ? pythonw : null;
-}
-
-/** Returns tscodesearch.exe if present, otherwise the base pythonw.exe (Windows)
- *  or the venv python (other platforms). */
-function daemonPython() {
-    const named = path.join(__dirname, '.client-venv', 'Scripts', 'tscodesearch.exe');
-    if (fs.existsSync(named)) return named;
-    if (process.platform === 'win32') {
-        return daemonPythonWFromBase()
-            ?? path.join(__dirname, '.client-venv', 'Scripts', 'pythonw.exe');
-    }
-    return clientVenvPython();
-}
-
-/** Build the environment for the daemon process.  When using the base pythonw.exe
- *  (not the venv shim), PYTHONPATH and VIRTUAL_ENV are needed to find packages. */
-function daemonEnv() {
-    const base = { ...process.env, PYTHONIOENCODING: 'utf-8' };
-    if (process.platform !== 'win32') return base;
-    // If using the real base pythonw.exe, activate the venv manually.
-    if (!daemonPythonWFromBase()) return base;
-    const venv     = path.join(__dirname, '.client-venv');
-    const scripts  = path.join(venv, 'Scripts');
-    const sitePkgs = path.join(venv, 'Lib', 'site-packages');
-    return {
-        ...base,
-        VIRTUAL_ENV:  venv,
-        PYTHONPATH:   sitePkgs,
-        PATH:         scripts + path.delimiter + (process.env.PATH || ''),
-    };
-}
-
 // Mirrors indexserver.config.collection_for_root: lowercase, then [^a-z0-9_] -> _.
 function collectionForRoot(name) {
     return `codesearch_${name.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`;
@@ -220,7 +170,7 @@ async function shutdownDaemon() {
     const runDir  = daemonRunDir();
     const pidFile  = path.join(runDir, 'daemon.pid');
     const lockFile = path.join(runDir, 'daemon.lock');
-    const py       = clientVenvPython();
+    const py       = uvInvocation([]);
 
     let daemonPid = null;
     try { daemonPid = fs.readFileSync(pidFile, 'utf-8').trim() || null; } catch { /* no pid file */ }
@@ -271,19 +221,26 @@ function daemonLogFile() {
 }
 
 function startDaemon() {
-    const py = daemonPython();
-    if (!fs.existsSync(py)) {
-        die(`.client-venv not found at ${py} -- run setup.cmd first`);
+    const py = daemonUvInvocation({
+        ...process.env, PYTHONIOENCODING: 'utf-8',
+    });
+    if (!fs.existsSync(path.join(__dirname, '.venv', 'pyvenv.cfg'))) {
+        die('.venv not found -- run setup.cmd first');
+    }
+    if (process.platform === 'win32' &&
+        !fs.existsSync(path.join(__dirname, '.venv', 'Scripts', 'tscodesearch.exe'))) {
+        die('tscodesearch.exe not found -- run setup.cmd first');
     }
     // Daemon is headless (pystray tray icon only) -- spawn detached with no
     // console window so it survives after ts exits.
-    const child = spawn(py, ['-m', 'indexserver.daemon'], {
+    const child = spawn(py.command, py.args, {
         detached: true,
         cwd: __dirname,
         stdio: 'ignore',
         windowsHide: true,
-        env: daemonEnv(),
+        env: py.env,
     });
+    child.on('error', error => die(`Could not start daemon through uv: ${error.message}. Run setup.cmd first.`));
     log(`Daemon started. Log: ${daemonLogFile()}`);
     return child;
 }

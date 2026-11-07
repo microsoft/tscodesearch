@@ -6,7 +6,7 @@ TestExtractPyMetadata and TestQueryPy require no daemon.
 Integration tests (live Tantivy index) are in tests/integration/test_python.py.
 
 Run:
-    .client-venv/Scripts/python.exe -m pytest tests/unit/test_python.py -v
+    uv run --no-sync python -m pytest tests/unit/test_python.py -v
 """
 
 import os

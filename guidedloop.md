@@ -18,8 +18,8 @@ with tests.
 ## Prerequisites
 
 - Daemon running and index populated (`mcp__tscodesearch__ready`)
-- `.client-venv` set up (`setup.cmd`)
-- Test command: `.client-venv\Scripts\python.exe -m pytest tests/ query/tests/ -v`
+- `.venv` set up (`setup.cmd`)
+- Test command: `uv run --no-sync python -m pytest tests/ query/tests/ -v`
 
 ---
 
@@ -75,7 +75,7 @@ Read the actual source line before concluding anything is missing or spurious.
 ## Inspecting the AST
 
 When you need to understand why a node is or isn't being found, write a small
-Python script and run it through `.client-venv`:
+Python script and run it through `.venv`:
 
 ```python
 # inspect.py
@@ -100,7 +100,7 @@ walk(tree.root_node)
 
 Run with:
 ```
-.client-venv\Scripts\python.exe inspect.py
+uv run --no-sync python inspect.py
 ```
 
 Key things to check:
@@ -229,12 +229,12 @@ Workflow:
 
 Single file:
 ```
-.client-venv\Scripts\python.exe -m pytest query/tests/test_cs_<topic>.py -v
+uv run --no-sync python -m pytest query/tests/test_cs_<topic>.py -v
 ```
 
 Full suite:
 ```
-.client-venv\Scripts\python.exe -m pytest tests/ query/tests/ -v
+uv run --no-sync python -m pytest tests/ query/tests/ -v
 ```
 
 Integration tests open a fresh Tantivy index in `<repo>/.tantivy/test_*` for

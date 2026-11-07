@@ -4,7 +4,7 @@ Tests for Rust support: extract_metadata and query_rust functions.
 No daemon needed -- all tests run against sample/root1/query_fixture.rs.
 
 Run:
-    .client-venv/Scripts/python.exe -m pytest tests/unit/test_rust.py -v
+    uv run --no-sync python -m pytest tests/unit/test_rust.py -v
 """
 
 import os

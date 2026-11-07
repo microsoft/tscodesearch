@@ -73,31 +73,31 @@ breakdowns plus anomaly flags.
 
 ```powershell
 # default: summary table (one row per restart, anomaly notes on the right)
-.client-venv/Scripts/python.exe -m scripts.scan_csv
+uv run --no-sync python -m scripts.scan_csv
 
 # list each session with timestamps and counts
-.client-venv/Scripts/python.exe -m scripts.scan_csv --mode sessions
+uv run --no-sync python -m scripts.scan_csv --mode sessions
 
 # drill into one session
-.client-venv/Scripts/python.exe -m scripts.scan_csv --session 1 --mode summary
+uv run --no-sync python -m scripts.scan_csv --session 1 --mode summary
 
 # top stale files with mtime-delta buckets (was the change recent? batched?)
-.client-venv/Scripts/python.exe -m scripts.scan_csv --mode stales
+uv run --no-sync python -m scripts.scan_csv --mode stales
 
 # list missing files (filename + on-disk mtime)
-.client-venv/Scripts/python.exe -m scripts.scan_csv --mode missing
+uv run --no-sync python -m scripts.scan_csv --mode missing
 
 # orphan doc ids with relative_path (joined from the same session's export)
-.client-venv/Scripts/python.exe -m scripts.scan_csv --mode orphans
+uv run --no-sync python -m scripts.scan_csv --mode orphans
 
 # every commit / parse failure with the error string
-.client-venv/Scripts/python.exe -m scripts.scan_csv --mode errors
+uv run --no-sync python -m scripts.scan_csv --mode errors
 
 # diff the last two index exports: what disappeared, what appeared, what changed mtime
-.client-venv/Scripts/python.exe -m scripts.scan_csv --mode index-diff
+uv run --no-sync python -m scripts.scan_csv --mode index-diff
 
 # files that flipped between matched and stale/missing across sessions
-.client-venv/Scripts/python.exe -m scripts.scan_csv --mode flapping
+uv run --no-sync python -m scripts.scan_csv --mode flapping
 ```
 
 Override the log directory with `--csv-dir DIR` or
@@ -141,21 +141,35 @@ Use plain ASCII substitutions, for example:
 - bullets/checks/math symbols -> `-`/`*`, `OK`/`NO`, `>=`/`<=`
 
 Validation:
-- `python -m scripts.find_nonascii`
-- `python -m scripts.replace_nonascii --apply`
+- `uv run --no-sync python -m scripts.find_nonascii`
+- `uv run --no-sync python -m scripts.replace_nonascii --apply`
 
 ## CRITICAL: running Python scripts from the Bash tool
 
-Everything runs in the **client venv** on Windows -- there is no separate WSL venv anymore.
+Use a single **uv-managed `.venv` at the repository root** for all Python work.
+Do not create separate client, indexserver, WSL, or per-folder environments.
+Setup installs uv with winget and managed Python from `.python-version`.
+Invoke uv directly: `uv run --no-sync python <script>` or
+`uv run --no-sync python -m <module>`. Do not use a Node Python wrapper, pip,
+system Python, or a venv interpreter path.
+The Windows background daemon is the sole executable-path exception: launch
+`.venv\Scripts\tscodesearch.exe` through uv. Setup derives this named native
+interpreter and its DLLs from uv-managed Python after syncing; it still uses
+the root `.venv`. Stop the daemon before regenerating it with
+`node scripts\create_daemon_exe.mjs`. Do not alias the venv's Python shim,
+which can spawn a separate `python.exe` process.
+Run commands from the repository root; from elsewhere, pass
+`--project <repo> --directory <repo>` to `uv run`.
+Stop the daemon before synchronizing dependencies with `uv sync --locked --managed-python`.
 
 ```bash
-.client-venv/Scripts/python.exe <script> <args>
-.client-venv/Scripts/python.exe -m pytest tests/ query/tests/ -v
+uv run --no-sync python <script> <args>
+uv run --no-sync python -m pytest tests/ query/tests/ -v
 ```
 
 AST debug:
 ```bash
-.client-venv/Scripts/python.exe -m query --mode methods --file C:/myproject/src/Widget.cs
+uv run --no-sync python -m query --mode methods --file C:/myproject/src/Widget.cs
 ```
 
 Management API via curl (read key/port from config.json -- never hard-code):
@@ -164,14 +178,17 @@ API_KEY=$(node -e "const c=require('./config.json'); process.stdout.write(c.api_
 API_PORT=$(node -e "const c=require('./config.json'); process.stdout.write(String(c.port??8108))")
 curl -s -X POST http://localhost:$API_PORT/query-codebase \
   -H "Content-Type: application/json" -H "X-API-KEY: $API_KEY" \
-  -d '{"mode":"declarations","pattern":"SaveChanges","root":""}' | python -m json.tool
+  -d '{"mode":"declarations","pattern":"SaveChanges","root":""}' | uv run --no-sync python -m json.tool
 ```
 
 The daemon authenticates every request by matching the `X-API-KEY` header against `config.json`'s `api_key`. The daemon's HTTP server binds `localhost` only, but the key still matters: any process on the same machine (browser background pages, other dev tools, a malicious dependency) can reach `localhost:PORT`. Requiring a shared secret means a random local process can't query or mutate the index without first reading `config.json`.
 
 ## CRITICAL: host-side orchestration scripts must be Node.js
 
-All orchestration scripts invoked from the host = `.mjs`/`.js`. The MCP server is Python (`mcp_server.py`) via `.client-venv\Scripts\python.exe`.
+Host orchestration scripts are `.mjs`/`.js`. Python management and invocation
+must use uv directly. MCP registrations launch `uv run --no-sync ... python mcp_server.py`,
+not a Node wrapper or a Python executable path. Only the Windows daemon uses
+the named interpreter through uv as described above.
 
 ## CRITICAL: fictional names in examples and documentation
 
@@ -227,7 +244,7 @@ Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `PO
 | `query/cs.py`, `query/py.py`, `query/js.py`, `query/rust.py`, `query/cpp.py`, `query/sql.py` | Per-language tree-sitter AST functions and bytes-level mode handlers. |
 | `query/_util.py` | Shared dataclasses (`FileDescription`, `ClassInfo`, ...), `TreeIndex` (single-pass AST walker used by every language), and `_run_dispatch` (resolves a mode against a language's dispatch table; handles the `capabilities` mode and raises `ValueError` with the supported-mode list for unknown modes). |
 | `query/dispatch.py` | Pure query layer. `query_file(src_bytes, ext, mode, mode_arg, ...)`, `describe_file()`, `ALL_EXTS`. No backend dependency. `query_file` raises `ValueError` for unknown extensions or unsupported modes -- explicit errors beat silent empties for tool-using agents. |
-| `query/__main__.py` | CLI: `python -m query --mode methods --file Widget.cs`. JSON stdin mode also supported. |
+| `query/__main__.py` | CLI: `uv run --no-sync python -m query --mode methods --file Widget.cs`. JSON stdin mode also supported. |
 
 **`TreeIndex`** (in `query/_util.py`) walks the AST once with tree-sitter's C-level `TreeCursor`, buckets nodes into `nodes_by_type[type] -> [nodes]`, and optionally collects literal-aware `all_refs` in the same pass. `describe_*_file` builds one index covering the union of types every extractor needs (5-10x faster than a per-extractor walk on large files); per-query wrappers (`q_classes`, `q_methods`, ...) build a narrow index with just their target types so they pay the same cost as one targeted walk.
 
@@ -240,16 +257,16 @@ Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `PO
 | `indexserver/verifier.py` | `run_verify()` (two-phase diff + repair), `check_ready()` (read-only health check). |
 | `indexserver/watcher.py` | `run_watcher()`. `watchdog.observers.Observer` on Windows (real-time), `PollingObserver` on Linux/WSL. |
 | `indexserver/index_queue.py` | Deduplicated batch queue. Writes go through a `BackendResolver` (`collection_name -> Backend`). |
-| `indexserver/query_util.py` | Structural query CLI (`python -m indexserver.query_util ...`). `--search` opens the backend in read-only mode. |
+| `indexserver/query_util.py` | Structural query CLI (`uv run --no-sync python -m indexserver.query_util ...`). `--search` opens the backend in read-only mode. |
 
 ### Scripts
 
 | File | Responsibility |
 |------|---------------|
 | `scripts/search.py` | Standalone search CLI. Opens a read-only `Backend` and calls `indexserver.search.search()`. |
-| `scripts/parse_perf.py` | Profile parsing of one file: wall-clock + cProfile breakdown of `describe_file`. Useful for diagnosing slow files in the indexer. Usage: `python -m scripts.parse_perf <file> [--top N] [--runs N]`. |
+| `scripts/parse_perf.py` | Profile parsing of one file: wall-clock + cProfile breakdown of `describe_file`. Useful for diagnosing slow files in the indexer. Usage: `uv run --no-sync python -m scripts.parse_perf <file> [--top N] [--runs N]`. |
 | `ts.mjs` | Daemon CLI: `start`/`stop`/`restart`/`status`/`index`/`verify`/`log`/`root`. Spawns `indexserver.daemon` and posts to its API. |
-| `setup.mjs` | One-time setup: `.client-venv`, `config.json` (prompts for root dir), MCP registration (Claude Code + VS Code/GitHub Copilot), VS Code extension. |
+| `setup.mjs` | One-time setup: `.venv`, `config.json` (prompts for root dir), MCP registration (Claude Code + VS Code/GitHub Copilot), VS Code extension. |
 | `run_tests.mjs` | VS Code extension unit tests (no daemon required). |
 
 ---
@@ -259,7 +276,7 @@ Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `PO
 | Command | What it does |
 |---------|-------------|
 | `ts.cmd <cmd>` | `node ts.mjs %*` |
-| `mcp.cmd` | `.client-venv\Scripts\python.exe mcp_server.py` |
+| `mcp.cmd` | `uv run --no-sync python mcp_server.py` (via uv) |
 | `setup.cmd` | `node setup.mjs` |
 | `run_tests.cmd` | `node run_tests.mjs` -- VS Code tests |
 
@@ -267,9 +284,9 @@ Management API endpoints: `GET /health`, `GET /status`, `POST /check-ready`, `PO
 
 | Venv | Location | Packages |
 |------|----------|----------|
-| Client | `.client-venv/` (Windows) | `mcp`, `tree-sitter`, all grammar packages, `tantivy`, `watchdog`, `pathspec`, `pytest` |
+| Root | `.venv/` (all platforms, managed by uv) | `mcp`, `tree-sitter`, all grammar packages, `tantivy`, `watchdog`, `pathspec`; `pytest` with dev dependencies |
 
-There is **no longer a WSL or indexserver venv** -- Tantivy runs in-process in the same `.client-venv` Python.
+There is **no longer a WSL or indexserver venv** -- Tantivy runs in-process in the same `.venv` Python.
 
 ## config.json
 
@@ -388,13 +405,13 @@ Every other text field -- `class_names`, `method_names`, `base_types`, `field_ty
 
 ```bash
 # Full suite (1200+ tests)
-.client-venv/Scripts/python.exe -m pytest tests/ query/tests/ -v
+uv run --no-sync python -m pytest tests/ query/tests/ -v
 
 # Filter by test name
-.client-venv/Scripts/python.exe -m pytest tests/ -k TestQCasts -v
+uv run --no-sync python -m pytest tests/ -k TestQCasts -v
 
 # Single file
-.client-venv/Scripts/python.exe -m pytest tests/unit/test_watcher.py -v
+uv run --no-sync python -m pytest tests/unit/test_watcher.py -v
 
 # VS Code extension tests (no daemon required)
 node run_tests.mjs

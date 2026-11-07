@@ -4,7 +4,7 @@
  * Run with:
  *   node --test tests/test_daemon_lock.mjs
  *
- * Each test spawns a real Python subprocess using the client venv so that
+ * Each test spawns a real Python subprocess via uv in the root .venv so that
  * the OS locking primitive is the same one used by the daemon.  No daemon
  * needs to be running.
  */
@@ -14,25 +14,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
 import { isLockHeld, waitForLockReleased } from '../lib/daemon_lock.mjs';
+import { uvInvocation } from '../lib/uv.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-
-function clientVenvPython() {
-    if (process.platform === 'win32') {
-        return path.join(REPO, '.client-venv', 'Scripts', 'python.exe');
-    }
-    return path.join(REPO, '.client-venv', 'bin', 'python');
-}
-
-const PY = clientVenvPython();
+const PY = uvInvocation([]);
 
 /** Create a fresh temp file path (file does not exist yet). */
 function tmpLockPath() {
@@ -43,7 +34,7 @@ function tmpLockPath() {
  * Spawn a Python subprocess that acquires an exclusive OS lock on `lockPath`,
  * writes "READY\n" to stdout, then sleeps for `holdSecs` seconds.
  *
- * Returns the child process.  Call child.kill() to release the lock early.
+ * Returns the child process. Close child.stdin to release the lock early.
  *
  * The caller must await `whenReady` (a Promise that resolves when "READY" is
  * received) before assuming the lock is held.
@@ -51,7 +42,7 @@ function tmpLockPath() {
 function spawnLockHolder(lockPath, holdSecs = 10) {
     const script = process.platform === 'win32'
         ? [
-            'import msvcrt,os,sys,time',
+            'import msvcrt,os,sys,threading',
             'fh=open(sys.argv[1],"w")',
             'fh.seek(0)',
             'msvcrt.locking(fh.fileno(),msvcrt.LK_NBLCK,1)',
@@ -59,21 +50,26 @@ function spawnLockHolder(lockPath, holdSecs = 10) {
             'fh.flush()',
             'sys.stdout.write("READY\\n")',
             'sys.stdout.flush()',
-            'time.sleep(float(sys.argv[2]))',
+            'threading.Timer(float(sys.argv[2]), lambda: os._exit(0)).start()',
+            'sys.stdin.read()',
+            'os._exit(0)',
         ].join('\n')
         : [
-            'import fcntl,os,sys,time',
+            'import fcntl,os,sys,threading',
             'fh=open(sys.argv[1],"w")',
             'fcntl.flock(fh,fcntl.LOCK_EX|fcntl.LOCK_NB)',
             'fh.write(str(os.getpid()))',
             'fh.flush()',
             'sys.stdout.write("READY\\n")',
             'sys.stdout.flush()',
-            'time.sleep(float(sys.argv[2]))',
+            'threading.Timer(float(sys.argv[2]), lambda: os._exit(0)).start()',
+            'sys.stdin.read()',
+            'os._exit(0)',
         ].join('\n');
 
-    const child = spawn(PY, ['-c', script, lockPath, String(holdSecs)], {
-        stdio: ['ignore', 'pipe', 'pipe'],
+    const child = spawn(PY.command, [...PY.args, '-c', script, lockPath, String(holdSecs)], {
+        env: PY.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     let buf = '';
@@ -123,7 +119,7 @@ describe('isLockHeld', () => {
             await whenReady;
             assert.equal(isLockHeld(lockPath, PY), true);
         } finally {
-            child.kill();
+            child.stdin.end();
         }
     });
 
@@ -158,7 +154,7 @@ describe('isLockHeld', () => {
                 assert.equal(isLockHeld(lockPath, PY), true, `iteration ${i}`);
             }
         } finally {
-            child.kill();
+            child.stdin.end();
         }
     });
 
@@ -198,7 +194,7 @@ describe('waitForLockReleased', () => {
             });
             assert.equal(released, false);
         } finally {
-            child.kill();
+            child.stdin.end();
         }
     });
 
@@ -212,7 +208,7 @@ describe('waitForLockReleased', () => {
             intervalMs: 100,
         });
         assert.equal(released, true);
-        child.kill();  // no-op if already exited
+        child.stdin.end();
     });
 
     test('resolves true when holder is killed during the wait', async () => {
@@ -221,7 +217,7 @@ describe('waitForLockReleased', () => {
         await whenReady;
 
         // Kill the holder 300ms into the wait.
-        setTimeout(() => child.kill(), 300);
+        setTimeout(() => child.stdin.end(), 300);
 
         const released = await waitForLockReleased(lockPath, PY, {
             timeoutMs: 5000,
@@ -245,7 +241,7 @@ describe('waitForLockReleased', () => {
         assert.equal(released, true);
         // Should have finished in well under 2s (holder sleeps only 200ms).
         assert.ok(elapsed < 2000, `elapsed ${elapsed}ms should be < 2000ms`);
-        child.kill();
+        child.stdin.end();
     });
 
 });
@@ -261,7 +257,7 @@ describe('edge cases', () => {
         fs.writeFileSync(lockPath, '0');
         try {
             // Bad python path -> spawnSync gets an error -> treated as held (conservative).
-            const result = isLockHeld(lockPath, '/no/such/python');
+            const result = isLockHeld(lockPath, { command: 'missing-python-command', args: [], env: process.env });
             // We accept either true (spawn error = held) or false (file-not-locked fallback).
             // The important thing is it does not throw.
             assert.ok(typeof result === 'boolean');
@@ -294,7 +290,7 @@ describe('edge cases', () => {
             );
             assert.ok(results.every(r => r === true), `all should be true: ${results}`);
         } finally {
-            child.kill();
+            child.stdin.end();
         }
     });
 

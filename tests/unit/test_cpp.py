@@ -4,7 +4,7 @@ Tests for C/C++ support: extract_metadata and query_cpp functions.
 No daemon needed -- all tests run against sample/root1/query_fixture.cpp.
 
 Run:
-    .client-venv/Scripts/python.exe -m pytest tests/unit/test_cpp.py -v
+    uv run --no-sync python -m pytest tests/unit/test_cpp.py -v
 """
 
 import os

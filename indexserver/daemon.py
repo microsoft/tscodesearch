@@ -1,7 +1,7 @@
 """
 tsquery_server -- cross-platform management server daemon.
 
-Runs under .client-venv (Windows) or any compatible Python on Linux/macOS.
+Runs directly via uv in the repository-root .venv on all platforms.
 Owns one Tantivy index per configured root and exposes an HTTP API on
 _cfg.port.
 

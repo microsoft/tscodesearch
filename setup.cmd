@@ -1,7 +1,8 @@
 @echo off
 :: One-time codesearch setup.
 :: Usage:
-::   setup.cmd              Install MCP server, .client-venv, VS Code extension
+::   setup.cmd              Install uv, managed Python, MCP server, VS Code extension
+::   setup.cmd --priority   Also prefer tscodesearch for local code in Copilot
 ::   setup.cmd --uninstall  Unregister MCP server and stop the daemon
 
 :: -- Ensure Node.js 22+ ----------------------------------------------------------
@@ -16,4 +17,5 @@ node -e "process.exit(parseInt(process.version.slice(1)) >= 22 ? 0 : 1)" 2>nul
 if errorlevel 1 ( echo Node not found after install. Close terminal, reopen, and re-run. & exit /b 1 )
 
 :run
+:: setup.mjs ensures uv is installed with winget before managing Python.
 node "%~dp0setup.mjs" %*

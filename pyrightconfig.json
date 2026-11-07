@@ -9,6 +9,7 @@
     ],
     "exclude": [
         "**/__pycache__",
+        ".venv",
         ".client-venv",
         ".tantivy",
         "node_modules",
@@ -18,7 +19,7 @@
     ],
     "pythonVersion": "3.12",
     "venvPath": ".",
-    "venv": ".client-venv",
+    "venv": ".venv",
     "useLibraryCodeForTypes": true,
     "reportMissingImports": "warning",
     "reportMissingTypeStubs": "none"

@@ -9,7 +9,7 @@
  *   node run_tests.mjs
  *
  * Python tests are run directly with pytest:
- *   .client-venv\Scripts\python.exe -m pytest tests/ query/tests/ -v
+ *   uv run --no-sync python -m pytest tests/ query/tests/ -v
  * The tests/integration/conftest.py fixture writes a temp config.json
  * pointing at the sample/ trees automatically when CODESEARCH_CONFIG
  * is not already set.
