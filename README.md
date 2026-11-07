@@ -51,9 +51,15 @@ configuration and approve it only for a trusted checkout.
 - Windows 11 (or Linux/macOS for the daemon, with caveats)
 - Python 3.12, installed and managed automatically by uv
 - Node.js 22+
+- VS Code 1.144.0+ for the extension
 - `uv` is installed automatically by `setup.mjs` if missing
 
 There is **no Docker, WSL, or Typesense** dependency. The whole index is in-process.
+
+Python dependencies are locked in `uv.lock`. Node dependencies are managed only
+in `vscode-codesearch/package.json` and its lockfile; the repository root does
+not have a Node package. The extension overrides `minimatch` to a patched
+release because the current packaging tool still requests an affected version.
 
 ## One-time setup
 

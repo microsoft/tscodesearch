@@ -6,6 +6,8 @@ across configured source roots.
 
 ## Setup
 
+Requires VS Code 1.144.0 or newer.
+
 Run `setup.cmd` from the repository root. Setup creates the Python environment,
 registers the MCP server with VS Code Chat, installs this extension, and records
 the repository path in the machine-specific `tscodesearch.repoPath` setting.
